@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from backend.models.upload import UploadResponse
+from backend.utils.zip_utils import extract_and_list_tree
 
 router = APIRouter()
 
@@ -48,14 +49,17 @@ async def upload_files(
 
     job_id = _generate_job_id()
 
-    # Zip processing and storage are handled in later phases.
+    # Extract zip and build directory tree
+    tree, tree_text = extract_and_list_tree(zip_bytes)
+
+    # Storage is handled in a later phase.
     return UploadResponse(
         job_id=job_id,
         status="received",
         zip_filename=zip_file.filename,
         markdown_filename=markdown_file.filename,
-        tree=[],
-        tree_text="",
+        tree=tree,
+        tree_text=tree_text,
         stored_path=None,
         error=None,
     )
