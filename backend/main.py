@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE
+from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE, VERSION
 from backend.models.types import HealthResponse
 from backend.routes.upload import router as upload_router
 
@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    app = FastAPI(title="QA Agent Backend", version="0.1.0")
+    app = FastAPI(title="QA Agent Backend", version=VERSION)
 
     # ------------------------------------------------------------------
     # CORS (configurable via CORS_ORIGINS env var)
