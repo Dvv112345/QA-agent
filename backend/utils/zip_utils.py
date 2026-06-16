@@ -14,6 +14,10 @@ _TREE_PIPE = "|   "
 _TREE_SPACE = "    "
 
 
+# Set of folders to be ignored
+_IGNORE_FOLDERS = {"node_modules", "__pycache__"}
+
+
 def _simple_tree_text(entries: list[str], max_depth: int = 100) -> str:
     """Build a human-readable indented tree from a sorted list of relative paths.
 
@@ -59,7 +63,7 @@ def extract_zip(
     target_dir: str,
     max_files: int,
     max_depth: int,
-    chunk_size: int = 8192,  # 8KB
+    chunk_size: int,
 ):
     """
     Extract a zip archive safely with comprehensive protections.
@@ -95,6 +99,16 @@ def extract_zip(
             for member in entries:
                 # Check depth using pathlib
                 member_path = Path(member.filename)
+                parts = member_path.parts
+                should_ignore = False
+                for part in parts:
+                    if part.startswith(".") or part in _IGNORE_FOLDERS:
+                        should_ignore = True
+                        break
+
+                if should_ignore:
+                    continue
+
                 depth = len(member_path.parts)
                 if depth > max_depth:
                     raise ValueError(
@@ -109,7 +123,7 @@ def extract_zip(
                 target = (target_path / member_path).resolve()
 
                 # Path traversal protection using pathlib
-                if not str(target).startswith(target_str + Path().sep) or target == target_path:
+                if not str(target).startswith(target_str + os.sep) or target == target_path:
                     raise ValueError(
                         f"Archive contain file that attempt path traversal: {member.filename}"
                     )
@@ -174,8 +188,24 @@ def _cleanup_extraction(target_path: Path) -> None:
         logger.warning(f"Cleanup failed for {target_path}: {e}")
 
 
+def get_tree(root_dir: str, tree: list[str]):
+    # Walk the extracted tree
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        rel = os.path.relpath(dirpath, root_dir)
+        if rel == ".":
+            for fn in sorted(filenames):
+                tree.append(fn)
+            for dn in sorted(dirnames):
+                tree.append(f"{dn}/")
+        else:
+            for fn in sorted(filenames):
+                tree.append(f"{rel.replace(os.sep, '/')}/{fn}")
+            for dn in sorted(dirnames):
+                tree.append(f"{rel.replace(os.sep, '/')}/{dn}/")
+
+
 def extract_and_list_tree(
-    zip_bytes: bytes, max_files: int = 10_000, max_depth: int = 100, chunk_size: int = 8192
+    zip_bytes: bytes, stored_path: str | None, max_files: int, max_depth: int, chunk_size: int
 ) -> tuple[list[str], str]:
     """Extract a zip archive to a temp directory and return its directory tree.
 
@@ -192,22 +222,12 @@ def extract_and_list_tree(
     """
     tree: list[str] = []
 
-    with tempfile.TemporaryDirectory(prefix="qa_zip_") as tmpdir:
-        extract_zip(zip_bytes, tmpdir, max_files, max_depth, chunk_size)
-
-        # Walk the extracted tree
-        for dirpath, dirnames, filenames in os.walk(tmpdir):
-            rel = os.path.relpath(dirpath, tmpdir)
-            if rel == ".":
-                for fn in sorted(filenames):
-                    tree.append(fn)
-                for dn in sorted(dirnames):
-                    tree.append(f"{dn}/")
-            else:
-                for fn in sorted(filenames):
-                    tree.append(f"{rel.replace(os.sep, '/')}/{fn}")
-                for dn in sorted(dirnames):
-                    tree.append(f"{rel.replace(os.sep, '/')}/{dn}/")
+    if not stored_path:
+        with tempfile.TemporaryDirectory(prefix="qa_zip_") as tmpdir:
+            extract_zip(zip_bytes, tmpdir, max_files, max_depth, chunk_size)
+            get_tree(tmpdir, tree)
+    else:
+        get_tree(stored_path, tree)
 
     tree_text = _simple_tree_text([t.rstrip("/") for t in tree], max_depth=max_depth)
     return tree, tree_text

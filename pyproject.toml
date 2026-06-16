@@ -28,6 +28,7 @@ dependencies = [
     "uvicorn[standard]>=0.34,<1.0.0",
     "python-multipart>=0.0.20",
     "sqlmodel>=0.0.22",
+    "dotenv==0.9.9"
 ]
 
 [project.optional-dependencies]

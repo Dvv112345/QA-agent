@@ -1,7 +1,14 @@
 import logging
 import os
 
-from backend.config import STORAGE_LOCATION, STORE_OFFLINE
+from backend.config import (
+    CHUNK_SIZE,
+    MAX_TREE_DEPTH,
+    MAX_ZIP_FILES,
+    STORAGE_LOCATION,
+    STORE_OFFLINE,
+)
+from backend.utils.zip_utils import extract_zip
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +54,12 @@ class StorageService:
         job_dir = os.path.join(self._base, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
-        zip_path = os.path.join(job_dir, "source.zip")
+        zip_path = os.path.join(job_dir, "zip_source")
         md_path = os.path.join(job_dir, "requirements.md")
-
-        with open(zip_path, "wb") as fh:
-            fh.write(zip_bytes)
+        extract_zip(zip_bytes, zip_path, MAX_ZIP_FILES, MAX_TREE_DEPTH, CHUNK_SIZE)
         with open(md_path, "w", encoding="utf-8") as fh:
             fh.write(md_bytes.decode("utf-8", errors="replace"))
 
         logger.info("Stored upload %s → %s", job_id, job_dir)
 
-        return {"stored": True, "stored_path": job_dir}
+        return {"stored": True, "stored_path": job_dir, "zip_path": zip_path, "md_path": md_path}

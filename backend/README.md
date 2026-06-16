@@ -9,17 +9,17 @@ FastAPI backend for the QA Agent — accepts source code (zip) and requirement d
 pip install -r requirements.txt
 
 # Start the server
-python main.py
+python -m backend.main
 ```
 
 The API is served at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `STORE_OFFLINE` | *(unset / `false`)* | Set to `"true"` to persist uploaded files to disk. Any other value keeps files in memory only. |
-| `STORAGE_LOCATION` | *(unset)* | Directory where files are stored when `STORE_OFFLINE=true`. Must be set when offline mode is enabled. |
+| Variable           | Default             | Description                                                                                           |
+| ------------------ | ------------------- | ----------------------------------------------------------------------------------------------------- |
+| `STORE_OFFLINE`    | _(unset / `false`)_ | Set to `"true"` to persist uploaded files to disk. Any other value keeps files in memory only.        |
+| `STORAGE_LOCATION` | _(unset)_           | Directory where files are stored when `STORE_OFFLINE=true`. Must be set when offline mode is enabled. |
 
 Copy `.env.example` to `.env` and adjust:
 
@@ -35,7 +35,7 @@ cp .env.example .env
 Health check. Returns:
 
 ```json
-{"status": "ok"}
+{ "status": "ok" }
 ```
 
 ### `POST /api/upload`
@@ -44,10 +44,10 @@ Upload a zip archive and a markdown requirements file.
 
 **Request:** `multipart/form-data`
 
-| Field | Required | Description |
-|---|---|---|
-| `zip_file` | Yes | Source code archive (`.zip`) |
-| `markdown_file` | Yes | Requirements document (`.md`, `.markdown`) |
+| Field           | Required | Description                                |
+| --------------- | -------- | ------------------------------------------ |
+| `zip_file`      | Yes      | Source code archive (`.zip`)               |
+| `markdown_file` | Yes      | Requirements document (`.md`, `.markdown`) |
 
 **Response** (200):
 
@@ -66,10 +66,10 @@ Upload a zip archive and a markdown requirements file.
 
 **Errors:**
 
-| Status | Cause |
-|---|---|
-| 422 | Invalid file extension, missing file, or empty filename |
-| 500 | Unexpected server error |
+| Status | Cause                                                   |
+| ------ | ------------------------------------------------------- |
+| 422    | Invalid file extension, missing file, or empty filename |
+| 500    | Unexpected server error                                 |
 
 ### Example with curl
 

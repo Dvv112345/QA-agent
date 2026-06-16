@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from backend.config import MAX_TREE_DEPTH, MAX_UPLOAD_SIZE_MB, MAX_ZIP_FILES
+from backend.config import CHUNK_SIZE, MAX_TREE_DEPTH, MAX_UPLOAD_SIZE_MB, MAX_ZIP_FILES
 from backend.models.types import UploadResponse
 from backend.services.storage import StorageService
 from backend.utils.zip_utils import extract_and_list_tree
@@ -97,14 +97,23 @@ async def upload_files(
 
     job_id = _generate_job_id()
 
+    # Persist files if offline mode is enabled
+    storage_result = storage_service.store(zip_bytes, md_bytes, job_id)
+    zip_path = storage_result.get("zip_path")
+
     # Extract zip and build directory tree
     try:
         tree, tree_text = extract_and_list_tree(
-            zip_bytes, max_files=MAX_ZIP_FILES, max_depth=MAX_TREE_DEPTH
+            zip_bytes,
+            stored_path=zip_path,
+            max_files=MAX_ZIP_FILES,
+            max_depth=MAX_TREE_DEPTH,
+            chunk_size=CHUNK_SIZE,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
+        logger.warning(str(e))
         raise HTTPException(
             status_code=422,
             detail=(
@@ -112,11 +121,6 @@ async def upload_files(
                 "It may be corrupt or use an unsupported format."
             ),
         ) from e
-
-    # Persist files if offline mode is enabled
-    storage_result = storage_service.store(zip_bytes, md_bytes, job_id)
-    stored_path = storage_result.get("stored_path")
-    logger.info(f"Files for job {job_id} stored in: {stored_path}")
 
     return UploadResponse(
         job_id=job_id,
