@@ -1,10 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import SQLModel
 
-
-class HealthResponse(SQLModel):
-    status: str
+from backend.models.upload import HealthResponse
 
 
 def create_app() -> FastAPI:
