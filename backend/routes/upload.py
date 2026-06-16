@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from backend.config import MAX_UPLOAD_SIZE_MB, MAX_ZIP_FILES, MAX_TREE_DEPTH
 from backend.models.upload import UploadResponse
 from backend.services.storage import StorageService
 from backend.utils.zip_utils import extract_and_list_tree
@@ -13,6 +14,7 @@ storage_service = StorageService()
 
 ALLOWED_ZIP_EXTENSIONS = {".zip"}
 ALLOWED_MARKDOWN_EXTENSIONS = {".md", ".markdown"}
+ZIP_MAGIC = b"PK\x03\x04"
 
 
 def _validate_extension(filename: str, allowed: set[str], label: str) -> None:
@@ -22,6 +24,31 @@ def _validate_extension(filename: str, allowed: set[str], label: str) -> None:
         raise HTTPException(
             status_code=422,
             detail=f"Invalid {label} file: '{filename}'. Expected extension: {', '.join(sorted(allowed))}",
+        )
+
+
+def _validate_zip_content(data: bytes, filename: str) -> None:
+    """Raise 422 if *data* does not start with the ZIP magic bytes."""
+    if not data.startswith(ZIP_MAGIC):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid zip file: '{filename}' does not appear to be a valid "
+                "ZIP archive."
+            ),
+        )
+
+
+def _validate_markdown_content(data: bytes, filename: str) -> None:
+    """Raise 422 if *data* cannot be decoded as UTF-8 text."""
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid markdown file: '{filename}' is not valid UTF-8 text."
+            ),
         )
 
 
@@ -50,10 +77,40 @@ async def upload_files(
     zip_bytes = await zip_file.read()
     md_bytes = await markdown_file.read()
 
+    # Check upload size
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(zip_bytes) > max_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Zip file exceeds the maximum allowed size of {MAX_UPLOAD_SIZE_MB} MB.",
+        )
+    if len(md_bytes) > max_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Markdown file exceeds the maximum allowed size of {MAX_UPLOAD_SIZE_MB} MB.",
+        )
+
+    # Validate actual content (not just file extension)
+    _validate_zip_content(zip_bytes, zip_file.filename)
+    _validate_markdown_content(md_bytes, markdown_file.filename)
+
     job_id = _generate_job_id()
 
     # Extract zip and build directory tree
-    tree, tree_text = extract_and_list_tree(zip_bytes)
+    try:
+        tree, tree_text = extract_and_list_tree(
+            zip_bytes, max_files=MAX_ZIP_FILES, max_depth=MAX_TREE_DEPTH
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Failed to process the uploaded zip archive. "
+                "It may be corrupt or use an unsupported format."
+            ),
+        )
 
     # Persist files if offline mode is enabled
     storage_result = storage_service.store(zip_bytes, md_bytes, job_id)

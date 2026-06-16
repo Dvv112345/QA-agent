@@ -55,7 +55,7 @@ class StorageService:
         with open(zip_path, "wb") as fh:
             fh.write(zip_bytes)
         with open(md_path, "w", encoding="utf-8") as fh:
-            fh.write(md_bytes.decode("utf-8"))
+            fh.write(md_bytes.decode("utf-8", errors="replace"))
 
         logger.info("Stored upload %s → %s", job_id, job_dir)
 

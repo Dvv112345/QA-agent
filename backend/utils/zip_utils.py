@@ -13,8 +13,11 @@ _TREE_PIPE = "|   "
 _TREE_SPACE = "    "
 
 
-def _simple_tree_text(entries: list[str]) -> str:
-    """Build a human-readable indented tree from a sorted list of relative paths."""
+def _simple_tree_text(entries: list[str], max_depth: int = 100) -> str:
+    """Build a human-readable indented tree from a sorted list of relative paths.
+
+    Raises ``ValueError`` if the directory nesting exceeds *max_depth*.
+    """
     if not entries:
         return ""
 
@@ -28,7 +31,12 @@ def _simple_tree_text(entries: list[str]) -> str:
                 node[part] = {}
             node = node[part]
 
-    def render(node: dict, is_last: list[bool]) -> list[str]:
+    def render(node: dict, is_last: list[bool], depth: int = 0) -> list[str]:
+        if depth > max_depth:
+            raise ValueError(
+                f"Maximum tree depth ({max_depth}) exceeded. "
+                "The archive may contain excessively nested directories."
+            )
         lines: list[str] = []
         keys = list(node.keys())
         for i, key in enumerate(keys):
@@ -39,13 +47,15 @@ def _simple_tree_text(entries: list[str]) -> str:
                 indent += _TREE_SPACE if was_last else _TREE_PIPE
             lines.append(f"{indent}{connector}{key}")
             if node[key]:
-                lines.extend(render(node[key], is_last + [last]))
+                lines.extend(render(node[key], is_last + [last], depth + 1))
         return lines
 
-    return "\n".join(render(root, []))
+    return "\n".join(render(root, [], 0))
 
 
-def extract_and_list_tree(zip_bytes: bytes) -> tuple[list[str], str]:
+def extract_and_list_tree(
+    zip_bytes: bytes, max_files: int = 10_000, max_depth: int = 100
+) -> tuple[list[str], str]:
     """Extract a zip archive to a temp directory and return its directory tree.
 
     Returns a tuple of ``(tree_list, tree_text)`` where *tree_list* is a
@@ -55,6 +65,9 @@ def extract_and_list_tree(zip_bytes: bytes) -> tuple[list[str], str]:
     The zip is extracted to a temporary directory that is cleaned up
     immediately after the tree is built (callers that need the extracted
     files should use a different path).
+
+    Raises ``ValueError`` if the archive contains more than *max_files*
+    entries or if the directory nesting exceeds *max_depth*.
     """
     tree: list[str] = []
 
@@ -62,7 +75,14 @@ def extract_and_list_tree(zip_bytes: bytes) -> tuple[list[str], str]:
         tmpdir_real = os.path.realpath(tmpdir)
 
         with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
-            for member in zf.infolist():
+            entries = zf.infolist()
+            if len(entries) > max_files:
+                raise ValueError(
+                    f"Zip archive contains {len(entries)} entries, "
+                    f"which exceeds the limit of {max_files}."
+                )
+
+            for member in entries:
                 target = os.path.realpath(os.path.join(tmpdir, member.filename))
 
                 # --- Zip-slip protection ---
@@ -96,5 +116,5 @@ def extract_and_list_tree(zip_bytes: bytes) -> tuple[list[str], str]:
                 for dn in sorted(dirnames):
                     tree.append(f"{rel.replace(os.sep, '/')}/{dn}/")
 
-    tree_text = _simple_tree_text([t.rstrip("/") for t in tree])
+    tree_text = _simple_tree_text([t.rstrip("/") for t in tree], max_depth=max_depth)
     return tree, tree_text
