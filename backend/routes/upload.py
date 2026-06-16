@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -11,6 +12,8 @@ from backend.utils.zip_utils import extract_and_list_tree
 router = APIRouter()
 
 storage_service = StorageService()
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_ZIP_EXTENSIONS = {".zip"}
 ALLOWED_MARKDOWN_EXTENSIONS = {".md", ".markdown"}
@@ -71,22 +74,22 @@ async def upload_files(
     _validate_extension(zip_file.filename, ALLOWED_ZIP_EXTENSIONS, "zip")
     _validate_extension(markdown_file.filename, ALLOWED_MARKDOWN_EXTENSIONS, "markdown")
 
-    # Read file contents into memory
-    zip_bytes = await zip_file.read()
-    md_bytes = await markdown_file.read()
-
     # Check upload size
     max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    if len(zip_bytes) > max_bytes:
+    if zip_file.size > max_bytes:
         raise HTTPException(
             status_code=422,
             detail=f"Zip file exceeds the maximum allowed size of {MAX_UPLOAD_SIZE_MB} MB.",
         )
-    if len(md_bytes) > max_bytes:
+    if markdown_file.size > max_bytes:
         raise HTTPException(
             status_code=422,
             detail=f"Markdown file exceeds the maximum allowed size of {MAX_UPLOAD_SIZE_MB} MB.",
         )
+
+    # Read file contents into memory
+    zip_bytes = await zip_file.read()
+    md_bytes = await markdown_file.read()
 
     # Validate actual content (not just file extension)
     _validate_zip_content(zip_bytes, zip_file.filename)
@@ -113,6 +116,7 @@ async def upload_files(
     # Persist files if offline mode is enabled
     storage_result = storage_service.store(zip_bytes, md_bytes, job_id)
     stored_path = storage_result.get("stored_path")
+    logger.info(f"Files for job {job_id} stored in: {stored_path}")
 
     return UploadResponse(
         job_id=job_id,
@@ -121,6 +125,5 @@ async def upload_files(
         markdown_filename=markdown_file.filename,
         tree=tree,
         tree_text=tree_text,
-        stored_path=stored_path,
         error=None,
     )

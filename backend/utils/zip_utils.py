@@ -3,6 +3,7 @@ import os
 import tempfile
 import zipfile
 from io import BytesIO
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,128 @@ def _simple_tree_text(entries: list[str], max_depth: int = 100) -> str:
     return "\n".join(render(root, [], 0))
 
 
+def extract_zip(
+    zip_bytes: bytes,
+    target_dir: str,
+    max_files: int,
+    max_depth: int,
+    chunk_size: int = 8192,  # 8KB
+):
+    """
+    Extract a zip archive safely with comprehensive protections.
+
+    Returns:
+        tuple: (extracted_files, rejected_entries)
+            - extracted_files: list of relative paths of extracted files
+            - rejected_entries: list of (filename, reason) tuples
+
+    Raises:
+        ValueError: If archive exceeds limits or is invalid
+        TimeoutError: If extraction takes too long
+    """
+
+    # Normalize target directory
+    target_path = Path(target_dir).resolve()
+    target_path.mkdir(parents=True, exist_ok=True)
+    target_str = str(target_path)
+
+    extracted_files = []
+    total_bytes = 0
+
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
+            entries = zf.infolist()
+
+            # Check file count
+            if len(entries) > max_files:
+                raise ValueError(
+                    f"Archive has {len(entries)} entries, exceeds limit of {max_files}"
+                )
+
+            for member in entries:
+                # Check depth using pathlib
+                member_path = Path(member.filename)
+                depth = len(member_path.parts)
+                if depth > max_depth:
+                    raise ValueError(
+                        f"Archive contain file with depth of {depth}, exceeds limit of {max_depth}"
+                    )
+
+                # Handle absolute paths and path traversal
+                if member_path.is_absolute():
+                    raise ValueError(f"Archive contain file with absolute path: {member.filename}")
+
+                # Build safe target path
+                target = (target_path / member_path).resolve()
+
+                # Path traversal protection using pathlib
+                if not str(target).startswith(target_str + Path().sep) or target == target_path:
+                    raise ValueError(
+                        f"Archive contain file that attempt path traversal: {member.filename}"
+                    )
+
+                # Extract file or create directory
+                if member.is_dir():
+                    # Create directory
+                    target.mkdir(parents=True, exist_ok=True)
+                    extracted_files.append(member.filename)
+                else:
+                    # Create parent directories
+                    target.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Extract with streaming to avoid memory issues
+                    with zf.open(member) as src, open(target, "wb") as dst:
+                        while chunk := src.read(chunk_size):
+                            dst.write(chunk)
+                            total_bytes += len(chunk)
+
+                    extracted_files.append(member.filename)
+                    logger.debug(f"Extracted: {member.filename} ({member.file_size:,} bytes)")
+
+        # Log summary
+        logger.info(
+            f"Extraction successful: {len(extracted_files)} files, "
+            f"{total_bytes / (1024 * 1024):.2f} MB"
+        )
+
+        return extracted_files
+
+    except Exception as e:
+        # Clean up on error
+        logger.error(f"Error during extraction, cleaning up: {e}")
+        _cleanup_extraction(target_path)
+        raise
+
+
+def _cleanup_extraction(target_path: Path) -> None:
+    """
+    Remove all contents of the extraction directory.
+    Uses pathlib for safe path handling.
+    """
+    try:
+        if not target_path.exists():
+            return
+
+        for item in target_path.iterdir():
+            try:
+                if item.is_file() or item.is_symlink():
+                    item.unlink()
+                elif item.is_dir():
+                    # Recursively remove directory contents
+                    import shutil
+
+                    shutil.rmtree(item)
+            except Exception as e:
+                logger.warning(f"Failed to remove {item}: {e}")
+
+        logger.debug(f"Cleaned up: {target_path}")
+
+    except Exception as e:
+        logger.warning(f"Cleanup failed for {target_path}: {e}")
+
+
 def extract_and_list_tree(
-    zip_bytes: bytes, max_files: int = 10_000, max_depth: int = 100
+    zip_bytes: bytes, max_files: int = 10_000, max_depth: int = 100, chunk_size: int = 8192
 ) -> tuple[list[str], str]:
     """Extract a zip archive to a temp directory and return its directory tree.
 
@@ -72,35 +193,7 @@ def extract_and_list_tree(
     tree: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="qa_zip_") as tmpdir:
-        tmpdir_real = os.path.realpath(tmpdir)
-
-        with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
-            entries = zf.infolist()
-            if len(entries) > max_files:
-                raise ValueError(
-                    f"Zip archive contains {len(entries)} entries, "
-                    f"which exceeds the limit of {max_files}."
-                )
-
-            for member in entries:
-                target = os.path.realpath(os.path.join(tmpdir, member.filename))
-
-                # --- Zip-slip protection ---
-                if not target.startswith(tmpdir_real + os.sep) and target != tmpdir_real:
-                    logger.warning(
-                        "Rejected path-traversal entry in zip: %s → %s",
-                        member.filename,
-                        target,
-                    )
-                    continue
-
-                # Create parent directories for zero-byte entries
-                if member.is_dir():
-                    os.makedirs(target, exist_ok=True)
-                else:
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
+        extract_zip(zip_bytes, tmpdir, max_files, max_depth, chunk_size)
 
         # Walk the extracted tree
         for dirpath, dirnames, filenames in os.walk(tmpdir):

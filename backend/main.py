@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.exceptions import HTTPException
 
 from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE, VERSION
 from backend.models.types import HealthResponse
@@ -61,7 +61,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        if isinstance(exc, StarletteHTTPException):
+        if isinstance(exc, HTTPException):
             raise exc
         logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
         return JSONResponse(
