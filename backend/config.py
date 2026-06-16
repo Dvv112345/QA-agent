@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 
 def _get_bool(key: str, default: bool = False) -> bool:
@@ -8,7 +7,7 @@ def _get_bool(key: str, default: bool = False) -> bool:
     return value == "true"
 
 
-def _get_optional_path(key: str) -> Optional[str]:
+def _get_optional_path(key: str) -> str | None:
     """Read an env var as a filesystem path, returning ``None`` when unset."""
     value = os.environ.get(key, "").strip()
     if not value:
@@ -36,7 +35,7 @@ def _get_list(key: str, default: list[str]) -> list[str]:
 
 
 STORE_OFFLINE: bool = _get_bool("STORE_OFFLINE")
-STORAGE_LOCATION: Optional[str] = _get_optional_path("STORAGE_LOCATION")
+STORAGE_LOCATION: str | None = _get_optional_path("STORAGE_LOCATION")
 MAX_UPLOAD_SIZE_MB: int = _get_int("MAX_UPLOAD_SIZE_MB", 100)
 MAX_ZIP_FILES: int = _get_int("MAX_ZIP_FILES", 10_000)
 MAX_TREE_DEPTH: int = _get_int("MAX_TREE_DEPTH", 100)

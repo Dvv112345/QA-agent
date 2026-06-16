@@ -10,3 +10,4 @@ uploads/
 *.egg-info/
 dist/
 build/
+.vscode

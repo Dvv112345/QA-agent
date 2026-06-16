@@ -1,5 +1,3 @@
-from typing import Optional
-
 from sqlmodel import SQLModel
 
 
@@ -15,5 +13,4 @@ class UploadResponse(SQLModel):
     markdown_filename: str
     tree: list[str]
     tree_text: str
-    stored_path: Optional[str] = None
-    error: Optional[str] = None
+    error: str | None = None

@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from backend.config import MAX_UPLOAD_SIZE_MB, MAX_ZIP_FILES, MAX_TREE_DEPTH
-from backend.models.upload import UploadResponse
+from backend.config import MAX_TREE_DEPTH, MAX_UPLOAD_SIZE_MB, MAX_ZIP_FILES
+from backend.models.types import UploadResponse
 from backend.services.storage import StorageService
 from backend.utils.zip_utils import extract_and_list_tree
 
@@ -23,7 +23,10 @@ def _validate_extension(filename: str, allowed: set[str], label: str) -> None:
     if not any(lower.endswith(ext) for ext in allowed):
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid {label} file: '{filename}'. Expected extension: {', '.join(sorted(allowed))}",
+            detail=(
+                f"Invalid {label} file: '{filename}'. "
+                f"Expected extension: {', '.join(sorted(allowed))}"
+            ),
         )
 
 
@@ -32,10 +35,7 @@ def _validate_zip_content(data: bytes, filename: str) -> None:
     if not data.startswith(ZIP_MAGIC):
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"Invalid zip file: '{filename}' does not appear to be a valid "
-                "ZIP archive."
-            ),
+            detail=(f"Invalid zip file: '{filename}' does not appear to be a valid ZIP archive."),
         )
 
 
@@ -43,13 +43,11 @@ def _validate_markdown_content(data: bytes, filename: str) -> None:
     """Raise 422 if *data* cannot be decoded as UTF-8 text."""
     try:
         data.decode("utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"Invalid markdown file: '{filename}' is not valid UTF-8 text."
-            ),
-        )
+            detail=(f"Invalid markdown file: '{filename}' is not valid UTF-8 text."),
+        ) from e
 
 
 def _generate_job_id() -> str:
@@ -101,16 +99,16 @@ async def upload_files(
         tree, tree_text = extract_and_list_tree(
             zip_bytes, max_files=MAX_ZIP_FILES, max_depth=MAX_TREE_DEPTH
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception:
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except Exception as e:
         raise HTTPException(
             status_code=422,
             detail=(
                 "Failed to process the uploaded zip archive. "
                 "It may be corrupt or use an unsupported format."
             ),
-        )
+        ) from e
 
     # Persist files if offline mode is enabled
     storage_result = storage_service.store(zip_bytes, md_bytes, job_id)

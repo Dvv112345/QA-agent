@@ -35,9 +35,7 @@ class StorageService:
     def offline(self) -> bool:
         return self._offline
 
-    def store(
-        self, zip_bytes: bytes, md_bytes: bytes, job_id: str
-    ) -> dict:
+    def store(self, zip_bytes: bytes, md_bytes: bytes, job_id: str) -> dict:
         """Persist files to disk if offline mode is active.
 
         Returns a dict with storage metadata suitable for merging into

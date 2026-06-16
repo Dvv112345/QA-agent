@@ -6,8 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.config import CORS_ORIGINS, STORE_OFFLINE, STORAGE_LOCATION
-from backend.models.upload import HealthResponse
+from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE
+from backend.models.types import HealthResponse
 from backend.routes.upload import router as upload_router
 
 logger = logging.getLogger(__name__)
@@ -63,9 +63,7 @@ def create_app() -> FastAPI:
     async def global_exception_handler(request: Request, exc: Exception):
         if isinstance(exc, StarletteHTTPException):
             raise exc
-        logger.exception(
-            "Unhandled exception on %s %s", request.method, request.url.path
-        )
+        logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error"},
@@ -83,6 +81,7 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
 
 def cli():
     """Entry point for the ``qa-agent`` console script."""
