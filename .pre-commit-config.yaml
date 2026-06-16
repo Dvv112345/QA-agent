@@ -10,7 +10,7 @@ repos:
 
       - id: ruff-format
         name: ruff (format)
-        entry: ruff format --check
+        entry: ruff format
         language: system
         types: [python]
 
