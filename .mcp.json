@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "code-review-graph": {
+      "command": "uvx",
+      "args": ["code-review-graph", "serve"]
+    },
+    "github": {
+      "type": "stdio",
+      "command": "github-mcp-server",
+      "args": ["stdio"]
+    }
+  }
+}
