@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.models.upload import HealthResponse
+from backend.routes.upload import router as upload_router
 
 
 def create_app() -> FastAPI:
@@ -14,6 +15,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.include_router(upload_router, prefix="/api")
 
     @app.get("/api/health", response_model=HealthResponse)
     async def health_check():
