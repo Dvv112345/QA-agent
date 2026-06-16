@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from backend.models.upload import UploadResponse
+from backend.services.storage import StorageService
 from backend.utils.zip_utils import extract_and_list_tree
 
 router = APIRouter()
+
+storage_service = StorageService()
 
 ALLOWED_ZIP_EXTENSIONS = {".zip"}
 ALLOWED_MARKDOWN_EXTENSIONS = {".md", ".markdown"}
@@ -52,7 +55,10 @@ async def upload_files(
     # Extract zip and build directory tree
     tree, tree_text = extract_and_list_tree(zip_bytes)
 
-    # Storage is handled in a later phase.
+    # Persist files if offline mode is enabled
+    storage_result = storage_service.store(zip_bytes, md_bytes, job_id)
+    stored_path = storage_result.get("stored_path")
+
     return UploadResponse(
         job_id=job_id,
         status="received",
@@ -60,6 +66,6 @@ async def upload_files(
         markdown_filename=markdown_file.filename,
         tree=tree,
         tree_text=tree_text,
-        stored_path=None,
+        stored_path=stored_path,
         error=None,
     )

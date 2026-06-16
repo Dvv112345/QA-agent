@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 
 def _get_bool(key: str, default: bool = False) -> bool:
@@ -7,11 +8,13 @@ def _get_bool(key: str, default: bool = False) -> bool:
     return value == "true"
 
 
-def _get_path(key: str, default: str = "./uploads") -> str:
-    """Read an env var as a filesystem path, normalising trailing slashes."""
-    value = os.environ.get(key, default).strip()
+def _get_optional_path(key: str) -> Optional[str]:
+    """Read an env var as a filesystem path, returning ``None`` when unset."""
+    value = os.environ.get(key, "").strip()
+    if not value:
+        return None
     return os.path.normpath(value)
 
 
 STORE_OFFLINE: bool = _get_bool("STORE_OFFLINE")
-STORAGE_LOCATION: str = _get_path("STORAGE_LOCATION", "./uploads")
+STORAGE_LOCATION: Optional[str] = _get_optional_path("STORAGE_LOCATION")
