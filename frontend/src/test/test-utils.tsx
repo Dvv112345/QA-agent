@@ -1,9 +1,19 @@
 import { type RenderOptions, render } from '@testing-library/react'
 import { type ReactElement } from 'react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, type MemoryRouterProps } from 'react-router-dom'
 
-function renderWithRouter(ui: ReactElement, options?: RenderOptions) {
-  return render(ui, { wrapper: MemoryRouter, ...options })
+interface RenderWithRouterOptions extends RenderOptions {
+  initialEntries?: MemoryRouterProps['initialEntries']
+}
+
+function renderWithRouter(ui: ReactElement, options?: RenderWithRouterOptions) {
+  const { initialEntries, ...renderOptions } = options ?? {}
+
+  function Wrapper({ children }: { children: React.ReactNode }) {
+    return <MemoryRouter initialEntries={initialEntries}>{children}</MemoryRouter>
+  }
+
+  return render(ui, { wrapper: Wrapper, ...renderOptions })
 }
 
 export { renderWithRouter }
