@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 def _get_bool(key: str, default: bool = False) -> bool:
     """Read an env var as a strict boolean: only the exact string ``"true"`` is truthy."""
     value = os.environ.get(key, "").strip().lower()
+    if not value:
+        return default
     return value == "true"
 
 

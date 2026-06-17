@@ -97,36 +97,35 @@ def extract_zip(
                 )
 
             for member in entries:
-                # Check depth using pathlib
                 member_path = Path(member.filename)
-                parts = member_path.parts
-                should_ignore = False
-                for part in parts:
-                    if part.startswith(".") or part in _IGNORE_FOLDERS:
-                        should_ignore = True
-                        break
 
-                if should_ignore:
-                    continue
+                # ── Security: absolute path detection ──────────────────
+                if member_path.is_absolute():
+                    raise ValueError(f"Archive contain file with absolute path: {member.filename}")
 
+                # ── Security: path traversal detection ─────────────────
+                target = (target_path / member_path).resolve()
+                if not str(target).startswith(target_str + os.sep) or target == target_path:
+                    raise ValueError(
+                        f"Archive contain file that attempt path traversal: {member.filename}"
+                    )
+
+                # ── Depth check ────────────────────────────────────────
                 depth = len(member_path.parts)
                 if depth > max_depth:
                     raise ValueError(
                         f"Archive contain file with depth of {depth}, exceeds limit of {max_depth}"
                     )
 
-                # Handle absolute paths and path traversal
-                if member_path.is_absolute():
-                    raise ValueError(f"Archive contain file with absolute path: {member.filename}")
+                # ── Filter hidden / ignored directories ────────────────
+                should_ignore = False
+                for part in member_path.parts:
+                    if part.startswith(".") or part in _IGNORE_FOLDERS:
+                        should_ignore = True
+                        break
 
-                # Build safe target path
-                target = (target_path / member_path).resolve()
-
-                # Path traversal protection using pathlib
-                if not str(target).startswith(target_str + os.sep) or target == target_path:
-                    raise ValueError(
-                        f"Archive contain file that attempt path traversal: {member.filename}"
-                    )
+                if should_ignore:
+                    continue
 
                 # Extract file or create directory
                 if member.is_dir():

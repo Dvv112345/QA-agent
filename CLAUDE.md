@@ -212,7 +212,7 @@ All staged files are auto-formatted and linted before commit:
 
 7. **Frontend linting**: ESLint runs in the pre-commit hook but can also be run manually via `npm run lint`. The config uses the flat config format with TypeScript-ESLint.
 
-8. **No test suite yet**: There are currently no automated tests. When adding tests, place Python tests in a `tests/` directory at the repo root. Frontend tests must be colocated with the component they test — e.g., `Button.test.tsx` next to `Button.tsx`.
+8. **No test suite yet**: There are currently no automated tests. When adding tests, place Python tests in `backend/tests/` — colocated with the backend package. Frontend tests must be colocated with the component they test — e.g., `Button.test.tsx` next to `Button.tsx`.
 
 9. **CORS**: By default, the backend allows `http://localhost:5173` (Vite dev server). Configure via `CORS_ORIGINS` env var.
 
