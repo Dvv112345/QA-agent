@@ -93,6 +93,10 @@ QA-agent/
 ├── .gitignore                          # Git ignores: thoughts/, .env, __pycache__, venv/, uploads/, dist/
 ├── .claude/
 │   └── settings.local.json             # Local Claude Code permissions and enabled MCP servers
+├── .github/
+│   └── workflows/
+│       ├── backend_ci.yml              # Backend CI: lint + test on PRs to master
+│       └── frontend_ci.yml             # Frontend CI: lint + build + test on PRs to master
 ├── backend/
 │   ├── README.md                       # Backend-specific docs: quick start, env vars, API endpoints
 │   ├── requirements.txt                # Python dependencies: fastapi, uvicorn, python-multipart, sqlmodel, dotenv
@@ -124,27 +128,39 @@ QA-agent/
 │       └── zip_utils.py                # Safe zip extraction (path traversal protection, streaming I/O, tree rendering)
 ├── frontend/
 │   ├── README.md                       # Vite + React template README
-│   ├── .gitignore                      # Frontend-specific ignores: node_modules, dist, .vscode, .idea
-│   ├── package.json                    # Dependencies and scripts
+│   ├── .gitignore                      # Frontend-specific ignores: node_modules, dist, .vscode, .idea, .env
+│   ├── .env.example                    # Template: VITE_API_BASE=http://localhost:8000
+│   ├── package.json                    # Dependencies and scripts (dev, build, lint, test, preview)
 │   ├── .prettierrc                     # Prettier config: no semis, single quotes, trailing commas, 100 print width
 │   ├── eslint.config.js                # ESLint flat config: JS recommended, TS recommended, React hooks, React refresh
 │   ├── index.html                      # HTML entry point with <div id="root">
-│   ├── vite.config.ts                  # Vite config with @vitejs/plugin-react
+│   ├── vite.config.ts                  # Vite config + Vitest test block (jsdom, globals, setupFiles)
 │   ├── tsconfig.json                   # Root TS config — references tsconfig.app.json and tsconfig.node.json
 │   ├── tsconfig.app.json               # App TS config: ES2023, bundler mode, react-jsx, strict linting
 │   ├── tsconfig.node.json              # Node TS config: ES2023, bundler mode (for vite.config.ts)
 │   ├── public/
 │   │   ├── favicon.svg                 # Site favicon
-│   │   └── icons.svg                   # SVG sprite sheet for icons (documentation, social, GitHub, Discord, X, Bluesky)
+│   │   └── icons.svg                   # SVG sprite sheet
 │   └── src/
 │       ├── main.tsx                    # React entry point — renders <App /> into #root with StrictMode
-│       ├── App.tsx                     # Main app component — hero section, counter demo, docs/social links
-│       ├── App.css                     # App-level styles
-│       ├── index.css                   # Global reset/base styles
-│       └── assets/
-│           ├── hero.png                # Hero section background image
-│           ├── react.svg               # React logo
-│           └── vite.svg                # Vite logo
+│       ├── App.tsx                     # BrowserRouter + Routes: / → HomePage, /loading → LoadingPage
+│       ├── App.css                     # App-level styles (minimal — each page owns its layout)
+│       ├── App.test.tsx                # Route rendering tests (MemoryRouter + Routes, not wrapping App)
+│       ├── index.css                   # Global tokens (CSS custom props), reset, dark mode, typography
+│       ├── types.ts                    # Shared interfaces (UploadResponse matching backend models/types.py)
+│       ├── pages/
+│       │   ├── HomePage.tsx            # File selection + extension validation, no API call
+│       │   ├── HomePage.css
+│       │   ├── HomePage.test.tsx        # 6 tests — inputs, validation errors, navigation
+│       │   ├── LoadingPage.tsx          # API call, loading spinner, tree display, error + retry
+│       │   ├── LoadingPage.css
+│       │   └── LoadingPage.test.tsx     # 6 tests — loading, success, error, missing-state, nav
+│       ├── services/
+│       │   ├── api.ts                  # uploadFiles() — FormData + fetch, VITE_API_BASE env var
+│       │   └── api.test.ts             # 4 tests — mocked fetch (200, 422, network error, FormData)
+│       └── test/
+│           ├── setup.ts                # Vitest setup — @testing-library/jest-dom/vitest matchers
+│           └── test-utils.tsx           # renderWithRouter(ui, { initialEntries? }) — MemoryRouter wrapper
 ```
 
 ## Code Patterns
@@ -167,6 +183,38 @@ All backend config comes from environment variables, loaded via `python-dotenv` 
 - **Vite with Oxc**: Uses `@vitejs/plugin-react` which leverages Oxc for fast transforms.
 - **StrictMode**: React StrictMode is enabled in `main.tsx`.
 
+#### Routing (React Router v7)
+
+- **Two-page app**: `BrowserRouter` + `Routes` in `App.tsx` maps `/` → `HomePage`, `/loading` → `LoadingPage`.
+- **File passing via route state**: `File` objects are structured-cloneable, so they survive `navigate('/loading', { state: { zipFile, mdFile } })`. No serialization needed.
+- **Missing-state guard**: LoadingPage checks for `state?.zipFile` / `state?.mdFile` and shows a fallback message with a link back to `/` if files are missing (direct navigation to `/loading`).
+
+#### API Layer
+
+- **Fetch + FormData**: Built-in browser APIs — no HTTP library. `FormData` with fields `zip_file` and `markdown_file` match backend `UploadFile` parameter names.
+- **API base via Vite env var**: `import.meta.env.VITE_API_BASE` (default `http://localhost:8000`). Define in `.env`, document in `.env.example`. Vite only exposes vars prefixed with `VITE_`.
+- **Error parsing**: 422 FastAPI validation errors return `{ detail: string | [{ msg: string }] }`. Parse both forms for user-friendly messages.
+
+#### Frontend Testing (Vitest + Testing Library)
+
+- **Config**: Vitest config lives inside `vite.config.ts` under the `test` key (no separate `vitest.config.ts`). Uses `jsdom` environment, `globals: true`, and a setup file that imports `@testing-library/jest-dom/vitest` matchers.
+- **Test utils**: `src/test/test-utils.tsx` exports `renderWithRouter(ui, { initialEntries? })` — wraps `render` with `MemoryRouter`. Pass `initialEntries` as `[{ pathname: '/loading', state: { ... } }]` to simulate route state.
+- **Tests colocated with source**: `api.test.ts` next to `api.ts`, `HomePage.test.tsx` next to `HomePage.tsx`, etc.
+- **API mocking**: Mock global `fetch` with `vi.spyOn(globalThis, 'fetch')` or mock the API module with `vi.mock('../services/api')`.
+- **Navigation assertions**: Mock `useNavigate` from `react-router-dom` with `vi.fn()`, or assert `<Link>` `href` attributes directly.
+
+### Common Gotchas
+
+| Gotcha                                  | Explanation                                                                                                                                  | Solution                                                                                                                                                     |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Nested Router error in tests**        | Wrapping `<App />` (which contains `<BrowserRouter>`) inside `<MemoryRouter>` throws "You cannot render a <Router> inside another <Router>." | Test routes directly: render `<MemoryRouter><Routes><Route path="/" element={<HomePage />} />...` instead of testing `<App />`.                              |
+| **MemoryRouter route state format**     | `initialEntries` must be `[{ pathname: '/loading', state: { ... } }]`, NOT `['/loading', { state: ... }]`.                                   | Always use the object form: `{ pathname: string, state?: unknown }`.                                                                                         |
+| **Box-drawing chars break `getByText`** | `├──`, `└──`, `│` in `tree_text` output aren't matched by Testing Library's text queries.                                                    | Use `document.querySelector('pre.tree-text')` and assert on `.textContent` instead.                                                                          |
+| **`useEffect` dep on `location.state`** | `location.state` is a new object reference every render, causing infinite effect re-runs.                                                    | Depend on specific state properties (`state?.zipFile`, `state?.mdFile`) instead of the whole `state` object. Add an eslint-disable comment with explanation. |
+| **Retry via `retryKey` counter**        | Calling `uploadFiles()` directly in a click handler duplicates logic and bypasses effect cleanup.                                            | Use a `retryKey` state counter as a useEffect dependency — increment it to re-trigger the effect.                                                            |
+| **CI `npm ci` fails on peer deps**      | `package-lock.json` can contain `"peer": true` markers that `npm ci` in a fresh environment rejects.                                         | Add `npm install --package-lock-only` step before `npm ci` in the CI workflow to normalize the lockfile.                                                     |
+| **`/// <reference types="vitest" />`**  | This triple-slash directive in `vite.config.ts` is unnecessary when Vitest provides its own types via the `test` config key.                 | Remove it — the `test` block in `defineConfig` is sufficient for TypeScript to infer Vitest types.                                                           |
+
 ### Pre-commit Quality Gates
 
 All staged files are auto-formatted and linted before commit:
@@ -174,6 +222,17 @@ All staged files are auto-formatted and linted before commit:
 - **Python**: Ruff lint (with auto-fix) + Ruff format
 - **Frontend**: Prettier + ESLint (with auto-fix)
 - **General**: trailing whitespace removal, EOF newlines, merge conflict detection, large file check (500KB), private key detection, YAML/TOML validation
+
+### CI/CD (GitHub Actions)
+
+Both workflows trigger on `pull_request` to `master`:
+
+| Workflow    | File                                | Steps                                                                                                        |
+| ----------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Backend CI  | `.github/workflows/backend_ci.yml`  | checkout → Python 3.13 → pip install (dev) → lint (Ruff) → test (pytest)                                     |
+| Frontend CI | `.github/workflows/frontend_ci.yml` | checkout → Node 22 + npm cache → sync lockfile → npm ci → lint (ESLint) → build (tsc + Vite) → test (Vitest) |
+
+**Frontend CI pattern**: Run `npm install --package-lock-only` before `npm ci` to normalize the lockfile — this prevents `npm ci` failures when the lockfile has peer dependency metadata from a different npm version.
 
 ### File Upload Flow
 
@@ -198,6 +257,8 @@ All staged files are auto-formatted and linted before commit:
 | `cd frontend && npm run dev`              | Start Vite dev server with HMR on port 5173   |
 | `cd frontend && npm run build`            | Type-check and build frontend for production  |
 | `cd frontend && npm run lint`             | Lint frontend with ESLint                     |
+| `cd frontend && npm test`                 | Run all frontend tests (Vitest)               |
+| `cd frontend && npm run test:watch`       | Run frontend tests in watch mode              |
 | `cd frontend && npm run preview`          | Preview production build locally              |
 | `pre-commit install`                      | Install git pre-commit hooks                  |
 | `pre-commit run --all-files`              | Run all pre-commit hooks on all files         |
@@ -242,7 +303,9 @@ All staged files are auto-formatted and linted before commit:
 
 7. **Frontend linting**: ESLint runs in the pre-commit hook but can also be run manually via `npm run lint`. The config uses the flat config format with TypeScript-ESLint.
 
-8. **Tests**: Backend tests live in `backend/tests/` and run with `pytest` via `python -m pytest -v`. Tests are colocated with the backend package. Dev dependencies (pytest, pytest-asyncio, httpx) are declared in `pyproject.toml` under `[project.optional-dependencies] dev`. Install with `pip install -e ".[dev]"`. CI runs on every PR to `master` via `.github/workflows/ci.yml`. Frontend tests don't exist yet — when added, colocate them with the component they test (e.g., `Button.test.tsx` next to `Button.tsx`).
+8. **Tests**:
+   - **Backend**: Tests live in `backend/tests/` and run with `pytest` via `python -m pytest -v`. Dev dependencies (pytest, pytest-asyncio, httpx) are declared in `pyproject.toml` under `[project.optional-dependencies] dev`. Install with `pip install -e ".[dev]"`. CI runs on every PR to `master` via `.github/workflows/backend_ci.yml`.
+   - **Frontend**: Tests live next to the component they test (`*.test.ts`/`*.test.tsx`). Run with `npm test` (Vitest). Uses `jsdom` environment, `@testing-library/react`, and `@testing-library/jest-dom` matchers. A shared `renderWithRouter` wrapper (in `src/test/test-utils.tsx`) provides `MemoryRouter` context to page components. CI runs on every PR to `master` via `.github/workflows/frontend_ci.yml` (checkout → Node 22 → npm ci → lint → build → test).
 
 9. **CORS**: By default, the backend allows `http://localhost:5173` (Vite dev server). Configure via `CORS_ORIGINS` env var.
 
