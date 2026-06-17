@@ -6,11 +6,11 @@ QA Agent is a full-stack application that accepts source code (zip archives) and
 
 ## Tech Stack
 
-| Layer     | Technology                                              |
-| --------- | ------------------------------------------------------- |
-| Backend   | Python 3.10+, FastAPI, Uvicorn, SQLModel, python-dotenv |
-| Frontend  | React 19, TypeScript 6, Vite 8, ESLint 10, Prettier 3   |
-| Dev tools | pre-commit (Ruff, Prettier, ESLint, general hooks)      |
+| Layer     | Technology                                                        |
+| --------- | ----------------------------------------------------------------- |
+| Backend   | Python 3.10+, FastAPI, Uvicorn, SQLModel, python-dotenv           |
+| Frontend  | React 19, TypeScript 6, Vite 8, ESLint 10, Prettier 3             |
+| Dev tools | pre-commit (Ruff, Prettier, ESLint, general hooks), pytest, httpx |
 
 ## Build and Test Commands
 
@@ -48,6 +48,24 @@ npm run lint
 npm run preview
 ```
 
+### Backend Tests (run from repo root)
+
+```bash
+# Install all dependencies including dev tools
+pip install -e ".[dev]"
+
+# Run all tests
+python -m pytest -v
+
+# Run a single test file
+python -m pytest backend/tests/test_upload.py -v
+
+# Run tests matching a keyword
+python -m pytest -k "health" -v
+```
+
+Test fixtures are in `backend/tests/conftest.py`. Tests use `pytest` with `pytest-asyncio` (`asyncio_mode = auto`) and `httpx` for async HTTP testing against the FastAPI app via `ASGITransport`. Sample files (`sample_zip.zip`, `sample_md.md`) live alongside the tests.
+
 ### Pre-commit hooks (run from repo root)
 
 ```bash
@@ -65,13 +83,12 @@ pre-commit run ruff --all-files
 pre-commit run prettier --all-files
 ```
 
-There are currently **no automated tests** in the project.
-
 ## Directory Structure
 
 ```
 QA-agent/
 ├── CLAUDE.md                           # This file — project guide for Claude Code
+├── pyproject.toml                       # Project metadata, dependencies (runtime + dev), pytest + ruff config
 ├── .pre-commit-config.yaml             # Pre-commit hooks: Ruff, Prettier, ESLint, general checks
 ├── .gitignore                          # Git ignores: thoughts/, .env, __pycache__, venv/, uploads/, dist/
 ├── .claude/
@@ -83,6 +100,16 @@ QA-agent/
 │   ├── .env                            # Actual environment variables (git-ignored)
 │   ├── main.py                         # FastAPI app factory, CORS, exception handlers, health endpoint, CLI entry point
 │   ├── config.py                       # Typed env-var helpers (_get_bool, _get_int, _get_list, _get_optional_path)
+│   ├── tests/
+│   │   ├── __init__.py
+│   │   ├── conftest.py                  # Fixtures: async_client, sample_zip_bytes, sample_md_bytes
+│   │   ├── sample_zip.zip               # Sample zip for upload tests
+│   │   ├── sample_md.md                 # Sample markdown for upload tests
+│   │   ├── test_config.py               # Config module tests
+│   │   ├── test_main.py                 # create_app, health, CORS, exception handler tests
+│   │   ├── test_routes.py               # Upload route tests
+│   │   ├── test_storage.py              # StorageService tests
+│   │   └── test_zip_utils.py            # Zip extraction and path traversal tests
 │   ├── models/
 │   │   ├── __init__.py
 │   │   └── types.py                    # SQLModel types: HealthResponse, UploadResponse
@@ -160,18 +187,21 @@ All staged files are auto-formatted and linted before commit:
 
 ## CLI Commands
 
-| Command                                   | Purpose                                      |
-| ----------------------------------------- | -------------------------------------------- |
-| `python -m backend.main`                  | Start the FastAPI dev server on port 8000    |
-| `pip install -r backend/requirements.txt` | Install/update Python dependencies           |
-| `cd frontend && npm install`              | Install/update frontend dependencies         |
-| `cd frontend && npm run dev`              | Start Vite dev server with HMR on port 5173  |
-| `cd frontend && npm run build`            | Type-check and build frontend for production |
-| `cd frontend && npm run lint`             | Lint frontend with ESLint                    |
-| `cd frontend && npm run preview`          | Preview production build locally             |
-| `pre-commit install`                      | Install git pre-commit hooks                 |
-| `pre-commit run --all-files`              | Run all pre-commit hooks on all files        |
-| `pre-commit run <hook-id> --all-files`    | Run a specific hook on all files             |
+| Command                                   | Purpose                                       |
+| ----------------------------------------- | --------------------------------------------- |
+| `python -m backend.main`                  | Start the FastAPI dev server on port 8000     |
+| `pip install -r backend/requirements.txt` | Install/update Python runtime dependencies    |
+| `pip install -e ".[dev]"`                 | Install Python dev dependencies (pytest, etc) |
+| `python -m pytest -v`                     | Run all backend tests                         |
+| `python -m pytest -k <keyword> -v`        | Run tests matching a keyword                  |
+| `cd frontend && npm install`              | Install/update frontend dependencies          |
+| `cd frontend && npm run dev`              | Start Vite dev server with HMR on port 5173   |
+| `cd frontend && npm run build`            | Type-check and build frontend for production  |
+| `cd frontend && npm run lint`             | Lint frontend with ESLint                     |
+| `cd frontend && npm run preview`          | Preview production build locally              |
+| `pre-commit install`                      | Install git pre-commit hooks                  |
+| `pre-commit run --all-files`              | Run all pre-commit hooks on all files         |
+| `pre-commit run <hook-id> --all-files`    | Run a specific hook on all files              |
 
 ## MCP Servers
 
@@ -212,7 +242,7 @@ All staged files are auto-formatted and linted before commit:
 
 7. **Frontend linting**: ESLint runs in the pre-commit hook but can also be run manually via `npm run lint`. The config uses the flat config format with TypeScript-ESLint.
 
-8. **No test suite yet**: There are currently no automated tests. When adding tests, place Python tests in `backend/tests/` — colocated with the backend package. Frontend tests must be colocated with the component they test — e.g., `Button.test.tsx` next to `Button.tsx`.
+8. **Tests**: Backend tests live in `backend/tests/` and run with `pytest` via `python -m pytest -v`. Tests are colocated with the backend package. Dev dependencies (pytest, pytest-asyncio, httpx) are declared in `pyproject.toml` under `[project.optional-dependencies] dev`. Install with `pip install -e ".[dev]"`. CI runs on every PR to `master` via `.github/workflows/ci.yml`. Frontend tests don't exist yet — when added, colocate them with the component they test (e.g., `Button.test.tsx` next to `Button.tsx`).
 
 9. **CORS**: By default, the backend allows `http://localhost:5173` (Vite dev server). Configure via `CORS_ORIGINS` env var.
 
