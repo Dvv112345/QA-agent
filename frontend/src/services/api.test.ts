@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { uploadFiles } from './api'
 import type { UploadResponse } from '../types'
 
@@ -20,6 +20,10 @@ const successResponse: UploadResponse = {
 }
 
 describe('uploadFiles', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('returns parsed UploadResponse on 200 with valid JSON', async () => {
     mockFetch(new Response(JSON.stringify(successResponse), { status: 200 }))
 

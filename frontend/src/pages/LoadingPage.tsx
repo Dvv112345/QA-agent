@@ -17,6 +17,7 @@ export default function LoadingPage() {
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading')
   const [result, setResult] = useState<UploadResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [retryKey, setRetryKey] = useState(0)
 
   useEffect(() => {
     if (!state?.zipFile || !state?.mdFile) {
@@ -46,7 +47,11 @@ export default function LoadingPage() {
     return () => {
       cancelled = true
     }
-  }, [state])
+    // state?.zipFile and state?.mdFile are the actual values the effect
+    // depends on. The full `state` object is a new reference every render
+    // (from location.state), so including it would cause unnecessary re-runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.zipFile, state?.mdFile, retryKey])
 
   // Missing state: user navigated directly to /loading
   if (!state?.zipFile || !state?.mdFile) {
@@ -111,19 +116,7 @@ export default function LoadingPage() {
                 setStatus('loading')
                 setError(null)
                 setResult(null)
-                // Re-trigger useEffect by forcing a re-render;
-                // the effect captures state which hasn't changed,
-                // so we use a remount trick via a key in a parent
-                // — simplest: just re-run upload.
-                uploadFiles(state.zipFile!, state.mdFile!)
-                  .then((data) => {
-                    setResult(data)
-                    setStatus('success')
-                  })
-                  .catch((err) => {
-                    setError(err instanceof Error ? err.message : 'Upload failed')
-                    setStatus('error')
-                  })
+                setRetryKey((k) => k + 1)
               }}
             >
               Retry

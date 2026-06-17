@@ -4,7 +4,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import HomePage from './pages/HomePage'
 import LoadingPage from './pages/LoadingPage'
 
-describe('App routing', () => {
+describe('Route → page mapping', () => {
   it('renders HomePage at route /', async () => {
     render(
       <MemoryRouter initialEntries={['/']}>

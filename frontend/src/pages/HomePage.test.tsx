@@ -94,7 +94,7 @@ describe('HomePage', () => {
 
     expect(getSubmitButton()).not.toBeDisabled()
 
-    fireEvent.click(getSubmitButton())
+    await fireEvent.click(getSubmitButton())
 
     expect(mockNavigate).toHaveBeenCalledWith('/loading', {
       state: { zipFile: zip, mdFile: md },

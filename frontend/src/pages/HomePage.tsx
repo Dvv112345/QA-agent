@@ -33,26 +33,15 @@ export default function HomePage() {
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
 
-    // Validate both files are present and have correct extensions
-    let valid = true
-
+    // Trigger field-level messages for missing files (extension errors are
+    // already caught by the per-input change handlers).
     if (!zipFile) {
       setZipError('Please select a .zip file')
-      valid = false
-    } else if (!zipFile.name.endsWith('.zip')) {
-      setZipError('Expected .zip file')
-      valid = false
     }
-
     if (!mdFile) {
       setMdError('Please select a .md or .markdown file')
-      valid = false
-    } else if (!mdFile.name.endsWith('.md') && !mdFile.name.endsWith('.markdown')) {
-      setMdError('Expected .md or .markdown file')
-      valid = false
     }
-
-    if (!valid) return
+    if (!canSubmit) return
 
     navigate('/loading', { state: { zipFile, mdFile } })
   }
