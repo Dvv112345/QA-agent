@@ -8,11 +8,10 @@
 }
 
 .home-page h1 {
-  margin-bottom: 8px;
+  margin-bottom: 25px;
 }
 
 .subtitle {
-  max-width: 480px;
   margin-bottom: 40px;
   color: var(--text);
 }
