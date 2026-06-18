@@ -160,15 +160,36 @@ class TestExtractAndListTree:
 
     def test_returns_tree_list_and_text(self):
         zip_bytes = self._make_zip({"README.md": "# Hi", "src/app.py": "print(1)"})
-        tree_list, tree_text = extract_and_list_tree(
+        tree_list, tree_text, files = extract_and_list_tree(
             zip_bytes, stored_path=None, max_files=100, max_depth=10, chunk_size=8192
         )
         assert isinstance(tree_list, list)
         assert isinstance(tree_text, str)
+        assert isinstance(files, list)
         assert "README.md" in tree_list
         assert "src/app.py" in tree_list
         assert "README.md" in tree_text
         assert "app.py" in tree_text
+
+    def test_files_list_contains_only_file_paths(self):
+        """The *files* return value excludes directory entries (no trailing ``/``)."""
+        zip_bytes = self._make_zip(
+            {
+                "README.md": "# Hi",
+                "src/app.py": "print(1)",
+                "src/utils/helpers.py": "def f(): pass",
+            }
+        )
+        _tree, _text, files = extract_and_list_tree(
+            zip_bytes, stored_path=None, max_files=100, max_depth=10, chunk_size=8192
+        )
+        assert "README.md" in files
+        assert "src/app.py" in files
+        assert "src/utils/helpers.py" in files
+        # Directory entries must not appear in files
+        assert not any(f.endswith("/") for f in files)
+        assert not any(f == "src" for f in files)
+        assert not any(f == "src/utils" for f in files)
 
     def test_stored_path_variant(self, tmp_path):
         """When stored_path is provided, read tree from disk instead of extracting."""
@@ -176,19 +197,21 @@ class TestExtractAndListTree:
         target = str(tmp_path / "stored")
         extract_zip(zip_bytes, target, max_files=100, max_depth=10, chunk_size=8192)
 
-        tree_list, tree_text = extract_and_list_tree(
+        tree_list, tree_text, files = extract_and_list_tree(
             zip_bytes, stored_path=target, max_files=100, max_depth=10, chunk_size=8192
         )
         assert "a.txt" in tree_list
         assert "a.txt" in tree_text
+        assert "a.txt" in files
 
     def test_empty_archive(self):
         zip_bytes = self._make_zip({})
-        tree_list, tree_text = extract_and_list_tree(
+        tree_list, tree_text, files = extract_and_list_tree(
             zip_bytes, stored_path=None, max_files=100, max_depth=10, chunk_size=8192
         )
         assert tree_list == []
         assert tree_text == ""
+        assert files == []
 
 
 class TestCleanupExtraction:

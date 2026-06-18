@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { uploadFiles } from './api'
-import type { UploadResponse } from '../types'
+import { fetchJobStatus, uploadFiles } from './api'
+import type { JobStatusResponse, UploadResponse } from '../types'
 
 function mockFetch(response: Response) {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(response)
@@ -16,6 +16,7 @@ const successResponse: UploadResponse = {
   markdown_filename: 'test.md',
   tree: ['test/', 'test/main.py'],
   tree_text: 'test/\n└── main.py',
+  word_count_enqueued: false,
   error: null,
 }
 
@@ -55,5 +56,57 @@ describe('uploadFiles', () => {
 
     expect(body.get('zip_file')).toBe(fakeZip)
     expect(body.get('markdown_file')).toBe(fakeMd)
+  })
+})
+
+describe('fetchJobStatus', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns JobStatusResponse on 200', async () => {
+    const jobData: JobStatusResponse = {
+      job_id: 'job-1',
+      status: 'finished',
+      total_files: 3,
+      processed_files: 3,
+      md_result: { file: 'requirements.md', words: 42 },
+      zip_results: [{ file: 'main.py', words: 10 }],
+      total_words: 52,
+      error: null,
+    }
+    mockFetch(new Response(JSON.stringify(jobData), { status: 200 }))
+
+    const result = await fetchJobStatus('job-1')
+    expect(result).toEqual(jobData)
+    expect(result.total_words).toBe(52)
+  })
+
+  it('throws on non-200 response', async () => {
+    mockFetch(new Response('Not found', { status: 404 }))
+
+    await expect(fetchJobStatus('bad-id')).rejects.toThrow('Job status request failed (404)')
+  })
+
+  it('calls the correct endpoint URL', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          job_id: 'job-2',
+          status: 'queued',
+          total_files: 0,
+          processed_files: 0,
+          md_result: null,
+          zip_results: null,
+          total_words: null,
+          error: null,
+        }),
+        { status: 200 },
+      ),
+    )
+
+    await fetchJobStatus('job-2')
+    const [url] = fetchSpy.mock.calls[0]
+    expect(url).toContain('/api/jobs/job-2/status')
   })
 })

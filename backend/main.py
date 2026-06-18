@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException
 
 from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE, VERSION
 from backend.models.types import HealthResponse
+from backend.routes.jobs import router as jobs_router
 from backend.routes.upload import router as upload_router
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(upload_router, prefix="/api")
+    app.include_router(jobs_router, prefix="/api")
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.

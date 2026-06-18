@@ -1,4 +1,4 @@
-import type { UploadResponse } from '../types'
+import type { JobStatusResponse, UploadResponse } from '../types'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -30,4 +30,14 @@ export async function uploadFiles(zipFile: File, mdFile: File): Promise<UploadRe
   }
 
   return response.json() as Promise<UploadResponse>
+}
+
+export async function fetchJobStatus(jobId: string): Promise<JobStatusResponse> {
+  const response = await fetch(`${API_BASE}/api/jobs/${jobId}/status`)
+
+  if (!response.ok) {
+    throw new Error(`Job status request failed (${response.status})`)
+  }
+
+  return response.json() as Promise<JobStatusResponse>
 }

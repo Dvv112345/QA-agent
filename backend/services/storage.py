@@ -12,6 +12,12 @@ from backend.utils.zip_utils import extract_zip
 
 logger = logging.getLogger(__name__)
 
+# Directory name where extracted zip contents are placed inside the job folder.
+ZIP_SOURCE_DIR = "zip_source"
+
+# Filename for the stored requirements document inside the job folder.
+REQUIREMENTS_FILENAME = "requirements.md"
+
 
 class StorageService:
     """Handles conditional persistence of uploaded files.
@@ -54,8 +60,8 @@ class StorageService:
         job_dir = os.path.join(self._base, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
-        zip_path = os.path.join(job_dir, "zip_source")
-        md_path = os.path.join(job_dir, "requirements.md")
+        zip_path = os.path.join(job_dir, ZIP_SOURCE_DIR)
+        md_path = os.path.join(job_dir, REQUIREMENTS_FILENAME)
         extract_zip(zip_bytes, zip_path, MAX_ZIP_FILES, MAX_TREE_DEPTH, CHUNK_SIZE)
         with open(md_path, "w", encoding="utf-8") as fh:
             fh.write(md_bytes.decode("utf-8", errors="replace"))

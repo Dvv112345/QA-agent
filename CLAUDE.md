@@ -6,11 +6,11 @@ QA Agent is a full-stack application that accepts source code (zip archives) and
 
 ## Tech Stack
 
-| Layer     | Technology                                                        |
-| --------- | ----------------------------------------------------------------- |
-| Backend   | Python 3.10+, FastAPI, Uvicorn, SQLModel, python-dotenv           |
-| Frontend  | React 19, TypeScript 6, Vite 8, ESLint 10, Prettier 3             |
-| Dev tools | pre-commit (Ruff, Prettier, ESLint, general hooks), pytest, httpx |
+| Layer     | Technology                                                         |
+| --------- | ------------------------------------------------------------------ |
+| Backend   | Python 3.10+, FastAPI, Uvicorn, SQLModel, python-dotenv, RQ, Redis |
+| Frontend  | React 19, TypeScript 6, Vite 8, ESLint 10, Prettier 3              |
+| Dev tools | pre-commit (Ruff, Prettier, ESLint, general hooks), pytest, httpx  |
 
 ## Build and Test Commands
 
@@ -22,6 +22,10 @@ pip install -r backend/requirements.txt
 
 # Start the API server (http://localhost:8000)
 python -m backend.main
+
+# Start the RQ worker (separate terminal, required for word-count processing)
+# Only needed when STORE_OFFLINE=true
+python -m backend.worker
 
 # Interactive API docs
 # Open http://localhost:8000/docs
@@ -99,32 +103,40 @@ QA-agent/
 │       └── frontend_ci.yml             # Frontend CI: lint + build + test on PRs to master
 ├── backend/
 │   ├── README.md                       # Backend-specific docs: quick start, env vars, API endpoints
-│   ├── requirements.txt                # Python dependencies: fastapi, uvicorn, python-multipart, sqlmodel, dotenv
+│   ├── requirements.txt                # Python dependencies: fastapi, uvicorn, python-multipart, sqlmodel, dotenv, rq, redis
 │   ├── .env.example                    # Template for environment variables with documentation
 │   ├── .env                            # Actual environment variables (git-ignored)
 │   ├── main.py                         # FastAPI app factory, CORS, exception handlers, health endpoint, CLI entry point
 │   ├── config.py                       # Typed env-var helpers (_get_bool, _get_int, _get_list, _get_optional_path)
+│   ├── tasks.py                        # RQ task functions (count_words_task — no circular imports)
+│   ├── worker.py                       # RQ worker CLI entry point (python -m backend.worker)
 │   ├── tests/
 │   │   ├── __init__.py
 │   │   ├── conftest.py                  # Fixtures: async_client, sample_zip_bytes, sample_md_bytes
 │   │   ├── sample_zip.zip               # Sample zip for upload tests
 │   │   ├── sample_md.md                 # Sample markdown for upload tests
 │   │   ├── test_config.py               # Config module tests
+│   │   ├── test_jobs.py                 # Job status endpoint tests
 │   │   ├── test_main.py                 # create_app, health, CORS, exception handler tests
+│   │   ├── test_queue.py                # QueueService tests
 │   │   ├── test_routes.py               # Upload route tests
 │   │   ├── test_storage.py              # StorageService tests
+│   │   ├── test_word_utils.py           # Word-count utility tests
 │   │   └── test_zip_utils.py            # Zip extraction and path traversal tests
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── types.py                    # SQLModel types: HealthResponse, UploadResponse
+│   │   └── types.py                    # SQLModel types: HealthResponse, UploadResponse, JobStatusResponse, FileWordCount
 │   ├── routes/
 │   │   ├── __init__.py
+│   │   ├── jobs.py                      # GET /api/jobs/{job_id}/status — word-count progress + results
 │   │   └── upload.py                   # POST /api/upload — accepts zip + markdown, validates, extracts, returns tree
 │   ├── services/
 │   │   ├── __init__.py
+│   │   ├── queue.py                     # QueueService — Redis-backed job queue (enqueue + status lookup)
 │   │   └── storage.py                  # StorageService — conditional disk persistence when STORE_OFFLINE=true
 │   └── utils/
 │       ├── __init__.py
+│       ├── word_utils.py                # is_text_file() + count_words_in_file() helpers
 │       └── zip_utils.py                # Safe zip extraction (path traversal protection, streaming I/O, tree rendering)
 ├── frontend/
 │   ├── README.md                       # Vite + React template README
@@ -239,30 +251,41 @@ Both workflows trigger on `pull_request` to `master`:
 1. Client POSTs zip + markdown to `/api/upload`
 2. Route validates extensions (`.zip`, `.md`/`.markdown`)
 3. Reads files into memory, validates magic bytes (ZIP header) and UTF-8 encoding
-4. Generates a job ID (`YYYYMMDD-HHMMSS-<6 hex chars>`)
+4. Generates a job ID (`YYYYMMDD-HHMMSS-<32 hex chars>`)
 5. If `STORE_OFFLINE=true`, persists to `STORAGE_LOCATION/<job_id>/`
-6. Extracts zip to temp directory (or reads from stored path), builds directory tree
-7. Returns `UploadResponse` with job_id, status, filenames, tree (list + text)
+6. Extracts zip to temp directory (or reads from stored path), builds directory tree + file-only path list
+7. If `STORE_OFFLINE=true` and files were persisted, enqueues a word-count RQ job (returns `word_count_enqueued=true`)
+8. Returns `UploadResponse` with job_id, status, filenames, tree (list + text), and `word_count_enqueued` flag
+
+### Word-Count Flow (RQ)
+
+1. Frontend receives `word_count_enqueued=true` → starts polling `GET /api/jobs/{job_id}/status` every 5s
+2. RQ worker picks up the `count_words_task` from the `qa-jobs` queue
+3. Worker counts words in markdown first, then each zip file (binary files → 0 words)
+4. Progress: `job.meta['processed_files']` incremented after each file; frontend computes `%` from `total_files`
+5. On completion: frontend displays two result sections — requirements document + source files table with totals
+6. Frontend stops polling when status is `finished`, `failed`, or `unknown`
 
 ## CLI Commands
 
-| Command                                   | Purpose                                       |
-| ----------------------------------------- | --------------------------------------------- |
-| `python -m backend.main`                  | Start the FastAPI dev server on port 8000     |
-| `pip install -r backend/requirements.txt` | Install/update Python runtime dependencies    |
-| `pip install -e ".[dev]"`                 | Install Python dev dependencies (pytest, etc) |
-| `python -m pytest -v`                     | Run all backend tests                         |
-| `python -m pytest -k <keyword> -v`        | Run tests matching a keyword                  |
-| `cd frontend && npm install`              | Install/update frontend dependencies          |
-| `cd frontend && npm run dev`              | Start Vite dev server with HMR on port 5173   |
-| `cd frontend && npm run build`            | Type-check and build frontend for production  |
-| `cd frontend && npm run lint`             | Lint frontend with ESLint                     |
-| `cd frontend && npm test`                 | Run all frontend tests (Vitest)               |
-| `cd frontend && npm run test:watch`       | Run frontend tests in watch mode              |
-| `cd frontend && npm run preview`          | Preview production build locally              |
-| `pre-commit install`                      | Install git pre-commit hooks                  |
-| `pre-commit run --all-files`              | Run all pre-commit hooks on all files         |
-| `pre-commit run <hook-id> --all-files`    | Run a specific hook on all files              |
+| Command                                   | Purpose                                             |
+| ----------------------------------------- | --------------------------------------------------- |
+| `python -m backend.main`                  | Start the FastAPI dev server on port 8000           |
+| `python -m backend.worker`                | Start RQ worker (separate terminal, Redis required) |
+| `pip install -r backend/requirements.txt` | Install/update Python runtime dependencies          |
+| `pip install -e ".[dev]"`                 | Install Python dev dependencies (pytest, etc)       |
+| `python -m pytest -v`                     | Run all backend tests                               |
+| `python -m pytest -k <keyword> -v`        | Run tests matching a keyword                        |
+| `cd frontend && npm install`              | Install/update frontend dependencies                |
+| `cd frontend && npm run dev`              | Start Vite dev server with HMR on port 5173         |
+| `cd frontend && npm run build`            | Type-check and build frontend for production        |
+| `cd frontend && npm run lint`             | Lint frontend with ESLint                           |
+| `cd frontend && npm test`                 | Run all frontend tests (Vitest)                     |
+| `cd frontend && npm run test:watch`       | Run frontend tests in watch mode                    |
+| `cd frontend && npm run preview`          | Preview production build locally                    |
+| `pre-commit install`                      | Install git pre-commit hooks                        |
+| `pre-commit run --all-files`              | Run all pre-commit hooks on all files               |
+| `pre-commit run <hook-id> --all-files`    | Run a specific hook on all files                    |
 
 ## MCP Servers
 
@@ -310,3 +333,5 @@ Both workflows trigger on `pull_request` to `master`:
 9. **CORS**: By default, the backend allows `http://localhost:5173` (Vite dev server). Configure via `CORS_ORIGINS` env var.
 
 10. **Ports**: Backend runs on `8000`, frontend dev server on `5173`. Ensure both are free.
+
+11. **Redis & RQ Worker**: The word-count feature requires Redis running locally (default: `localhost:6379`). Start the RQ worker in a separate terminal with `python -m backend.worker`. The worker listens on the `qa-jobs` queue. When Redis is unavailable, uploads still succeed but word-count jobs are not enqueued (graceful degradation). The `REDIS_PASSWORD` in `.env.example` (`QaPassword`) is for local dev only — use a secure password in production.

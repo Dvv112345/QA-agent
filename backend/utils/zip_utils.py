@@ -187,30 +187,40 @@ def _cleanup_extraction(target_path: Path) -> None:
         logger.warning(f"Cleanup failed for {target_path}: {e}")
 
 
-def get_tree(root_dir: str, tree: list[str]):
-    # Walk the extracted tree
+def get_tree(root_dir: str, tree: list[str], files: list[str] | None = None):
+    """Walk *root_dir* and populate *tree* with sorted relative paths.
+
+    Directory entries are appended with a trailing ``/``.  If *files* is
+    provided it receives **file-only** paths (no directories), also sorted.
+    """
     for dirpath, dirnames, filenames in os.walk(root_dir):
         rel = os.path.relpath(dirpath, root_dir)
         if rel == ".":
             for fn in sorted(filenames):
                 tree.append(fn)
+                if files is not None:
+                    files.append(fn)
             for dn in sorted(dirnames):
                 tree.append(f"{dn}/")
         else:
+            norm_rel = rel.replace(os.sep, "/")
             for fn in sorted(filenames):
-                tree.append(f"{rel.replace(os.sep, '/')}/{fn}")
+                tree.append(f"{norm_rel}/{fn}")
+                if files is not None:
+                    files.append(f"{norm_rel}/{fn}")
             for dn in sorted(dirnames):
-                tree.append(f"{rel.replace(os.sep, '/')}/{dn}/")
+                tree.append(f"{norm_rel}/{dn}/")
 
 
 def extract_and_list_tree(
     zip_bytes: bytes, stored_path: str | None, max_files: int, max_depth: int, chunk_size: int
-) -> tuple[list[str], str]:
+) -> tuple[list[str], str, list[str]]:
     """Extract a zip archive to a temp directory and return its directory tree.
 
-    Returns a tuple of ``(tree_list, tree_text)`` where *tree_list* is a
-    sorted list of relative paths and *tree_text* is a human-readable
-    indented tree string.
+    Returns a tuple of ``(tree_list, tree_text, files)`` where *tree_list*
+    is a sorted list of relative paths (directories end with ``/``),
+    *tree_text* is a human-readable indented tree string, and *files* is a
+    sorted list of **file-only** paths (directories excluded).
 
     The zip is extracted to a temporary directory that is cleaned up
     immediately after the tree is built (callers that need the extracted
@@ -220,13 +230,14 @@ def extract_and_list_tree(
     entries or if the directory nesting exceeds *max_depth*.
     """
     tree: list[str] = []
+    files: list[str] = []
 
     if not stored_path:
         with tempfile.TemporaryDirectory(prefix="qa_zip_") as tmpdir:
             extract_zip(zip_bytes, tmpdir, max_files, max_depth, chunk_size)
-            get_tree(tmpdir, tree)
+            get_tree(tmpdir, tree, files)
     else:
-        get_tree(stored_path, tree)
+        get_tree(stored_path, tree, files)
 
     tree_text = _simple_tree_text([t.rstrip("/") for t in tree], max_depth=max_depth)
-    return tree, tree_text
+    return tree, tree_text, files

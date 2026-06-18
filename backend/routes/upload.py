@@ -4,14 +4,22 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from backend.config import CHUNK_SIZE, MAX_TREE_DEPTH, MAX_UPLOAD_SIZE_MB, MAX_ZIP_FILES
+from backend.config import (
+    CHUNK_SIZE,
+    MAX_TREE_DEPTH,
+    MAX_UPLOAD_SIZE_MB,
+    MAX_ZIP_FILES,
+    STORE_OFFLINE,
+)
 from backend.models.types import UploadResponse
+from backend.services.queue import QueueService
 from backend.services.storage import StorageService
 from backend.utils.zip_utils import extract_and_list_tree
 
 router = APIRouter()
 
 storage_service = StorageService()
+queue_service = QueueService()
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +63,7 @@ def _validate_markdown_content(data: bytes, filename: str) -> None:
 
 def _generate_job_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    suffix = uuid.uuid4().hex[:6]
+    suffix = uuid.uuid4().hex
     return f"{ts}-{suffix}"
 
 
@@ -103,7 +111,7 @@ async def upload_files(
 
     # Extract zip and build directory tree
     try:
-        tree, tree_text = extract_and_list_tree(
+        tree, tree_text, files = extract_and_list_tree(
             zip_bytes,
             stored_path=zip_path,
             max_files=MAX_ZIP_FILES,
@@ -122,6 +130,17 @@ async def upload_files(
             ),
         ) from e
 
+    # Enqueue word-count job when offline storage is enabled and files were persisted
+    word_count_enqueued = False
+    if STORE_OFFLINE and storage_result.get("stored"):
+        queue_service.enqueue_word_count(
+            job_id,
+            storage_result["md_path"],
+            storage_result["zip_path"],
+            files,
+        )
+        word_count_enqueued = True
+
     return UploadResponse(
         job_id=job_id,
         status="received",
@@ -129,5 +148,6 @@ async def upload_files(
         markdown_filename=markdown_file.filename,
         tree=tree,
         tree_text=tree_text,
+        word_count_enqueued=word_count_enqueued,
         error=None,
     )
