@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException
 
 from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE, VERSION
 from backend.models.types import HealthResponse
+from backend.routes.jobs import router as jobs_router
 from backend.routes.upload import router as upload_router
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,29 @@ def _check_storage_health() -> str:
     except OSError as exc:
         return f"unavailable: {exc}"
     return "available"
+
+
+def _check_redis_health() -> str:
+    """Check whether Redis is reachable.
+
+    Returns a human-readable status string suitable for the health endpoint.
+    """
+    import redis as _redis
+
+    from backend.config import REDIS_DB, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
+
+    try:
+        r = _redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            password=REDIS_PASSWORD,
+            db=REDIS_DB,
+            socket_connect_timeout=2,
+        )
+        r.ping()
+        return "available"
+    except Exception as exc:
+        return f"unavailable: {exc}"
 
 
 def create_app() -> FastAPI:
@@ -53,6 +77,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(upload_router, prefix="/api")
+    app.include_router(jobs_router, prefix="/api")
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.
@@ -75,7 +100,8 @@ def create_app() -> FastAPI:
     @app.get("/api/health", response_model=HealthResponse)
     async def health_check():
         storage = _check_storage_health()
-        return HealthResponse(status="ok", storage=storage)
+        redis_status = _check_redis_health()
+        return HealthResponse(status="ok", storage=storage, redis=redis_status)
 
     return app
 

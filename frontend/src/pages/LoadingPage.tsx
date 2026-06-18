@@ -1,13 +1,32 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, Link } from 'react-router-dom'
-import { uploadFiles } from '../services/api'
-import type { UploadResponse } from '../types'
+import WordCountProgress from '../components/WordCountProgress'
+import WordCountResult from '../components/WordCountResult'
+import { fetchJobStatus, uploadFiles } from '../services/api'
+import type { JobStatusResponse, UploadResponse } from '../types'
 import './LoadingPage.css'
 
 interface LocationState {
   zipFile?: File
   mdFile?: File
 }
+
+// ── Fallback used when the status endpoint itself fails ────────────────────
+function emptyJobStatus(jobId: string): JobStatusResponse {
+  return {
+    job_id: jobId,
+    status: 'unknown',
+    total_files: 0,
+    processed_files: 0,
+    md_result: null,
+    zip_results: null,
+    total_words: null,
+    error: null,
+  }
+}
+
+// ── Terminal job statuses (polling should stop) ────────────────────────────
+const TERMINAL_STATUSES = new Set(['finished', 'failed', 'unknown'])
 
 export default function LoadingPage() {
   const location = useLocation()
@@ -18,10 +37,13 @@ export default function LoadingPage() {
   const [result, setResult] = useState<UploadResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
+  const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const fetchingRef = useRef(false)
 
+  // ── Upload effect ────────────────────────────────────────────────────
   useEffect(() => {
     if (!state?.zipFile || !state?.mdFile) {
-      // Files missing — don't attempt upload
       return
     }
 
@@ -47,13 +69,55 @@ export default function LoadingPage() {
     return () => {
       cancelled = true
     }
-    // state?.zipFile and state?.mdFile are the actual values the effect
-    // depends on. The full `state` object is a new reference every render
-    // (from location.state), so including it would cause unnecessary re-runs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.zipFile, state?.mdFile, retryKey])
 
-  // Missing state: user navigated directly to /loading
+  // ── Polling effect ───────────────────────────────────────────────────
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (status !== 'success' || !result?.word_count_enqueued) {
+      return
+    }
+
+    const jobId = result.job_id
+
+    function pollOnce() {
+      if (fetchingRef.current) return
+      fetchingRef.current = true
+
+      fetchJobStatus(jobId)
+        .then((data) => {
+          setJobStatus(data)
+          if (TERMINAL_STATUSES.has(data.status)) {
+            stopPolling()
+          }
+        })
+        .catch(() => {
+          setJobStatus((prev) => prev ?? emptyJobStatus(jobId))
+          stopPolling()
+        })
+        .finally(() => {
+          fetchingRef.current = false
+        })
+    }
+
+    pollOnce()
+    pollRef.current = setInterval(pollOnce, 5000)
+
+    return () => {
+      stopPolling()
+      fetchingRef.current = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, result?.word_count_enqueued, result?.job_id])
+
+  // ── Missing state ────────────────────────────────────────────────────
   if (!state?.zipFile || !state?.mdFile) {
     return (
       <main className="loading-page">
@@ -67,6 +131,8 @@ export default function LoadingPage() {
       </main>
     )
   }
+
+  const isJobTerminal = jobStatus !== null && TERMINAL_STATUSES.has(jobStatus.status)
 
   return (
     <main className="loading-page">
@@ -98,6 +164,22 @@ export default function LoadingPage() {
           <h3>Directory Tree</h3>
           <pre className="tree-text">{result.tree_text}</pre>
 
+          {result.word_count_enqueued && (
+            <div className="progress-section">
+              <h3>Word Count Analysis</h3>
+
+              {!jobStatus && <p className="progress-placeholder">Waiting for job status…</p>}
+
+              {!isJobTerminal && jobStatus && (
+                <div className="progress-container">
+                  <WordCountProgress jobStatus={jobStatus} />
+                </div>
+              )}
+
+              {jobStatus && <WordCountResult jobStatus={jobStatus} />}
+            </div>
+          )}
+
           <Link to="/" className="upload-another-btn">
             Upload Another
           </Link>
@@ -116,6 +198,7 @@ export default function LoadingPage() {
                 setStatus('loading')
                 setError(null)
                 setResult(null)
+                setJobStatus(null)
                 setRetryKey((k) => k + 1)
               }}
             >

@@ -196,6 +196,177 @@
   text-decoration: underline;
 }
 
+/* ── Placeholder before first poll ── */
+
+.progress-placeholder {
+  font-size: 14px;
+  color: var(--text);
+  margin: 0;
+  opacity: 0.7;
+}
+
+/* ── Word-count progress section ── */
+
+.progress-section {
+  width: 100%;
+  max-width: 640px;
+  margin-bottom: 28px;
+}
+
+.progress-section h3 {
+  font-family: var(--heading);
+  font-weight: 500;
+  color: var(--text-h);
+  margin: 28px 0 16px 0;
+}
+
+.progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Waiting for worker pulse animation ── */
+
+.progress-waiting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+}
+
+.waiting-pulse {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.progress-waiting p {
+  font-size: 15px;
+  color: var(--text);
+}
+
+/* ── Progress bar ── */
+
+.progress-bar-bg {
+  width: 100%;
+  height: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 5px;
+  transition: width 0.4s ease;
+  min-width: 0;
+}
+
+.progress-text {
+  font-size: 14px;
+  color: var(--text);
+  margin: 0;
+}
+
+/* ── Results container ── */
+
+.results-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.results-section h4 {
+  font-family: var(--heading);
+  font-weight: 500;
+  font-size: 16px;
+  color: var(--text-h);
+  margin: 0 0 8px 0;
+}
+
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.results-table th,
+.results-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.results-table th {
+  font-weight: 600;
+  color: var(--text-h);
+  background: var(--code-bg);
+}
+
+.results-table td {
+  color: var(--text);
+}
+
+.results-table .file-cell {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.results-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--text-h);
+  font-size: 15px;
+}
+
+/* ── Job error ── */
+
+.job-error {
+  padding: 16px 20px;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.job-error-title {
+  font-weight: 600;
+  color: #dc2626;
+  margin: 0 0 6px 0;
+  font-size: 15px;
+}
+
+.job-error-detail {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+  word-break: break-word;
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 600px) {
