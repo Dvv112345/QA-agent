@@ -23,10 +23,16 @@ Multiple worker processes can be started to handle concurrent uploads::
 from __future__ import annotations
 
 import logging
+import sys
 
-from rq import Worker
+from rq import SimpleWorker, Worker
 
 from backend.services.queue import QUEUE_NAME, get_queue_service
+
+REDIS_CONNECTION_TIMEOUT = 5
+
+# Windows doesn't support os.fork() — use SimpleWorker instead.
+_WorkerClass = SimpleWorker if sys.platform == "win32" else Worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +45,7 @@ def cli() -> None:
     """Create and start an RQ worker for the ``qa-jobs`` queue."""
     qs = get_queue_service()
     conn = qs.get_connection()
+    conn.socket_timeout = REDIS_CONNECTION_TIMEOUT
 
     if conn is None:
         raise RuntimeError(
@@ -46,7 +53,7 @@ def cli() -> None:
             "Check REDIS_HOST / REDIS_PORT / REDIS_PASSWORD in your .env file."
         )
 
-    worker = Worker([QUEUE_NAME], connection=conn)
+    worker = _WorkerClass([QUEUE_NAME], connection=conn)
     logging.getLogger("rq.worker").info("RQ worker started — listening on queue '%s'", QUEUE_NAME)
     worker.work()
 

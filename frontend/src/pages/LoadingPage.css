@@ -196,6 +196,15 @@
   text-decoration: underline;
 }
 
+/* ── Placeholder before first poll ── */
+
+.progress-placeholder {
+  font-size: 14px;
+  color: var(--text);
+  margin: 0;
+  opacity: 0.7;
+}
+
 /* ── Word-count progress section ── */
 
 .progress-section {

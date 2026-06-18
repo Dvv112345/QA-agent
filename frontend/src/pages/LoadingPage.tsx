@@ -168,6 +168,8 @@ export default function LoadingPage() {
             <div className="progress-section">
               <h3>Word Count Analysis</h3>
 
+              {!jobStatus && <p className="progress-placeholder">Waiting for job status…</p>}
+
               {!isJobTerminal && jobStatus && (
                 <div className="progress-container">
                   <WordCountProgress jobStatus={jobStatus} />
