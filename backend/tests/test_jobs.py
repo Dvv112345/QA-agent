@@ -1,6 +1,6 @@
 """Tests for backend/routes/jobs.py — GET /api/jobs/{job_id}/status."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -8,10 +8,18 @@ import pytest
 class TestJobStatusEndpoint:
     """Tests for ``GET /api/jobs/{job_id}/status``."""
 
+    @staticmethod
+    def _mock_queue_service(job_data: dict | None) -> MagicMock:
+        """Create a mock QueueService whose ``get_job_status`` returns *job_data*."""
+        mock_svc = MagicMock()
+        mock_svc.get_job_status.return_value = job_data
+        return mock_svc
+
     @pytest.mark.asyncio
     async def test_unknown_job_returns_status_unknown(self, async_client):
         """When Redis has no record of a job, return status 'unknown'."""
-        with patch("backend.routes.jobs.queue_service.get_job_status", return_value=None):
+        mock_svc = self._mock_queue_service(None)
+        with patch("backend.routes.jobs.get_queue_service", return_value=mock_svc):
             response = await async_client.get("/api/jobs/fake-job/status")
             assert response.status_code == 200
             data = response.json()
@@ -29,7 +37,8 @@ class TestJobStatusEndpoint:
             "error": None,
             "result": None,
         }
-        with patch("backend.routes.jobs.queue_service.get_job_status", return_value=job_data):
+        mock_svc = self._mock_queue_service(job_data)
+        with patch("backend.routes.jobs.get_queue_service", return_value=mock_svc):
             response = await async_client.get("/api/jobs/job-1/status")
             assert response.status_code == 200
             data = response.json()
@@ -56,7 +65,8 @@ class TestJobStatusEndpoint:
                 "total_words": 57,
             },
         }
-        with patch("backend.routes.jobs.queue_service.get_job_status", return_value=job_data):
+        mock_svc = self._mock_queue_service(job_data)
+        with patch("backend.routes.jobs.get_queue_service", return_value=mock_svc):
             response = await async_client.get("/api/jobs/job-done/status")
             assert response.status_code == 200
             data = response.json()
@@ -75,7 +85,8 @@ class TestJobStatusEndpoint:
             "error": "File missing during processing: /tmp/zip/missing.py",
             "result": None,
         }
-        with patch("backend.routes.jobs.queue_service.get_job_status", return_value=job_data):
+        mock_svc = self._mock_queue_service(job_data)
+        with patch("backend.routes.jobs.get_queue_service", return_value=mock_svc):
             response = await async_client.get("/api/jobs/job-fail/status")
             assert response.status_code == 200
             data = response.json()
@@ -92,7 +103,8 @@ class TestJobStatusEndpoint:
             "error": None,
             "result": None,
         }
-        with patch("backend.routes.jobs.queue_service.get_job_status", return_value=job_data):
+        mock_svc = self._mock_queue_service(job_data)
+        with patch("backend.routes.jobs.get_queue_service", return_value=mock_svc):
             response = await async_client.get("/api/jobs/job-mid/status")
             assert response.status_code == 200
             data = response.json()

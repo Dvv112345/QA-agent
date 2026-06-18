@@ -4,6 +4,7 @@ from sqlmodel import SQLModel
 class HealthResponse(SQLModel):
     status: str
     storage: str = "unknown"
+    redis: str = "unknown"
 
 
 class FileWordCount(SQLModel):

@@ -5,11 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.models.types import FileWordCount, JobStatusResponse
-from backend.services.queue import QueueService
+from backend.services.queue import get_queue_service
 
 router = APIRouter()
-
-queue_service = QueueService()
 
 
 def _build_response(job_id: str, job_data: dict | None) -> JobStatusResponse:
@@ -50,5 +48,5 @@ async def get_job_status(job_id: str):
     When ``status`` is ``"finished"`` the response includes ``md_result``,
     ``zip_results``, and ``total_words``.
     """
-    job_data = queue_service.get_job_status(job_id)
+    job_data = get_queue_service().get_job_status(job_id)
     return _build_response(job_id, job_data)

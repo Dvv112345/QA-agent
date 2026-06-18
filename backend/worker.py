@@ -7,6 +7,17 @@ Start the worker from the repo root::
 The worker listens on the ``qa-jobs`` queue (defined in
 ``backend.services.queue.QUEUE_NAME``) and processes word-count tasks
 defined in ``backend.tasks``.
+
+Multiple worker processes can be started to handle concurrent uploads::
+
+    # Terminal 1
+    python -m backend.worker
+
+    # Terminal 2
+    python -m backend.worker
+
+    # Or use a process manager (supervisord, systemd, etc.) to run
+    # N workers where N matches your expected concurrency.
 """
 
 from __future__ import annotations
@@ -15,19 +26,19 @@ import logging
 
 from rq import Worker
 
-from backend.services.queue import QUEUE_NAME, QueueService
+from backend.services.queue import QUEUE_NAME, get_queue_service
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)-8s] worker: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
 
 
 def cli() -> None:
     """Create and start an RQ worker for the ``qa-jobs`` queue."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)-8s] worker: %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    )
-
-    queue_service = QueueService()
-    conn = queue_service.get_connection()
+    qs = get_queue_service()
+    conn = qs.get_connection()
 
     if conn is None:
         raise RuntimeError(

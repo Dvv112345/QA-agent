@@ -57,3 +57,4 @@ REDIS_PORT: int = _get_int("REDIS_PORT", 6379)
 REDIS_PASSWORD: str | None = os.environ.get("REDIS_PASSWORD") or None
 REDIS_DB: int = _get_int("REDIS_DB", 0)
 JOB_TIMEOUT: int = _get_int("JOB_TIMEOUT", 300)
+JOB_RESULT_TTL: int = _get_int("JOB_RESULT_TTL", 3600)

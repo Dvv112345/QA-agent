@@ -30,6 +30,29 @@ def _check_storage_health() -> str:
     return "available"
 
 
+def _check_redis_health() -> str:
+    """Check whether Redis is reachable.
+
+    Returns a human-readable status string suitable for the health endpoint.
+    """
+    import redis as _redis
+
+    from backend.config import REDIS_DB, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
+
+    try:
+        r = _redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            password=REDIS_PASSWORD,
+            db=REDIS_DB,
+            socket_connect_timeout=2,
+        )
+        r.ping()
+        return "available"
+    except Exception as exc:
+        return f"unavailable: {exc}"
+
+
 def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     # Structured logging
@@ -77,7 +100,8 @@ def create_app() -> FastAPI:
     @app.get("/api/health", response_model=HealthResponse)
     async def health_check():
         storage = _check_storage_health()
-        return HealthResponse(status="ok", storage=storage)
+        redis_status = _check_redis_health()
+        return HealthResponse(status="ok", storage=storage, redis=redis_status)
 
     return app
 

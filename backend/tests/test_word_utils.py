@@ -2,7 +2,38 @@
 
 import pytest
 
-from backend.utils.word_utils import count_words_in_file, is_text_file
+from backend.utils.word_utils import _mime_is_text, count_words_in_file, is_text_file
+
+
+class TestMimeIsText:
+    """Tests for ``_mime_is_text``."""
+
+    def test_text_mime_returns_true(self):
+        assert _mime_is_text("hello.py") is True
+        assert _mime_is_text("index.html") is True
+        assert _mime_is_text("styles.css") is True
+        assert _mime_is_text("data.json") is True
+        assert _mime_is_text("config.xml") is True
+        assert _mime_is_text("app.js") is True
+        # .md / .markdown is not recognized on all platforms (e.g. Windows)
+        # — those files fall through to the null-byte scan, which is fine.
+
+    def test_binary_mime_returns_false(self):
+        assert _mime_is_text("image.png") is False
+        assert _mime_is_text("archive.zip") is False
+        assert _mime_is_text("program.exe") is False
+        assert _mime_is_text("video.mp4") is False
+        # .bin maps to application/octet-stream on most platforms
+        assert _mime_is_text("data.bin") is False
+
+    def test_unknown_extension_returns_none(self):
+        """Files with unrecognized extensions fall through to null-byte scan."""
+        assert _mime_is_text("file.xyzzy") is None
+        assert _mime_is_text("no_extension") is None
+        # .dat is typically unrecognized
+        if _mime_is_text("data.dat") is not None:
+            # Platform registers .dat — still fine, just skip the assertion
+            pass
 
 
 class TestIsTextFile:
@@ -18,6 +49,13 @@ class TestIsTextFile:
         f.write_bytes(b"\x00\x01\x02\x03")
         assert is_text_file(str(f)) is False
 
+    def test_known_binary_extension_skipped_without_read(self, tmp_path):
+        """A .png file should be rejected by MIME check before any I/O."""
+        f = tmp_path / "icon.png"
+        f.write_bytes(b"not a real png but the extension says binary")
+        # The MIME check should return False before reading the file
+        assert is_text_file(str(f)) is False
+
     def test_empty_file_returns_true(self, tmp_path):
         """An empty file has no null bytes, so it's treated as text."""
         f = tmp_path / "empty.txt"
@@ -31,12 +69,18 @@ class TestIsTextFile:
         assert is_text_file(str(f)) is True
 
     def test_binary_after_text_window(self, tmp_path):
-        """Null byte appears after 8 KB — still detected as binary."""
-        f = tmp_path / "late_null.bin"
-        # First 8 KB are text, then a null byte
+        """Null byte appears after 8 KB — still detected as binary by MIME.
+
+        When the extension has a recognized binary MIME type (e.g., .bin →
+        application/octet-stream), the MIME check catches it before the
+        null-byte scan, so it's detected as binary regardless of the
+        file content. Use an unknown extension to test the null-byte
+        scan's 8 KB window behavior.
+        """
+        # Using an unknown extension so MIME returns None and we fall
+        # through to the null-byte scan
+        f = tmp_path / "late_null.xyzzy"
         f.write_bytes(b"A" * 8192 + b"\x00" + b"more text")
-        # Our detector only reads 8 KB, so the null byte after that isn't seen
-        # This is the expected behavior with the current implementation
         result = is_text_file(str(f))
         # The first 8 KB have no null byte → treated as text
         assert result is True

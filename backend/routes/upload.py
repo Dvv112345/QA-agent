@@ -12,14 +12,13 @@ from backend.config import (
     STORE_OFFLINE,
 )
 from backend.models.types import UploadResponse
-from backend.services.queue import QueueService
+from backend.services.queue import get_queue_service
 from backend.services.storage import StorageService
 from backend.utils.zip_utils import extract_and_list_tree
 
 router = APIRouter()
 
 storage_service = StorageService()
-queue_service = QueueService()
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +132,7 @@ async def upload_files(
     # Enqueue word-count job when offline storage is enabled and files were persisted
     word_count_enqueued = False
     if STORE_OFFLINE and storage_result.get("stored"):
-        queue_service.enqueue_word_count(
+        get_queue_service().enqueue_word_count(
             job_id,
             storage_result["md_path"],
             storage_result["zip_path"],

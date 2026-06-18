@@ -181,9 +181,21 @@ QA-agent/
 
 All backend config comes from environment variables, loaded via `python-dotenv` in `backend/config.py`. Each variable has a typed getter (`_get_bool`, `_get_int`, `_get_list`, `_get_optional_path`) with sensible defaults. Copy `.env.example` to `.env` to customize.
 
+Key RQ / Redis config variables:
+
+| Variable         | Default     | Description                                                         |
+| ---------------- | ----------- | ------------------------------------------------------------------- |
+| `REDIS_HOST`     | `localhost` | Redis server hostname                                               |
+| `REDIS_PORT`     | `6379`      | Redis server port                                                   |
+| `REDIS_PASSWORD` | (none)      | Redis auth password (set to `QaPassword` in `.env.example` for dev) |
+| `REDIS_DB`       | `0`         | Redis database number                                               |
+| `JOB_TIMEOUT`    | `300`       | Maximum job execution time in seconds (RQ hard kill)                |
+| `JOB_RESULT_TTL` | `3600`      | Seconds before job results expire from Redis (1 hour)               |
+
 ### API Patterns
 
 - **FastAPI app factory**: `create_app()` in `main.py` wires up middleware, routers, exception handlers, and health checks.
+- **Health check**: `GET /api/health` returns `{ status, storage, redis }`. `storage` reports `"memory_only"`, `"available"`, or `"unavailable: <reason>"`. `redis` reports `"available"` or `"unavailable: <reason>"` — useful for monitoring Redis connectivity alongside disk storage.
 - **Exception handling**: A global `Exception` handler catches unexpected errors, re-raises `HTTPException` for FastAPI to handle normally, and returns 500 for everything else.
 - **Validation**: Route handlers validate file extensions, content magic bytes, size limits, and encoding before processing.
 - **Response types**: All responses use `SQLModel` types defined in `models/types.py`.
@@ -217,15 +229,16 @@ All backend config comes from environment variables, loaded via `python-dotenv` 
 
 ### Common Gotchas
 
-| Gotcha                                  | Explanation                                                                                                                                  | Solution                                                                                                                                                     |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Nested Router error in tests**        | Wrapping `<App />` (which contains `<BrowserRouter>`) inside `<MemoryRouter>` throws "You cannot render a <Router> inside another <Router>." | Test routes directly: render `<MemoryRouter><Routes><Route path="/" element={<HomePage />} />...` instead of testing `<App />`.                              |
-| **MemoryRouter route state format**     | `initialEntries` must be `[{ pathname: '/loading', state: { ... } }]`, NOT `['/loading', { state: ... }]`.                                   | Always use the object form: `{ pathname: string, state?: unknown }`.                                                                                         |
-| **Box-drawing chars break `getByText`** | `├──`, `└──`, `│` in `tree_text` output aren't matched by Testing Library's text queries.                                                    | Use `document.querySelector('pre.tree-text')` and assert on `.textContent` instead.                                                                          |
-| **`useEffect` dep on `location.state`** | `location.state` is a new object reference every render, causing infinite effect re-runs.                                                    | Depend on specific state properties (`state?.zipFile`, `state?.mdFile`) instead of the whole `state` object. Add an eslint-disable comment with explanation. |
-| **Retry via `retryKey` counter**        | Calling `uploadFiles()` directly in a click handler duplicates logic and bypasses effect cleanup.                                            | Use a `retryKey` state counter as a useEffect dependency — increment it to re-trigger the effect.                                                            |
-| **CI `npm ci` fails on peer deps**      | `package-lock.json` can contain `"peer": true` markers that `npm ci` in a fresh environment rejects.                                         | Add `npm install --package-lock-only` step before `npm ci` in the CI workflow to normalize the lockfile.                                                     |
-| **`/// <reference types="vitest" />`**  | This triple-slash directive in `vite.config.ts` is unnecessary when Vitest provides its own types via the `test` config key.                 | Remove it — the `test` block in `defineConfig` is sufficient for TypeScript to infer Vitest types.                                                           |
+| Gotcha                                   | Explanation                                                                                                                                  | Solution                                                                                                                                                               |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Nested Router error in tests**         | Wrapping `<App />` (which contains `<BrowserRouter>`) inside `<MemoryRouter>` throws "You cannot render a <Router> inside another <Router>." | Test routes directly: render `<MemoryRouter><Routes><Route path="/" element={<HomePage />} />...` instead of testing `<App />`.                                        |
+| **MemoryRouter route state format**      | `initialEntries` must be `[{ pathname: '/loading', state: { ... } }]`, NOT `['/loading', { state: ... }]`.                                   | Always use the object form: `{ pathname: string, state?: unknown }`.                                                                                                   |
+| **Box-drawing chars break `getByText`**  | `├──`, `└──`, `│` in `tree_text` output aren't matched by Testing Library's text queries.                                                    | Use `document.querySelector('pre.tree-text')` and assert on `.textContent` instead.                                                                                    |
+| **`useEffect` dep on `location.state`**  | `location.state` is a new object reference every render, causing infinite effect re-runs.                                                    | Depend on specific state properties (`state?.zipFile`, `state?.mdFile`) instead of the whole `state` object. Add an eslint-disable comment with explanation.           |
+| **Retry via `retryKey` counter**         | Calling `uploadFiles()` directly in a click handler duplicates logic and bypasses effect cleanup.                                            | Use a `retryKey` state counter as a useEffect dependency — increment it to re-trigger the effect.                                                                      |
+| **CI `npm ci` fails on peer deps**       | `package-lock.json` can contain `"peer": true` markers that `npm ci` in a fresh environment rejects.                                         | Add `npm install --package-lock-only` step before `npm ci` in the CI workflow to normalize the lockfile.                                                               |
+| **`/// <reference types="vitest" />`**   | This triple-slash directive in `vite.config.ts` is unnecessary when Vitest provides its own types via the `test` config key.                 | Remove it — the `test` block in `defineConfig` is sufficient for TypeScript to infer Vitest types.                                                                     |
+| **Direct `QueueService()` construction** | Constructing `QueueService()` directly in route modules creates duplicate Redis connections and loses the shared singleton.                  | Always use `get_queue_service()` from `backend.services.queue` — it returns the process-wide singleton. Call `reset_queue_service()` if Redis recovers from an outage. |
 
 ### Pre-commit Quality Gates
 
@@ -261,10 +274,31 @@ Both workflows trigger on `pull_request` to `master`:
 
 1. Frontend receives `word_count_enqueued=true` → starts polling `GET /api/jobs/{job_id}/status` every 5s
 2. RQ worker picks up the `count_words_task` from the `qa-jobs` queue
-3. Worker counts words in markdown first, then each zip file (binary files → 0 words)
-4. Progress: `job.meta['processed_files']` incremented after each file; frontend computes `%` from `total_files`
-5. On completion: frontend displays two result sections — requirements document + source files table with totals
-6. Frontend stops polling when status is `finished`, `failed`, or `unknown`
+3. Worker counts words in markdown first, then each zip file
+4. Text-vs-binary detection: checks MIME type first (fast, no I/O), then falls back to null-byte scan (first 8 KB). Known binary extensions (`.png`, `.zip`, `.exe`, etc.) are skipped without reading.
+5. Progress: `job.meta['processed_files']` incremented after each file; frontend computes `%` from `total_files`
+6. On completion: frontend displays two result sections — requirements document + source files table with totals
+7. Frontend stops polling when status is `finished`, `failed`, or `unknown`
+8. Job results expire from Redis after `JOB_RESULT_TTL` seconds (default 3600 = 1 hour)
+
+**Running multiple workers**: For production workloads with concurrent uploads, start multiple worker processes. Each worker handles one job at a time, so N workers = N concurrent word-count jobs:
+
+```bash
+# Terminal 1
+python -m backend.worker
+
+# Terminal 2
+python -m backend.worker
+
+# Or via a process manager (supervisord, systemd, Docker):
+# supervisord example:
+# [program:qa-worker]
+# command=python -m backend.worker
+# numprocs=4
+# process_name=qa-worker-%(process_num)s
+```
+
+**QueueService singleton**: All consumers must obtain the shared `QueueService` instance via `get_queue_service()` (defined in `backend/services/queue.py`) rather than constructing `QueueService()` directly. This ensures only one Redis connection pool exists per process. Call `reset_queue_service()` to discard the cached singleton and reconnect after a transient Redis outage.
 
 ## CLI Commands
 

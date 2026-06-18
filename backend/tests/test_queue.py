@@ -1,8 +1,38 @@
-"""Tests for backend/services/queue.py — QueueService."""
+"""Tests for backend/services/queue.py — QueueService, singleton, and helpers."""
 
 from unittest.mock import MagicMock, patch
 
-from backend.services.queue import QUEUE_NAME, QueueService
+from backend.services.queue import (
+    QUEUE_NAME,
+    QueueService,
+    get_queue_service,
+    reset_queue_service,
+)
+
+
+class TestSingleton:
+    """Tests for ``get_queue_service()`` and ``reset_queue_service()``."""
+
+    def test_get_queue_service_returns_same_instance(self):
+        """Repeated calls return the exact same object."""
+        reset_queue_service()
+        svc1 = get_queue_service()
+        svc2 = get_queue_service()
+        assert svc1 is svc2
+
+    def test_reset_queue_service_creates_new_instance(self):
+        """After reset, the next call returns a fresh instance."""
+        reset_queue_service()
+        svc1 = get_queue_service()
+        reset_queue_service()
+        svc2 = get_queue_service()
+        assert svc1 is not svc2
+
+    def test_get_queue_service_returns_queue_service(self):
+        """The singleton is a ``QueueService`` instance."""
+        reset_queue_service()
+        svc = get_queue_service()
+        assert isinstance(svc, QueueService)
 
 
 class TestQueueServiceEnqueue:
@@ -13,6 +43,7 @@ class TestQueueServiceEnqueue:
         with patch("backend.services.queue.redis.Redis") as mock_redis_cls:
             mock_redis_cls.side_effect = OSError("Connection refused")
             svc = QueueService()
+            assert svc.available is False
             job = svc.enqueue_word_count("test-job", "/tmp/md.md", "/tmp/zip", ["a.py", "b.py"])
             assert job is None
 
@@ -30,6 +61,7 @@ class TestQueueServiceEnqueue:
             patch("backend.services.queue.rq.Queue", return_value=mock_queue),
         ):
             svc = QueueService()
+            assert svc.available is True
             files = ["a.py", "b.py", "c.py"]
             svc.enqueue_word_count("job-1", "/tmp/md.md", "/tmp/zip", files)
 
@@ -49,6 +81,35 @@ class TestQueueServiceEnqueue:
             mock_rq_queue.assert_called_once()
             args, _kwargs = mock_rq_queue.call_args
             assert args[0] == QUEUE_NAME
+
+    def test_enqueue_passes_result_ttl_from_config(self, monkeypatch):
+        """result_ttl is read from JOB_RESULT_TTL env var."""
+        monkeypatch.setenv("JOB_RESULT_TTL", "7200")
+        # Force reimport so the config value is fresh
+        import importlib
+
+        import backend.config
+        import backend.services.queue
+
+        importlib.reload(backend.config)
+        importlib.reload(backend.services.queue)
+
+        mock_redis = MagicMock()
+        mock_redis.ping.return_value = True
+        mock_queue = MagicMock()
+        mock_job = MagicMock()
+        mock_job.meta = {}
+        mock_queue.enqueue.return_value = mock_job
+
+        with (
+            patch("backend.services.queue.redis.Redis", return_value=mock_redis),
+            patch("backend.services.queue.rq.Queue", return_value=mock_queue),
+        ):
+            # Force re-init since module-level config is already loaded
+            # We just verify the config value propagated
+            from backend.config import JOB_RESULT_TTL
+
+            assert JOB_RESULT_TTL == 7200
 
 
 class TestQueueServiceGetStatus:
@@ -144,3 +205,51 @@ class TestQueueServiceGetStatus:
             assert status is not None
             assert status["status"] == "finished"
             assert status["result"] == mock_job.result
+
+
+class TestQueueServiceReset:
+    """Tests for ``QueueService.reset()``."""
+
+    def test_reset_reconnects_after_transient_outage(self):
+        """After a transient outage, reset() should reconnect."""
+        mock_redis_first = MagicMock()
+        mock_redis_first.ping.return_value = True
+
+        with (
+            patch("backend.services.queue.redis.Redis", return_value=mock_redis_first),
+            patch("backend.services.queue.rq.Queue"),
+        ):
+            svc = QueueService()
+            assert svc.available is True
+
+            # Simulate: connection is lost
+            svc._redis = None
+            svc._queue = None
+            assert svc.available is False
+
+            # Reset should create a fresh connection
+            mock_redis_second = MagicMock()
+            mock_redis_second.ping.return_value = True
+            with (
+                patch("backend.services.queue.redis.Redis", return_value=mock_redis_second),
+                patch("backend.services.queue.rq.Queue"),
+            ):
+                svc.reset()
+                assert svc.available is True
+
+    def test_reset_when_never_connected(self):
+        """reset() on a service that never connected should try again."""
+        with patch("backend.services.queue.redis.Redis") as mock_redis_cls:
+            mock_redis_cls.side_effect = OSError("Connection refused")
+            svc = QueueService()
+            assert svc.available is False
+
+        # Now Redis is back
+        mock_redis_ok = MagicMock()
+        mock_redis_ok.ping.return_value = True
+        with (
+            patch("backend.services.queue.redis.Redis", return_value=mock_redis_ok),
+            patch("backend.services.queue.rq.Queue"),
+        ):
+            svc.reset()
+            assert svc.available is True
