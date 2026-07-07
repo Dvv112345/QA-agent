@@ -5,6 +5,11 @@ on:
     types: [closed]
     branches: [main]
 
+# ✅ Add this permissions block
+permissions:
+  contents: write  # Required to delete branches
+  pull-requests: read
+
 jobs:
   delete-branch:
     if: github.event.pull_request.merged == true
@@ -16,23 +21,10 @@ jobs:
         with:
           script: |
             const branchName = context.payload.pull_request.head.ref;
+            console.log(`🗑️ Deleting branch: ${branchName}`);
 
-            // Don't delete main or protected branches
-            const protectedBranches = ['main', 'master', 'develop', 'production'];
-            if (protectedBranches.includes(branchName)) {
-              console.log(`⚠️ Skipping deletion of protected branch: ${branchName}`);
-              return;
-            }
-
-            try {
-              console.log(`🗑️ Deleting branch: ${branchName}`);
-              await github.rest.git.deleteRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `heads/${branchName}`
-              });
-              console.log(`✅ Successfully deleted branch: ${branchName}`);
-            } catch (error) {
-              console.log(`❌ Failed to delete branch: ${error.message}`);
-              throw error;
-            }
+            await github.rest.git.deleteRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${branchName}`
+            });
