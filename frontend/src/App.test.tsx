@@ -1,35 +1,92 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
-import HomePage from './pages/HomePage'
-import LoadingPage from './pages/LoadingPage'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
+import App from './App'
 
-describe('Route → page mapping', () => {
-  it('renders HomePage at route /', async () => {
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/loading" element={<LoadingPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
+vi.mock('./services/api', () => ({
+  checkAuthStatus: vi.fn(),
+  verifyPassword: vi.fn(),
+}))
 
-    await screen.findByText('QA Agent Upload')
+import { checkAuthStatus, verifyPassword } from './services/api'
+
+const mockCheckAuthStatus = checkAuthStatus as ReturnType<typeof vi.fn>
+const mockVerifyPassword = verifyPassword as ReturnType<typeof vi.fn>
+
+describe('App auth flow', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('shows LoginModal when checkAuthStatus returns valid=false', async () => {
+    mockCheckAuthStatus.mockResolvedValue({ valid: false })
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('QA Agent')).toBeInTheDocument()
+    })
+    expect(screen.getByLabelText('Access Code')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeInTheDocument()
+  })
+
+  it('renders HomePage when checkAuthStatus returns valid=true', async () => {
+    mockCheckAuthStatus.mockResolvedValue({ valid: true })
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByText('QA Agent Upload')).toBeInTheDocument()
+    })
     expect(screen.getByText(/upload & analyze/i)).toBeInTheDocument()
   })
 
-  it('renders LoadingPage at route /loading', async () => {
-    render(
-      <MemoryRouter initialEntries={['/loading']}>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/loading" element={<LoadingPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
+  it('does not render router content when unauthenticated', async () => {
+    mockCheckAuthStatus.mockResolvedValue({ valid: false })
+    render(<App />)
 
-    await screen.findByText('← Back')
-    expect(screen.getByText(/no files to upload/i)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('QA Agent')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('QA Agent Upload')).not.toBeInTheDocument()
+  })
+
+  it('shows error when verifyPassword returns valid=false', async () => {
+    mockCheckAuthStatus.mockResolvedValue({ valid: false })
+    mockVerifyPassword.mockResolvedValue({ valid: false })
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Access Code')).toBeInTheDocument()
+    })
+
+    const button = screen.getByRole('button', { name: 'Submit' })
+    button.click()
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('Incorrect access code')
+    })
+  })
+
+  it('reveals app after successful login', async () => {
+    mockCheckAuthStatus.mockResolvedValue({ valid: false })
+    mockVerifyPassword.mockResolvedValue({ valid: true })
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Access Code')).toBeInTheDocument()
+    })
+
+    const button = screen.getByRole('button', { name: 'Submit' })
+    button.click()
+
+    await waitFor(() => {
+      expect(screen.getByText('QA Agent Upload')).toBeInTheDocument()
+    })
+  })
+
+  it('renders nothing during checking state', () => {
+    // checkAuthStatus never resolves → stays in 'checking'
+    mockCheckAuthStatus.mockReturnValue(new Promise(() => {}))
+    const { container } = render(<App />)
+
+    expect(container.innerHTML).toBe('')
   })
 })

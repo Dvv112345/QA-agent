@@ -46,6 +46,7 @@ async def async_client(monkeypatch):
     monkeypatch.setenv("STORE_OFFLINE", "false")
     monkeypatch.setenv("MAX_ZIP_FILES", "100000")  # sample zip has many entries
     monkeypatch.delenv("STORAGE_LOCATION", raising=False)
+    monkeypatch.delenv("APP_PASSWORD", raising=False)  # auth disabled by default
 
     # Reload config then main so module-level imports pick up our env values
     import backend.config
@@ -53,6 +54,9 @@ async def async_client(monkeypatch):
 
     importlib.reload(backend.config)
     importlib.reload(backend.main)
+
+    # Prevent any test from accessing a real Redis server
+    monkeypatch.setattr(backend.main, "_check_redis_health", lambda: "mocked")
 
     from backend.main import create_app
 

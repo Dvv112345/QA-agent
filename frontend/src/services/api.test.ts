@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fetchJobStatus, uploadFiles } from './api'
+import { checkAuthStatus, fetchJobStatus, uploadFiles, verifyPassword } from './api'
 import type { JobStatusResponse, UploadResponse } from '../types'
 
 function mockFetch(response: Response) {
@@ -108,5 +108,70 @@ describe('fetchJobStatus', () => {
     await fetchJobStatus('job-2')
     const [url] = fetchSpy.mock.calls[0]
     expect(url).toContain('/api/jobs/job-2/status')
+  })
+})
+
+describe('checkAuthStatus', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns AuthCheckResponse with valid=true on 200', async () => {
+    mockFetch(new Response(JSON.stringify({ valid: true }), { status: 200 }))
+
+    const result = await checkAuthStatus()
+    expect(result).toEqual({ valid: true })
+  })
+
+  it('returns AuthCheckResponse with valid=false on 200', async () => {
+    mockFetch(new Response(JSON.stringify({ valid: false }), { status: 200 }))
+
+    const result = await checkAuthStatus()
+    expect(result).toEqual({ valid: false })
+  })
+
+  it('throws on non-200 response', async () => {
+    mockFetch(new Response('Internal error', { status: 500 }))
+
+    await expect(checkAuthStatus()).rejects.toThrow('Auth check failed (500)')
+  })
+})
+
+describe('verifyPassword', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns AuthCheckResponse with valid=true on match', async () => {
+    mockFetch(new Response(JSON.stringify({ valid: true }), { status: 200 }))
+
+    const result = await verifyPassword('secret123')
+    expect(result).toEqual({ valid: true })
+  })
+
+  it('returns AuthCheckResponse with valid=false on mismatch', async () => {
+    mockFetch(new Response(JSON.stringify({ valid: false }), { status: 200 }))
+
+    const result = await verifyPassword('wrong')
+    expect(result).toEqual({ valid: false })
+  })
+
+  it('sends POST with correct JSON body', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ valid: true }), { status: 200 }))
+
+    await verifyPassword('secret123')
+
+    const [, options] = fetchSpy.mock.calls[0]
+    expect(options?.method).toBe('POST')
+    expect(options?.headers).toEqual({ 'Content-Type': 'application/json' })
+    expect(options?.body).toBe(JSON.stringify({ password: 'secret123' }))
+  })
+
+  it('throws with detail message on error response', async () => {
+    mockFetch(new Response(JSON.stringify({ detail: 'Invalid password' }), { status: 422 }))
+
+    await expect(verifyPassword('bad')).rejects.toThrow('Invalid password')
   })
 })

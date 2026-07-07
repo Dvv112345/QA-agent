@@ -1,73 +1,42 @@
-# React + TypeScript + Vite
+# QA Agent Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + Vite frontend for the QA Agent.
 
-Currently, two official plugins are available:
+## Quick Start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Environment Variables
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+| Variable        | Default                 | Description          |
+| --------------- | ----------------------- | -------------------- |
+| `VITE_API_BASE` | `http://localhost:8000` | Backend API base URL |
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Define in `frontend/.env` (see `.env.example`).
+
+## Login Flow
+
+When `APP_PASSWORD` is set on the backend, the frontend shows a full-screen login modal:
+
+1. On page load, `GET /api/auth/check` checks whether a valid `qa_auth` cookie already exists.
+2. If `valid: true` — the modal is skipped, the app appears immediately.
+3. If `valid: false` — a password input is shown.
+4. On submit, `POST /api/auth/verify` validates the password. On success the backend sets an HttpOnly session cookie; on failure an inline error is displayed.
+5. The cookie is sent automatically by the browser on every subsequent API request — no changes to `uploadFiles()` or `fetchJobStatus()` are needed.
+
+If `APP_PASSWORD` is not set on the backend, all auth checks return `{ valid: true }` and the modal never appears.
+
+## Scripts
+
+| Command              | Purpose                       |
+| -------------------- | ----------------------------- |
+| `npm run dev`        | Start Vite dev server         |
+| `npm run build`      | Type-check + production build |
+| `npm run lint`       | ESLint                        |
+| `npm test`           | Vitest                        |
+| `npm run test:watch` | Vitest in watch mode          |
+| `npm run preview`    | Preview production build      |

@@ -32,3 +32,11 @@ class UploadResponse(SQLModel):
     tree_text: str
     word_count_enqueued: bool = False
     error: str | None = None
+
+
+class PasswordVerifyRequest(SQLModel):
+    password: str
+
+
+class AuthCheckResponse(SQLModel):
+    valid: bool

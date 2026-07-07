@@ -9,4 +9,14 @@ export default defineConfig({
     globals: true,
     setupFiles: './src/test/setup.ts',
   },
+
+  // Proxy for local testing to avoid cross origin problem.
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
+  },
 })
