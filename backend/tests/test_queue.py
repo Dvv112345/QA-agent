@@ -16,23 +16,35 @@ class TestSingleton:
     def test_get_queue_service_returns_same_instance(self):
         """Repeated calls return the exact same object."""
         reset_queue_service()
-        svc1 = get_queue_service()
-        svc2 = get_queue_service()
-        assert svc1 is svc2
+        with patch("backend.services.queue.redis.Redis") as mock_redis_cls:
+            mock_redis = MagicMock()
+            mock_redis.ping.return_value = True
+            mock_redis_cls.return_value = mock_redis
+            svc1 = get_queue_service()
+            svc2 = get_queue_service()
+            assert svc1 is svc2
 
     def test_reset_queue_service_creates_new_instance(self):
         """After reset, the next call returns a fresh instance."""
         reset_queue_service()
-        svc1 = get_queue_service()
-        reset_queue_service()
-        svc2 = get_queue_service()
-        assert svc1 is not svc2
+        with patch("backend.services.queue.redis.Redis") as mock_redis_cls:
+            mock_redis = MagicMock()
+            mock_redis.ping.return_value = True
+            mock_redis_cls.return_value = mock_redis
+            svc1 = get_queue_service()
+            reset_queue_service()
+            svc2 = get_queue_service()
+            assert svc1 is not svc2
 
     def test_get_queue_service_returns_queue_service(self):
         """The singleton is a ``QueueService`` instance."""
         reset_queue_service()
-        svc = get_queue_service()
-        assert isinstance(svc, QueueService)
+        with patch("backend.services.queue.redis.Redis") as mock_redis_cls:
+            mock_redis = MagicMock()
+            mock_redis.ping.return_value = True
+            mock_redis_cls.return_value = mock_redis
+            svc = get_queue_service()
+            assert isinstance(svc, QueueService)
 
 
 class TestQueueServiceEnqueue:

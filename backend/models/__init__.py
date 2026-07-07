@@ -1,3 +1,13 @@
-from backend.models.types import HealthResponse, UploadResponse
+from backend.models.types import (
+    AuthCheckResponse,
+    HealthResponse,
+    PasswordVerifyRequest,
+    UploadResponse,
+)
 
-__all__ = ["HealthResponse", "UploadResponse"]
+__all__ = [
+    "AuthCheckResponse",
+    "HealthResponse",
+    "PasswordVerifyRequest",
+    "UploadResponse",
+]
