@@ -31,6 +31,7 @@ export default function App() {
     return verifyPassword(password)
       .then((result) => {
         if (result.valid) {
+          setAuthLoading(false)
           setAuthStatus('authenticated')
         } else {
           setAuthError('Incorrect access code')
