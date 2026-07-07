@@ -58,3 +58,4 @@ REDIS_PASSWORD: str | None = os.environ.get("REDIS_PASSWORD") or None
 REDIS_DB: int = _get_int("REDIS_DB", 0)
 JOB_TIMEOUT: int = _get_int("JOB_TIMEOUT", 300)
 JOB_RESULT_TTL: int = _get_int("JOB_RESULT_TTL", 3600)
+APP_PASSWORD: str | None = os.environ.get("APP_PASSWORD") or None
