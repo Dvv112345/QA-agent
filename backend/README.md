@@ -20,6 +20,7 @@ The API is served at `http://localhost:8000`. Interactive docs at `http://localh
 | ------------------ | ------------------- | ----------------------------------------------------------------------------------------------------- |
 | `STORE_OFFLINE`    | _(unset / `false`)_ | Set to `"true"` to persist uploaded files to disk. Any other value keeps files in memory only.        |
 | `STORAGE_LOCATION` | _(unset)_           | Directory where files are stored when `STORE_OFFLINE=true`. Must be set when offline mode is enabled. |
+| `APP_PASSWORD`     | _(unset)_           | Shared password for accessing the QA Agent UI. When unset, authentication is disabled.                |
 
 Copy `.env.example` to `.env` and adjust:
 
@@ -71,12 +72,48 @@ Upload a zip archive and a markdown requirements file.
 | 422    | Invalid file extension, missing file, or empty filename |
 | 500    | Unexpected server error                                 |
 
+### `POST /api/auth/verify`
+
+Submit a password for verification. Sets an HttpOnly session cookie on success.
+
+**Request:** `application/json`
+
+```json
+{ "password": "my-password" }
+```
+
+**Response** (200):
+
+```json
+{ "valid": true }
+```
+
+If `APP_PASSWORD` is unset, always returns `{ "valid": true }` without setting a cookie.
+
+### `GET /api/auth/check`
+
+Check whether the current `qa_auth` cookie is valid. Never returns 401.
+
+**Response** (200):
+
+```json
+{ "valid": true }
+```
+
 ### Example with curl
 
 ```bash
+# Verify password and store the cookie
+curl -X POST http://localhost:8000/api/auth/verify \
+  -H "Content-Type: application/json" \
+  -d '{"password": "my-password"}' \
+  -c cookies.txt
+
+# Access a protected route with the stored cookie
 curl -X POST http://localhost:8000/api/upload \
   -F "zip_file=@source.zip" \
-  -F "markdown_file=@requirements.md"
+  -F "markdown_file=@requirements.md" \
+  -b cookies.txt
 ```
 
 ## Project Structure

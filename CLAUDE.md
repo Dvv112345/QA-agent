@@ -199,6 +199,26 @@ Key RQ / Redis config variables:
 | `JOB_TIMEOUT`    | `300`       | Maximum job execution time in seconds (RQ hard kill)                |
 | `JOB_RESULT_TTL` | `3600`      | Seconds before job results expire from Redis (1 hour)               |
 
+### Authentication
+
+QA Agent uses a shared-secret password gate backed by an HttpOnly session cookie. Auth is optional — when `APP_PASSWORD` is unset the app is fully open.
+
+| Variable       | Default | Description                                           |
+| -------------- | ------- | ----------------------------------------------------- |
+| `APP_PASSWORD` | (unset) | Shared password for UI access. Unset = auth disabled. |
+
+**Architecture:**
+
+- `backend/utils/auth.py` — `verify_auth(request)` FastAPI dependency. Reads `qa_auth` cookie, compares via `secrets.compare_digest()`, raises 401 on mismatch. Returns `True` immediately if `APP_PASSWORD` is unset.
+- `backend/routes/auth.py` — Two unauthenticated endpoints:
+  - `POST /api/auth/verify` — validates password, sets HttpOnly `qa_auth` cookie on match, returns `{valid: true/false}`.
+  - `GET /api/auth/check` — reads cookie, returns `{valid: true/false}`. Never returns 401 (it reports state, doesn't enforce).
+- Protected routes: `/api/upload` and `/api/jobs/*` use `Depends(verify_auth)`. `/api/health` and `/api/auth/*` are unauthenticated.
+- Cookie: `qa_auth=<password>; Path=/; SameSite=Strict; HttpOnly` (no Expires — session-scoped).
+- Frontend: `App.tsx` runs a three-state auth machine (`checking` → `authenticated`/`unauthenticated`). On mount, `GET /api/auth/check` decides whether to show `LoginModal` or the router. `LoginModal` is full-screen, uncancellable (no close button, no Escape, no click-outside). On login, `POST /api/auth/verify` sets the HttpOnly cookie — the browser sends it automatically on all subsequent requests, so `uploadFiles()` and `fetchJobStatus()` needed no changes.
+
+**Testing with auth:** The shared `async_client` fixture sets `monkeypatch.delenv("APP_PASSWORD")` so auth is disabled by default. Auth-specific tests (in `test_auth_routes.py`) create their own client with `APP_PASSWORD=secret123`. The `test_auth_routes.py` module also mocks `_check_redis_health` to avoid hitting a real Redis server.
+
 ### API Patterns
 
 - **FastAPI app factory**: `create_app()` in `main.py` wires up middleware, routers, exception handlers, and health checks.
