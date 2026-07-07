@@ -400,3 +400,5 @@ python -m backend.worker
 10. **Ports**: Backend runs on `8000`, frontend dev server on `5173`. Ensure both are free.
 
 11. **Redis & RQ Worker**: The word-count feature requires Redis running locally (default: `localhost:6379`). Start the RQ worker in a separate terminal with `python -m backend.worker`. The worker listens on the `qa-jobs` queue. When Redis is unavailable, uploads still succeed but word-count jobs are not enqueued (graceful degradation). The `REDIS_PASSWORD` in `.env.example` (`QaPassword`) is for local dev only — use a secure password in production.
+
+12. **Commit message**: Do not mention written by claude in commit message or PR description.
