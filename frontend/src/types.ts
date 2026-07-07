@@ -14,6 +14,14 @@ export interface JobStatusResponse {
   error: string | null
 }
 
+export interface PasswordVerifyRequest {
+  password: string
+}
+
+export interface AuthCheckResponse {
+  valid: boolean
+}
+
 export interface UploadResponse {
   job_id: string
   status: string
