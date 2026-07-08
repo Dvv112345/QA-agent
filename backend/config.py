@@ -47,15 +47,25 @@ def _get_list(key: str, default: list[str]) -> list[str]:
 STORE_OFFLINE: bool = _get_bool("STORE_OFFLINE")
 STORAGE_LOCATION: str | None = _get_optional_path("STORAGE_LOCATION")
 MAX_UPLOAD_SIZE_MB: int = _get_int("MAX_UPLOAD_SIZE_MB", 100)
-MAX_ZIP_FILES: int = _get_int("MAX_ZIP_FILES", 10000)
-MAX_TREE_DEPTH: int = _get_int("MAX_TREE_DEPTH", 100)
 CORS_ORIGINS: list[str] = _get_list("CORS_ORIGINS", ["http://localhost:5173"])
 VERSION: str = os.environ.get("VERSION", "0.1.0")
-CHUNK_SIZE: int = _get_int("CHUNK_SIZE", 8192)
+APP_PASSWORD: str | None = os.environ.get("APP_PASSWORD") or None
+
+# ── PostgreSQL ────────────────────────────────────────────────────────
+DATABASE_URL: str = os.environ.get(
+    "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/qa_agent"
+)
+
+# ── Encryption ────────────────────────────────────────────────────────
+ENCRYPTION_KEY: str = os.environ.get("ENCRYPTION_KEY", "")
+
+# ── GitHub API ────────────────────────────────────────────────────────
+GITHUB_API_TIMEOUT: int = _get_int("GITHUB_API_TIMEOUT", 15)
+
+# ── Redis / RQ ────────────────────────────────────────────────────────
 REDIS_HOST: str = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT: int = _get_int("REDIS_PORT", 6379)
 REDIS_PASSWORD: str | None = os.environ.get("REDIS_PASSWORD") or None
 REDIS_DB: int = _get_int("REDIS_DB", 0)
 JOB_TIMEOUT: int = _get_int("JOB_TIMEOUT", 300)
 JOB_RESULT_TTL: int = _get_int("JOB_RESULT_TTL", 3600)
-APP_PASSWORD: str | None = os.environ.get("APP_PASSWORD") or None

@@ -1,17 +1,15 @@
 import logging
 import os
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE, VERSION
+from backend.database import init_db
 from backend.models.types import HealthResponse
 from backend.routes.auth import router as auth_router
-from backend.routes.jobs import router as jobs_router
-from backend.routes.upload import router as upload_router
-from backend.utils.auth import verify_auth
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +66,11 @@ def create_app() -> FastAPI:
     app = FastAPI(title="QA Agent Backend", version=VERSION)
 
     # ------------------------------------------------------------------
+    # Database initialisation
+    # ------------------------------------------------------------------
+    init_db()
+
+    # ------------------------------------------------------------------
     # CORS (configurable via CORS_ORIGINS env var)
     # ------------------------------------------------------------------
     app.add_middleware(
@@ -79,8 +82,8 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth_router, prefix="/api")
-    app.include_router(upload_router, prefix="/api", dependencies=[Depends(verify_auth)])
-    app.include_router(jobs_router, prefix="/api", dependencies=[Depends(verify_auth)])
+
+    # Repo and sprint routers registered by later phases will be added here.
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.
