@@ -1,5 +1,7 @@
 """Tests for backend/routes/repos.py — repo CRUD and README status."""
 
+import asyncio
+
 import pytest
 
 # ── POST /api/repos ──────────────────────────────────────────────────
@@ -146,6 +148,7 @@ class TestListRepos:
                 "/api/repos",
                 data={"github_url": f"https://github.com/owner/repo{i}"},
             )
+            await asyncio.sleep(1)
         resp = await async_client.get("/api/repos?offset=1&limit=2")
         assert resp.status_code == 200
         data = resp.json()

@@ -38,6 +38,10 @@ def _mock_database_engine(monkeypatch):
 
     monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
 
+    # Prevent dotenv from reading the .env file so that local dev values
+    # don't leak into tests.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
+
     # On Windows, SSL_CERT_FILE may point to a non-existent file which
     # breaks httpx.AsyncClient() creation.  Unset it so httpx uses its
     # bundled certificates instead.

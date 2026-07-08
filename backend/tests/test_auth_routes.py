@@ -91,7 +91,8 @@ async def test_verify_when_auth_disabled(monkeypatch, db_session):
 @pytest.mark.asyncio
 async def test_check_with_valid_cookie(monkeypatch, db_session):
     async with _make_client(monkeypatch, db_session) as client:
-        resp = await client.get("/api/auth/check", cookies={"qa_auth": "secret123"})
+        client.cookies.set("qa_auth", "secret123")
+        resp = await client.get("/api/auth/check")
     assert resp.status_code == 200
     data = resp.json()
     assert data["valid"] is True
@@ -100,7 +101,8 @@ async def test_check_with_valid_cookie(monkeypatch, db_session):
 @pytest.mark.asyncio
 async def test_check_with_invalid_cookie(monkeypatch, db_session):
     async with _make_client(monkeypatch, db_session) as client:
-        resp = await client.get("/api/auth/check", cookies={"qa_auth": "wrong-value"})
+        client.cookies.set("qa_auth", "wrong-value")
+        resp = await client.get("/api/auth/check")
     assert resp.status_code == 200
     data = resp.json()
     assert data["valid"] is False
@@ -146,6 +148,7 @@ async def test_protected_route_rejected_without_cookie(monkeypatch, db_session):
 @pytest.mark.asyncio
 async def test_protected_route_accepted_with_valid_cookie(monkeypatch, db_session):
     async with _make_client(monkeypatch, db_session) as client:
-        resp = await client.post("/api/repos", cookies={"qa_auth": "secret123"})
+        client.cookies.set("qa_auth", "secret123")
+        resp = await client.post("/api/repos")
     # 422 = validation error (missing fields), but NOT 401
     assert resp.status_code == 422
