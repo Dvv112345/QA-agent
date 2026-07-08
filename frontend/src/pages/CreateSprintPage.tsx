@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { checkReadmeStatus, createSprint, fetchRepos } from '../services/api'
+import { checkReadmeStatus, createRepo, createSprint, fetchRepos } from '../services/api'
 import type { RepoResponse } from '../types'
 import './CreateSprintPage.css'
 
@@ -16,6 +16,13 @@ export default function CreateSprintPage() {
   const [error, setError] = useState<string | null>(null)
   const [reposLoading, setReposLoading] = useState(true)
   const [readmeLoading, setReadmeLoading] = useState(false)
+
+  // Inline repo creation
+  const [showNewRepoForm, setShowNewRepoForm] = useState(false)
+  const [newRepoUrl, setNewRepoUrl] = useState('')
+  const [newRepoToken, setNewRepoToken] = useState('')
+  const [creatingRepo, setCreatingRepo] = useState(false)
+  const [createRepoError, setCreateRepoError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchRepos()
@@ -34,6 +41,37 @@ export default function CreateSprintPage() {
       .catch((err: Error) => setError(err.message))
       .finally(() => setReadmeLoading(false))
   }, [])
+
+  const handleRepoSelect = useCallback(
+    (value: string) => {
+      if (value === '__new__') {
+        setShowNewRepoForm(true)
+        setCreateRepoError(null)
+        return
+      }
+      setShowNewRepoForm(false)
+      handleRepoChange(Number(value))
+    },
+    [handleRepoChange],
+  )
+
+  const handleCreateRepo = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newRepoUrl.trim()) return
+
+    setCreatingRepo(true)
+    setCreateRepoError(null)
+    createRepo(newRepoUrl.trim(), newRepoToken || undefined)
+      .then((newRepo) => {
+        setRepos((prev) => [...prev, newRepo])
+        setShowNewRepoForm(false)
+        setNewRepoUrl('')
+        setNewRepoToken('')
+        handleRepoChange(newRepo.id)
+      })
+      .catch((err: Error) => setCreateRepoError(err.message))
+      .finally(() => setCreatingRepo(false))
+  }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -70,10 +108,50 @@ export default function CreateSprintPage() {
           <span>Repository</span>
           {reposLoading ? (
             <p>Loading repos&hellip;</p>
+          ) : showNewRepoForm ? (
+            <div className="inline-repo-form">
+              <input
+                type="url"
+                value={newRepoUrl}
+                onChange={(e) => setNewRepoUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo"
+                required
+                disabled={creatingRepo}
+              />
+              <input
+                type="password"
+                value={newRepoToken}
+                onChange={(e) => setNewRepoToken(e.target.value)}
+                placeholder="GitHub token (optional, for private repos)"
+                disabled={creatingRepo}
+              />
+              {createRepoError && <p className="form-error">{createRepoError}</p>}
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={!newRepoUrl.trim() || creatingRepo}
+                  onClick={handleCreateRepo}
+                >
+                  {creatingRepo ? 'Adding…' : 'Add Repo'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={creatingRepo}
+                  onClick={() => {
+                    setShowNewRepoForm(false)
+                    setCreateRepoError(null)
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           ) : (
             <select
               value={selectedRepoId ?? ''}
-              onChange={(e) => handleRepoChange(Number(e.target.value))}
+              onChange={(e) => handleRepoSelect(e.target.value)}
               required
               disabled={loading}
             >
@@ -85,6 +163,7 @@ export default function CreateSprintPage() {
                   {repo.name}
                 </option>
               ))}
+              <option value="__new__">+ Create New Repo</option>
             </select>
           )}
         </label>

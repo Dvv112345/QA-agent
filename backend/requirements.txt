@@ -7,4 +7,5 @@ rq>=2.0,<3.0
 redis>=5.0,<7.0
 psycopg2-binary>=2.9,<3.0
 httpx>=0.27,<1.0
+certifi>=2024
 cryptography>=42,<45
