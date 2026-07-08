@@ -10,6 +10,7 @@ from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE, VERSIO
 from backend.database import init_db
 from backend.models.types import HealthResponse
 from backend.routes.auth import router as auth_router
+from backend.routes.repos import router as repos_router
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,9 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth_router, prefix="/api")
+    app.include_router(repos_router, prefix="/api")
 
-    # Repo and sprint routers registered by later phases will be added here.
+    # Sprint router registered by later phases will be added here.
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.

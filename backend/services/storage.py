@@ -1,31 +1,20 @@
+"""Conditional file storage for sprint README files.
+
+When ``STORE_OFFLINE`` is ``True``, README files are persisted to
+``STORAGE_LOCATION/<directory>/README.md`` on disk.  Otherwise writes
+are silently skipped.
+"""
+
 import logging
 import os
 
-from backend.config import (
-    CHUNK_SIZE,
-    MAX_TREE_DEPTH,
-    MAX_ZIP_FILES,
-    STORAGE_LOCATION,
-    STORE_OFFLINE,
-)
-from backend.utils.zip_utils import extract_zip
+from backend.config import STORAGE_LOCATION, STORE_OFFLINE
 
 logger = logging.getLogger(__name__)
 
-# Directory name where extracted zip contents are placed inside the job folder.
-ZIP_SOURCE_DIR = "zip_source"
-
-# Filename for the stored requirements document inside the job folder.
-REQUIREMENTS_FILENAME = "requirements.md"
-
 
 class StorageService:
-    """Handles conditional persistence of uploaded files.
-
-    When ``STORE_OFFLINE`` is ``True``, files are written to
-    ``STORAGE_LOCATION/<job_id>/`` on disk.  Otherwise files are kept
-    in memory only and ``store()`` is a no-op.
-    """
+    """Handles conditional persistence of sprint README files."""
 
     def __init__(self) -> None:
         self._offline = STORE_OFFLINE
@@ -48,24 +37,21 @@ class StorageService:
     def offline(self) -> bool:
         return self._offline
 
-    def store(self, zip_bytes: bytes, md_bytes: bytes, job_id: str) -> dict:
-        """Persist files to disk if offline mode is active.
+    def store_readme(self, md_bytes: bytes, directory: str) -> str | None:
+        """Persist a README file to disk if offline mode is active.
 
-        Returns a dict with storage metadata suitable for merging into
-        the ``UploadResponse``.
+        Returns the absolute path to the saved file, or ``None`` when
+        ``STORE_OFFLINE`` is disabled.
         """
         if not self._offline:
-            return {"stored": False}
+            return None
 
-        job_dir = os.path.join(self._base, job_id)
-        os.makedirs(job_dir, exist_ok=True)
+        sprint_dir = os.path.join(self._base, directory)
+        os.makedirs(sprint_dir, exist_ok=True)
 
-        zip_path = os.path.join(job_dir, ZIP_SOURCE_DIR)
-        md_path = os.path.join(job_dir, REQUIREMENTS_FILENAME)
-        extract_zip(zip_bytes, zip_path, MAX_ZIP_FILES, MAX_TREE_DEPTH, CHUNK_SIZE)
-        with open(md_path, "w", encoding="utf-8") as fh:
+        readme_path = os.path.join(sprint_dir, "README.md")
+        with open(readme_path, "w", encoding="utf-8") as fh:
             fh.write(md_bytes.decode("utf-8", errors="replace"))
 
-        logger.info("Stored upload %s → %s", job_id, job_dir)
-
-        return {"stored": True, "stored_path": job_dir, "zip_path": zip_path, "md_path": md_path}
+        logger.info("Stored README → %s", readme_path)
+        return os.path.abspath(readme_path)
