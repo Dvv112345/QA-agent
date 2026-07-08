@@ -123,3 +123,24 @@ def pytest_collection_modifyitems(items):
                     assert_all_requests_were_expected=False,
                 )
             )
+
+
+# ── Shared test helpers ────────────────────────────────────────────────
+
+
+async def _create_repo(client, github_url: str, httpx_mock, description: str = "A repo") -> int:
+    """Create a repo via the API and return its database id.
+
+    Registers the necessary ``httpx_mock`` response for the GitHub metadata
+    endpoint, then POSTs to ``/api/repos``.
+    """
+    from backend.utils.github_utils import parse_github_url
+
+    owner, repo_name = parse_github_url(github_url)
+    httpx_mock.add_response(
+        url=f"https://api.github.com/repos/{owner}/{repo_name}",
+        json={"full_name": f"{owner}/{repo_name}", "description": description},
+    )
+    resp = await client.post("/api/repos", data={"github_url": github_url})
+    assert resp.status_code == 201
+    return resp.json()["id"]

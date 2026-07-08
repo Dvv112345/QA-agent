@@ -35,10 +35,7 @@ export default function RepoListPage() {
     setDeactivating(repoId)
     setDeactivateError(null)
     deactivateRepo(repoId)
-      .then(() => {
-        setLoading(true)
-        return fetchRepos()
-      })
+      .then(() => fetchRepos())
       .then((data) => setRepos(data))
       .catch((err: Error) => setDeactivateError(err.message))
       .finally(() => setDeactivating(null))

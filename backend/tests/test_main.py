@@ -70,7 +70,7 @@ class TestHealthEndpoint:
         assert response.json()["storage"] == "available"
 
     @pytest.mark.asyncio
-    async def test_health_storage_no_location(self, monkeypatch):
+    async def test_health_storage_available_with_default_path(self, monkeypatch):
         monkeypatch.setenv("STORE_OFFLINE", "true")
         monkeypatch.delenv("STORAGE_LOCATION", raising=False)
         _reload_main(monkeypatch)
@@ -81,7 +81,7 @@ class TestHealthEndpoint:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/health")
         assert response.status_code == 200
-        assert "unavailable" in response.json()["storage"]
+        assert response.json()["storage"] == "available"
 
 
 class TestCheckStorageHealth:
@@ -106,15 +106,14 @@ class TestCheckStorageHealth:
         assert result == "available"
         assert os.path.isdir(storage_dir)
 
-    def test_unavailable_no_location(self, monkeypatch):
+    def test_available_with_default_path(self, monkeypatch):
         monkeypatch.setenv("STORE_OFFLINE", "true")
         monkeypatch.delenv("STORAGE_LOCATION", raising=False)
         _reload_main(monkeypatch)
         from backend.main import _check_storage_health
 
         result = _check_storage_health()
-        assert "unavailable" in result
-        assert "STORAGE_LOCATION" in result
+        assert result == "available"
 
 
 class TestCors:

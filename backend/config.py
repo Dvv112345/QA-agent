@@ -16,10 +16,16 @@ def _get_bool(key: str, default: bool = False) -> bool:
     return value == "true"
 
 
-def _get_optional_path(key: str) -> str | None:
-    """Read an env var as a filesystem path, returning ``None`` when unset."""
+def _get_optional_path(key: str, default: str | None = None) -> str | None:
+    """Read an env var as a filesystem path.
+
+    When the variable is unset and *default* is provided, normalise and
+    return *default*.  Otherwise returns ``None``.
+    """
     value = os.environ.get(key, "").strip()
     if not value:
+        if default is not None:
+            return os.path.normpath(default)
         return None
     return os.path.normpath(value)
 
@@ -45,7 +51,7 @@ def _get_list(key: str, default: list[str]) -> list[str]:
 
 
 STORE_OFFLINE: bool = _get_bool("STORE_OFFLINE")
-STORAGE_LOCATION: str | None = _get_optional_path("STORAGE_LOCATION")
+STORAGE_LOCATION: str = _get_optional_path("STORAGE_LOCATION", default="./uploads")  # type: ignore[assignment]
 MAX_UPLOAD_SIZE_MB: int = _get_int("MAX_UPLOAD_SIZE_MB", 100)
 CORS_ORIGINS: list[str] = _get_list("CORS_ORIGINS", ["http://localhost:5173"])
 VERSION: str = os.environ.get("VERSION", "0.1.0")

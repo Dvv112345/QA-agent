@@ -40,18 +40,25 @@ class StorageService:
     def store_readme(self, md_bytes: bytes, directory: str) -> str | None:
         """Persist a README file to disk if offline mode is active.
 
-        Returns the absolute path to the saved file, or ``None`` when
+        Validates that *md_bytes* is valid UTF-8 before writing.  Returns
+        the absolute path to the saved file, or ``None`` when
         ``STORE_OFFLINE`` is disabled.
         """
         if not self._offline:
             return None
+
+        # Fail loudly on invalid UTF-8 instead of silently corrupting data.
+        try:
+            text = md_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"README file is not valid UTF-8: {exc}") from exc
 
         sprint_dir = os.path.join(self._base, directory)
         os.makedirs(sprint_dir, exist_ok=True)
 
         readme_path = os.path.join(sprint_dir, "README.md")
         with open(readme_path, "w", encoding="utf-8") as fh:
-            fh.write(md_bytes.decode("utf-8", errors="replace"))
+            fh.write(text)
 
         logger.info("Stored README → %s", readme_path)
         return os.path.abspath(readme_path)

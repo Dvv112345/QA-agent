@@ -4,7 +4,6 @@ from backend.models.types import (
     PasswordVerifyRequest,
     ReadmeStatusResponse,
     RepoResponse,
-    SprintCreateRequest,
     SprintResponse,
     SprintUpdateRequest,
 )
@@ -15,7 +14,6 @@ __all__ = [
     "PasswordVerifyRequest",
     "ReadmeStatusResponse",
     "RepoResponse",
-    "SprintCreateRequest",
     "SprintResponse",
     "SprintUpdateRequest",
 ]

@@ -51,10 +51,5 @@ class SprintResponse(SQLModel):
     repo: RepoResponse | None = None
 
 
-class SprintCreateRequest(SQLModel):
-    name: str
-    repo_id: int
-
-
 class SprintUpdateRequest(SQLModel):
     active: bool

@@ -154,3 +154,12 @@ class TestDownloadReadme:
         )
         result = await download_readme("owner", "repo")
         assert result == content
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_404(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/readme",
+            status_code=404,
+        )
+        result = await download_readme("owner", "repo")
+        assert result is None

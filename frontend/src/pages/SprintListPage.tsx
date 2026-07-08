@@ -33,10 +33,7 @@ export default function SprintListPage() {
   const handleFinish = (sprintId: number) => {
     setFinishing(sprintId)
     finishSprint(sprintId)
-      .then(() => {
-        setLoading(true)
-        return fetchSprints()
-      })
+      .then(() => fetchSprints())
       .then((data) => setSprints(data))
       .catch((err: Error) => setError(err.message))
       .finally(() => setFinishing(null))

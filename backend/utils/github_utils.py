@@ -165,15 +165,29 @@ async def check_readme_exists(owner: str, repo: str, token: str | None = None) -
     raise _classify_error(response.status_code, bool(token))
 
 
-async def download_readme(owner: str, repo: str, token: str | None = None) -> str:
+async def download_readme(owner: str, repo: str, token: str | None = None) -> str | None:
     """Download and decode the README content from a GitHub repository.
 
-    Returns the raw markdown text.  Raises ``RepoNotFoundError`` if the
-    repository has no README (404).
+    Returns the raw markdown text, or ``None`` if the repository has no
+    README (404).  Raises the appropriate ``GitHubError`` subclass on other
+    failures.
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/readme"
+    headers = _build_headers(token)
     async with httpx.AsyncClient() as client:
-        data = await _get(client, url, token)
+        try:
+            response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
+        except httpx.TimeoutException:
+            raise GitHubUnavailableError(
+                f"GitHub README download timed out after {GITHUB_API_TIMEOUT}s"
+            ) from None
+        except httpx.RequestError as exc:
+            raise GitHubUnavailableError(f"Could not reach GitHub API: {exc}") from exc
 
-    content_b64 = data.get("content", "")
-    return base64.b64decode(content_b64).decode("utf-8")
+    if response.status_code == 200:
+        content_b64 = response.json().get("content", "")
+        return base64.b64decode(content_b64).decode("utf-8")
+    if response.status_code == 404:
+        return None
+
+    raise _classify_error(response.status_code, bool(token))

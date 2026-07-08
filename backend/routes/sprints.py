@@ -2,7 +2,6 @@
 
 import logging
 import os
-import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import Session, select
@@ -20,11 +19,11 @@ from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token
 from backend.utils.github_utils import (
     GitHubError,
-    check_readme_exists,
     download_readme,
     fetch_repo_metadata,
     parse_github_url,
 )
+from backend.utils.sprint_utils import generate_sprint_directory
 
 logger = logging.getLogger(__name__)
 
@@ -32,22 +31,6 @@ router = APIRouter(dependencies=[Depends(verify_auth)])
 
 # Allowed extensions for uploaded README files.
 _README_EXTENSIONS = {".md", ".markdown"}
-
-
-def generate_sprint_directory(session: Session, storage_location: str) -> str:
-    """Generate a unique collision-checked directory name for a sprint.
-
-    Checks both the database and the filesystem to guarantee uniqueness.
-    """
-    while True:
-        directory = uuid.uuid4().hex
-        existing = session.exec(select(Sprint).where(Sprint.directory == directory)).first()
-        if existing is not None:
-            continue
-        dir_path = os.path.join(storage_location, directory)
-        if os.path.exists(dir_path):
-            continue
-        return directory
 
 
 def _validate_readme_file(readme_file: UploadFile) -> bytes:
@@ -122,17 +105,13 @@ async def create_sprint(
         readme_bytes = _validate_readme_file(readme_file)
         logger.info("Sprint '%s': using user-provided README", name)
     else:
-        # No user file — check GitHub
+        # No user file — download from GitHub (single API call)
         try:
-            has_readme = await check_readme_exists(owner, repo_name, token)
+            readme_text = await download_readme(owner, repo_name, token)
         except GitHubError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        if has_readme:
-            try:
-                readme_text = await download_readme(owner, repo_name, token)
-            except GitHubError as exc:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if readme_text is not None:
             readme_bytes = readme_text.encode("utf-8")
             logger.info("Sprint '%s': downloaded README from GitHub", name)
         else:
@@ -142,8 +121,7 @@ async def create_sprint(
             )
 
     # ── Generate unique directory ─────────────────────────────────────
-    storage_location = STORAGE_LOCATION or "./uploads"
-    directory = generate_sprint_directory(session, storage_location)
+    directory, _dir_path = generate_sprint_directory(session, STORAGE_LOCATION)
 
     # ── Save README to disk ───────────────────────────────────────────
     storage = StorageService()
@@ -169,12 +147,17 @@ async def create_sprint(
 
 @router.get("/sprints", response_model=list[SprintResponse])
 async def list_sprints(
+    offset: int = 0,
+    limit: int = 100,
     session: Session = Depends(get_session),
 ) -> list[Sprint]:
-    """List all sprints — active first, then newest first within each group."""
+    """List sprints — active first, newest first within each group."""
     return list(
         session.exec(
-            select(Sprint).order_by(Sprint.active.desc(), Sprint.created_at.desc())  # noqa: E712
+            select(Sprint)
+            .order_by(Sprint.active.desc(), Sprint.created_at.desc())  # noqa: E712
+            .offset(offset)
+            .limit(limit)
         ).all()
     )
 

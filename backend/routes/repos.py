@@ -80,12 +80,18 @@ async def create_repo(
 
 @router.get("/repos", response_model=list[RepoResponse])
 async def list_repos(
+    offset: int = 0,
+    limit: int = 100,
     session: Session = Depends(get_session),
 ) -> list[Repo]:
-    """List all active repos, newest first."""
+    """List active repos, newest first."""
     return list(
         session.exec(
-            select(Repo).where(Repo.active == True).order_by(Repo.created_at.desc())  # noqa: E712
+            select(Repo)
+            .where(Repo.active == True)  # noqa: E712
+            .order_by(Repo.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         ).all()
     )
 

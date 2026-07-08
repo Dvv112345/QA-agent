@@ -118,7 +118,7 @@ class TestModuleConstants:
         importlib.reload(backend.config)
 
         assert backend.config.STORE_OFFLINE is False
-        assert backend.config.STORAGE_LOCATION is None
+        assert os.path.normpath("./uploads") == backend.config.STORAGE_LOCATION
         assert backend.config.MAX_UPLOAD_SIZE_MB == 100
         assert backend.config.CORS_ORIGINS == ["http://localhost:5173"]
         assert backend.config.VERSION == "0.1.0"

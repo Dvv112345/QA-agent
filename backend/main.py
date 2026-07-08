@@ -23,8 +23,6 @@ def _check_storage_health() -> str:
     """
     if not STORE_OFFLINE:
         return "memory_only"
-    if not STORAGE_LOCATION:
-        return "unavailable: STORAGE_LOCATION is not configured"
     try:
         os.makedirs(STORAGE_LOCATION, exist_ok=True)
     except OSError as exc:
