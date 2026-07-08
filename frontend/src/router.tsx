@@ -1,14 +1,18 @@
 import { createBrowserRouter } from 'react-router-dom'
-import HomePage from './pages/HomePage'
-import LoadingPage from './pages/LoadingPage'
+import CreateSprintPage from './pages/CreateSprintPage'
+import RepoListPage from './pages/RepoListPage'
+import SprintDetailPage from './pages/SprintDetailPage'
+import SprintListPage from './pages/SprintListPage'
 import RootLayout from './RootLayout'
 
 export const routes = [
   {
     element: <RootLayout />,
     children: [
-      { path: '/', element: <HomePage /> },
-      { path: '/loading', element: <LoadingPage /> },
+      { path: '/', element: <SprintListPage /> },
+      { path: '/sprints/new', element: <CreateSprintPage /> },
+      { path: '/sprints/:id', element: <SprintDetailPage /> },
+      { path: '/repos', element: <RepoListPage /> },
     ],
   },
 ]
