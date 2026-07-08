@@ -107,16 +107,12 @@ class TestModuleConstants:
 
     def test_defaults_when_env_is_unset(self, monkeypatch):
         """Module constants should use their default values when no env vars are set."""
-        # Prevent load_dotenv from re-loading .env during importlib.reload
         monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
 
         monkeypatch.delenv("STORE_OFFLINE", raising=False)
         monkeypatch.delenv("STORAGE_LOCATION", raising=False)
         monkeypatch.delenv("MAX_UPLOAD_SIZE_MB", raising=False)
-        monkeypatch.delenv("MAX_ZIP_FILES", raising=False)
-        monkeypatch.delenv("MAX_TREE_DEPTH", raising=False)
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
-        monkeypatch.delenv("CHUNK_SIZE", raising=False)
         monkeypatch.delenv("VERSION", raising=False)
 
         importlib.reload(backend.config)
@@ -124,11 +120,8 @@ class TestModuleConstants:
         assert backend.config.STORE_OFFLINE is False
         assert backend.config.STORAGE_LOCATION is None
         assert backend.config.MAX_UPLOAD_SIZE_MB == 100
-        assert backend.config.MAX_ZIP_FILES == 10000
-        assert backend.config.MAX_TREE_DEPTH == 100
         assert backend.config.CORS_ORIGINS == ["http://localhost:5173"]
         assert backend.config.VERSION == "0.1.0"
-        assert backend.config.CHUNK_SIZE == 8192
 
     def test_store_offline_set_to_true(self, monkeypatch):
         monkeypatch.setenv("STORE_OFFLINE", "true")
@@ -153,3 +146,27 @@ class TestModuleConstants:
         monkeypatch.delenv("STORE_OFFLINE", raising=False)
         importlib.reload(backend.config)
         assert backend.config.VERSION == "2.0.0"
+
+    def test_database_url_default(self, monkeypatch):
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        importlib.reload(backend.config)
+        assert "postgresql://" in backend.config.DATABASE_URL
+
+    def test_encryption_key_default_empty(self, monkeypatch):
+        monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+        importlib.reload(backend.config)
+        assert backend.config.ENCRYPTION_KEY == ""
+
+    def test_github_api_timeout_default(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_API_TIMEOUT", raising=False)
+        importlib.reload(backend.config)
+        assert backend.config.GITHUB_API_TIMEOUT == 15
+
+    def test_redis_config_defaults(self, monkeypatch):
+        monkeypatch.delenv("REDIS_HOST", raising=False)
+        monkeypatch.delenv("REDIS_PORT", raising=False)
+        monkeypatch.delenv("REDIS_DB", raising=False)
+        importlib.reload(backend.config)
+        assert backend.config.REDIS_HOST == "localhost"
+        assert backend.config.REDIS_PORT == 6379
+        assert backend.config.REDIS_DB == 0

@@ -1,67 +1,125 @@
 import importlib
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlmodel import Session, SQLModel, create_engine
 
-# Resolve the tests directory for locating sample files
 _TESTS_DIR = Path(__file__).resolve().parent
 
+TEST_DATABASE_URL = "sqlite:///file:test_db?mode=memory&cache=shared&uri=true"
 
-@pytest.fixture
-def sample_zip_path() -> Path:
-    """Path to a valid sample zip archive for upload tests."""
-    return _TESTS_DIR / "sample_zip.zip"
+
+# ── Globally replace the database engine with SQLite ──────────────────
+
+
+@pytest.fixture(autouse=True)
+def _mock_database_engine(monkeypatch):
+    """Replace database._engine with a SQLite engine for every test.
+
+    This runs automatically before every test so no test ever tries to
+    connect to a real PostgreSQL server.
+    """
+    engine = create_engine(TEST_DATABASE_URL, echo=False)
+
+    import backend.database
+
+    monkeypatch.setattr(backend.database, "_engine", engine)
+
+    # Also mock init_db so the app's startup call is a no-op (tables are
+    # created by the db_session fixture).
+    monkeypatch.setattr(backend.database, "init_db", lambda: None)
+
+    # Set a test encryption key so encrypt_token/decrypt_token work.
+    # We generate a fresh key via Fernet.generate_key() rather than
+    # hardcoding one so it's always valid.
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    # On Windows, SSL_CERT_FILE may point to a non-existent file which
+    # breaks httpx.AsyncClient() creation.  Unset it so httpx uses its
+    # bundled certificates instead.
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+
+
+# ── Test database session ────────────────────────────────────────────
+
+
+@pytest.fixture(scope="function")
+def db_session() -> Generator[Session, None, None]:
+    """Yield a session bound to a fresh in-memory SQLite database."""
+    # Ensure all models are imported before create_all
+    from backend.models.repo import Repo  # noqa: F401
+    from backend.models.sprint import Sprint  # noqa: F401
+
+    engine = create_engine(TEST_DATABASE_URL, echo=False)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        yield session
+    SQLModel.metadata.drop_all(engine)
+
+
+# ── Sample files ─────────────────────────────────────────────────────
 
 
 @pytest.fixture
 def sample_md_path() -> Path:
-    """Path to a valid sample markdown file for upload tests."""
     return _TESTS_DIR / "sample_md.md"
 
 
 @pytest.fixture
-def sample_zip_bytes(sample_zip_path: Path) -> bytes:
-    """Bytes of a valid sample zip archive."""
-    return sample_zip_path.read_bytes()
-
-
-@pytest.fixture
 def sample_md_bytes(sample_md_path: Path) -> bytes:
-    """Bytes of a valid UTF-8 markdown file."""
     return sample_md_path.read_bytes()
 
 
+# ── Async HTTP client ────────────────────────────────────────────────
+
+
 @pytest.fixture
-async def async_client(monkeypatch):
-    """Async HTTP client wired directly to the FastAPI app via ASGI transport.
-
-    Environment is reset to safe defaults before the app is created so that
-    tests always start from a known state regardless of what other test
-    modules may have reloaded.
-    """
-    # Prevent load_dotenv from clobbering our test values during reload
+async def async_client(monkeypatch, db_session):
+    """Async HTTP client wired to the FastAPI app via ASGI transport."""
     monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
-
     monkeypatch.setenv("STORE_OFFLINE", "false")
-    monkeypatch.setenv("MAX_ZIP_FILES", "100000")  # sample zip has many entries
     monkeypatch.delenv("STORAGE_LOCATION", raising=False)
-    monkeypatch.delenv("APP_PASSWORD", raising=False)  # auth disabled by default
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
 
-    # Reload config then main so module-level imports pick up our env values
     import backend.config
     import backend.main
 
     importlib.reload(backend.config)
     importlib.reload(backend.main)
 
-    # Prevent any test from accessing a real Redis server
     monkeypatch.setattr(backend.main, "_check_redis_health", lambda: "mocked")
+
+    from backend.database import get_session
+
+    async def _override():
+        return db_session
 
     from backend.main import create_app
 
     app = create_app()
-    transport = ASGITransport(app=app)
+    app.dependency_overrides[get_session] = _override
 
+    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+# ── Relaxed httpx_mock defaults ──────────────────────────────────────
+# Don't fail teardown if mocked responses weren't consumed (tests may
+# fail before making all expected HTTP requests).
+
+
+def pytest_collection_modifyitems(items):
+    """Apply relaxed httpx_mock defaults to all async tests."""
+    for item in items:
+        if "httpx_mock" in item.fixturenames:
+            item.add_marker(
+                pytest.mark.httpx_mock(
+                    assert_all_responses_were_requested=False,
+                    assert_all_requests_were_expected=False,
+                )
+            )

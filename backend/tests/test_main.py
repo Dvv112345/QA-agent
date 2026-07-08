@@ -20,7 +20,12 @@ def _reload_main(monkeypatch):
 class TestCreateApp:
     """Tests for ``create_app()``."""
 
-    def test_returns_fastapi_instance(self):
+    def test_returns_fastapi_instance(self, monkeypatch):
+        monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
+        import backend.main
+
+        importlib.reload(backend.main)
+
         from backend.main import create_app
 
         app = create_app()
@@ -46,13 +51,11 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_health_memory_only_storage(self, async_client):
-        """When STORE_OFFLINE is false, storage reports memory_only."""
         response = await async_client.get("/api/health")
         assert response.json()["storage"] == "memory_only"
 
     @pytest.mark.asyncio
     async def test_health_storage_available(self, monkeypatch, tmp_path):
-        """With STORE_OFFLINE=true and a writable dir, storage reports available."""
         storage_dir = str(tmp_path / "store")
         monkeypatch.setenv("STORE_OFFLINE", "true")
         monkeypatch.setenv("STORAGE_LOCATION", storage_dir)
@@ -68,7 +71,6 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_health_storage_no_location(self, monkeypatch):
-        """With STORE_OFFLINE=true but no STORAGE_LOCATION, storage reports unavailable."""
         monkeypatch.setenv("STORE_OFFLINE", "true")
         monkeypatch.delenv("STORAGE_LOCATION", raising=False)
         _reload_main(monkeypatch)
@@ -146,31 +148,40 @@ class TestCors:
 class TestExceptionHandler:
     """Tests for the global exception handler."""
 
-    def test_http_exception_is_reraises(self):
-        """The handler re-raises HTTPException so FastAPI handles it normally."""
-        from fastapi import HTTPException, Request
+    def test_http_exception_is_reraises(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from fastapi import HTTPException
+
+        monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
+        import backend.main
+
+        importlib.reload(backend.main)
 
         from backend.main import create_app
 
         app = create_app()
-
-        # Get the handler
         handler = app.exception_handlers[Exception]
 
-        # It should be our custom handler
         exc = HTTPException(status_code=418)
         with pytest.raises(HTTPException):
-            # Directly test the re-raise logic: HTTPException → re-raise
             import asyncio
 
             async def run():
-                await handler(Request(scope={"type": "http"}), exc)
+                request = MagicMock()
+                request.method = "GET"
+                request.url.path = "/"
+                await handler(request, exc)
 
             asyncio.run(run())
 
-    def test_other_exception_returns_500(self):
-        """Non-HTTP exceptions return a 500 JSONResponse."""
-        from fastapi import Request
+    def test_other_exception_returns_500(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
+        import backend.main
+
+        importlib.reload(backend.main)
 
         from backend.main import create_app
 
@@ -180,33 +191,22 @@ class TestExceptionHandler:
         import asyncio
 
         async def run():
-            response = await handler(
-                Request(
-                    scope={
-                        "type": "http",
-                        "method": "GET",
-                        "path": "/test",
-                        "headers": [],
-                    }
-                ),
-                RuntimeError("boom"),
-            )
+            request = MagicMock()
+            request.method = "GET"
+            request.url.path = "/test"
+            response = await handler(request, RuntimeError("boom"))
             assert response.status_code == 500
             assert response.body == b'{"detail":"Internal server error"}'
 
         asyncio.run(run())
 
     @pytest.mark.asyncio
-    async def test_unexpected_error_via_http(self, async_client):
-        """A real unexpected server error returns a 500.
+    async def test_unexpected_error_via_http(self, monkeypatch):
+        monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
+        import backend.main
 
-        We test this indirectly: the /api/upload endpoint validates filenames
-        before our handler runs. Missing file fields produce a 422 via FastAPI's
-        own validation. Unexpected errors produce 500. Since we can't easily
-        inject a crashing route through the already-created async_client, we
-        verify the handler directly in the test above.
-        """
-        # This test verifies the handler is properly registered on the app
+        importlib.reload(backend.main)
+
         from backend.main import create_app
 
         app = create_app()
