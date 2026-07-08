@@ -11,6 +11,7 @@ from backend.database import init_db
 from backend.models.types import HealthResponse
 from backend.routes.auth import router as auth_router
 from backend.routes.repos import router as repos_router
+from backend.routes.sprints import router as sprints_router
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +85,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
-
-    # Sprint router registered by later phases will be added here.
+    app.include_router(sprints_router, prefix="/api")
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.
