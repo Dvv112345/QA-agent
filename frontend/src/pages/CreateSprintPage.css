@@ -1,0 +1,78 @@
+.create-sprint {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.create-sprint h1 {
+  margin: 0 0 1.5rem;
+}
+
+.create-sprint-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.form-field span {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.form-field input,
+.form-field select {
+  padding: 0.5rem;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+.readme-note {
+  padding: 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.readme-found {
+  background: #d4edda;
+  color: #155724;
+}
+
+.readme-required {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.form-error {
+  color: var(--color-error, #c00);
+  font-size: 0.9rem;
+}
+
+.form-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.inline-repo-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  background: var(--color-surface, #f9f9f9);
+}
+
+.inline-repo-form input {
+  padding: 0.5rem;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  font-size: 1rem;
+}
