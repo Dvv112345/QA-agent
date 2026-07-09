@@ -55,8 +55,7 @@ def _mock_database_engine(monkeypatch):
 def db_session() -> Generator[Session, None, None]:
     """Yield a session bound to a fresh in-memory SQLite database."""
     # Ensure all models are imported before create_all
-    from backend.models.repo import Repo  # noqa: F401
-    from backend.models.sprint import Sprint  # noqa: F401
+    from backend.models.database import Repo, Sprint  # noqa: F401
 
     engine = create_engine(TEST_DATABASE_URL, echo=False)
     SQLModel.metadata.create_all(engine)

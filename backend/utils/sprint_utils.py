@@ -6,7 +6,7 @@ import uuid
 
 from sqlmodel import Session, select
 
-from backend.models.sprint import Sprint
+from backend.models.database import Sprint
 
 logger = logging.getLogger(__name__)
 

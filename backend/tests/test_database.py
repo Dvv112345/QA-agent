@@ -30,8 +30,7 @@ class TestInitDb:
         We verify indirectly: the db_session fixture successfully creates
         and drops tables, proving the models are registered with SQLModel.metadata.
         """
-        from backend.models.repo import Repo
-        from backend.models.sprint import Sprint
+        from backend.models.database import Repo, Sprint
 
         # If tables weren't created these queries would raise OperationalError
         assert hasattr(Repo, "__table__")

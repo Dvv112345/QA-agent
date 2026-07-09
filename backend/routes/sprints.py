@@ -8,8 +8,7 @@ from sqlmodel import Session, select
 
 from backend.config import STORAGE_LOCATION
 from backend.database import get_session
-from backend.models.repo import Repo
-from backend.models.sprint import Sprint
+from backend.models.database import Repo, Sprint
 from backend.models.types import (
     SprintResponse,
     SprintUpdateRequest,

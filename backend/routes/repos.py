@@ -6,8 +6,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlmodel import Session, select
 
 from backend.database import get_session
-from backend.models.repo import Repo
-from backend.models.sprint import Sprint
+from backend.models.database import Repo, Sprint
 from backend.models.types import ReadmeStatusResponse, RepoResponse
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token, encrypt_token
