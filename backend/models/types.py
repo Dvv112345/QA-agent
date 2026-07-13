@@ -53,3 +53,33 @@ class SprintResponse(SQLModel):
 
 class SprintUpdateRequest(SQLModel):
     active: bool
+
+
+# ── Requirement ───────────────────────────────────────────────────────
+
+
+class RequirementCreateRequest(SQLModel):
+    name: str
+    description: str
+
+
+class RequirementAnswerRequest(SQLModel):
+    answer: str
+
+
+class RequirementEditRequest(SQLModel):
+    description: str
+
+
+class RequirementResponse(SQLModel):
+    id: int
+    sprint_id: int
+    name: str
+    description: str
+    original_description: str
+    status: str
+    clarifying_question: str | None = None
+    revision_count: int
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
