@@ -24,7 +24,7 @@ from sqlmodel import select
 
 from backend.config import HEARTBEAT_STALE_SECONDS, MAX_AUTO_RETRIES, RECONCILER_INTERVAL
 from backend.database import new_session
-from backend.models.database import Requirement, RequirementStatus
+from backend.models.database import Requirement, RequirementStatus, Sprint
 from backend.services.queue import get_queue_service, reset_queue_service
 
 logger = logging.getLogger(__name__)
@@ -89,8 +89,13 @@ def reconcile_once() -> None:
             session.add(row)
 
         # ── Pending sweep (enqueue backlog) ───────────────────────────
+        # Finished sprints are excluded: their in-progress rows were failed
+        # at finish time, and any straggler (e.g. a task failure re-pending
+        # a row after the sweep) must not be re-enqueued forever.
         pending = session.exec(
-            select(Requirement).where(Requirement.status == RequirementStatus.PENDING)
+            select(Requirement)
+            .join(Sprint)
+            .where(Requirement.status == RequirementStatus.PENDING, Sprint.active)
         ).all()
         for row in pending:
             if row.job_id:

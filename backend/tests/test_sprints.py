@@ -353,6 +353,44 @@ class TestFinishSprint:
         )
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_marks_in_progress_requirements_failed(self, async_client, db_session):
+        from backend.models.database import SPRINT_FINISHED_ERROR, Requirement, RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        pending = _seed_requirement(db_session, sprint)
+        analyzing = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.ANALYZING,
+            pending_answer="stale answer",
+        )
+        untouched = {
+            _seed_requirement(db_session, sprint, status=status).id: status
+            for status in (
+                RequirementStatus.NEEDS_CLARIFICATION,
+                RequirementStatus.READY,
+                RequirementStatus.CONFIRMED,
+                RequirementStatus.FAILED,
+            )
+        }
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for req_id in (pending.id, analyzing.id):
+            row = db_session.get(Requirement, req_id)
+            assert row.status == RequirementStatus.FAILED
+            assert row.error == SPRINT_FINISHED_ERROR
+            assert row.last_heartbeat is None
+            assert row.pending_answer is None
+        for req_id, status in untouched.items():
+            row = db_session.get(Requirement, req_id)
+            assert row.status == status
+            assert row.error is None
+
 
 # == Repo file-tree capture during sprint creation ====================
 

@@ -7,7 +7,7 @@ are monkeypatched — no Redis, no network.
 
 import pytest
 
-from backend.models.database import Requirement, RequirementStatus
+from backend.models.database import SPRINT_FINISHED_ERROR, Requirement, RequirementStatus
 from backend.services.llm import ClarityResult, LLMError
 from backend.tasks.analyze_requirement import analyze_requirement_task
 from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
@@ -187,6 +187,47 @@ class TestIdempotencyGuards:
     def test_missing_row_is_noop(self, db_session, llm_stub):
         analyze_requirement_task(99999)
         assert llm_stub.check_calls == []
+
+
+class TestFinishedSprintGuards:
+    def test_inactive_sprint_marks_row_failed(self, db_session, llm_stub):
+        sprint = _seed_sprint(db_session, active=False)
+        req = _seed_requirement(db_session, sprint, pending_answer="stale answer")
+
+        analyze_requirement_task(req.id)
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.FAILED
+        assert row.error == SPRINT_FINISHED_ERROR
+        assert row.pending_answer is None
+        assert llm_stub.check_calls == []
+        assert llm_stub.revise_calls == []
+
+    def test_discards_result_when_status_changed_mid_run(self, db_session, llm_stub, monkeypatch):
+        """A row failed/reset while the LLM call was in flight keeps that state."""
+        import backend.services.llm as llm_module
+        from backend.database import new_session
+
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint)
+
+        def _flip_status_then_answer(*args, **kwargs):
+            # Simulates the finish-sprint sweep landing mid-LLM-call.
+            with new_session() as other:
+                row = other.get(Requirement, req.id)
+                row.status = RequirementStatus.FAILED
+                row.error = SPRINT_FINISHED_ERROR
+                other.add(row)
+                other.commit()
+            return CLEAR
+
+        monkeypatch.setattr(llm_module, "check_clarity", _flip_status_then_answer)
+
+        analyze_requirement_task(req.id)
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.FAILED
+        assert row.error == SPRINT_FINISHED_ERROR
 
 
 class TestReadmeResolution:

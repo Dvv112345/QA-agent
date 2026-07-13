@@ -5,6 +5,8 @@ from enum import Enum
 
 from sqlmodel import Field, Relationship, SQLModel
 
+from backend.config import MAX_CLARIFICATION_ROUNDS
+
 
 class Repo(SQLModel, table=True):
     """A GitHub repository registered for QA analysis."""
@@ -50,11 +52,16 @@ class RequirementStatus(str, Enum):
     FAILED = "failed"
 
 
+# Error stored on rows failed because their sprint was finished mid-analysis
+# (shared by the finish-sprint sweep and the worker task's guard).
+SPRINT_FINISHED_ERROR = "Sprint was finished before analysis completed."
+
+
 class Requirement(SQLModel, table=True):
     """A single requirement attached to a sprint, analyzed for QA clarity."""
 
     id: int | None = Field(default=None, primary_key=True)
-    sprint_id: int = Field(foreign_key="sprint.id")
+    sprint_id: int = Field(foreign_key="sprint.id", index=True)
     name: str
     description: str  # current text (possibly LLM-rewritten)
     original_description: str
@@ -74,3 +81,8 @@ class Requirement(SQLModel, table=True):
     )
 
     sprint: Sprint | None = Relationship(back_populates="requirements")
+
+    @property
+    def clarification_cap_reached(self) -> bool:
+        """Whether the clarification Q&A rounds are exhausted (confirm/edit only)."""
+        return self.revision_count >= MAX_CLARIFICATION_ROUNDS

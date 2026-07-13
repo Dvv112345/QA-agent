@@ -17,11 +17,16 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from backend.config import MAX_AUTO_RETRIES, STORAGE_LOCATION, STORE_OFFLINE
 from backend.database import new_session
-from backend.models.database import Requirement, RequirementStatus, Sprint
+from backend.models.database import (
+    SPRINT_FINISHED_ERROR,
+    Requirement,
+    RequirementStatus,
+    Sprint,
+)
 from backend.services import llm
 from backend.utils.crypto import decrypt_token
 from backend.utils.github_utils import download_readme, parse_github_url
@@ -95,6 +100,20 @@ def analyze_requirement_task(requirement_id: int) -> None:
             )
             return
 
+        sprint = requirement.sprint
+        if sprint is None or not sprint.active:
+            # Sprint finished (or vanished) after this job was enqueued —
+            # mirror the finish-sprint sweep instead of analyzing.
+            requirement.status = RequirementStatus.FAILED
+            requirement.error = SPRINT_FINISHED_ERROR
+            requirement.last_heartbeat = None
+            requirement.pending_answer = None
+            requirement.updated_at = _now()
+            session.add(requirement)
+            session.commit()
+            logger.info("Requirement %d: sprint inactive — marked failed", requirement_id)
+            return
+
         requirement.status = RequirementStatus.ANALYZING
         requirement.last_heartbeat = _now()
         requirement.updated_at = _now()
@@ -102,9 +121,8 @@ def analyze_requirement_task(requirement_id: int) -> None:
         session.commit()
 
         try:
-            sprint = requirement.sprint
-            readme = _resolve_readme(sprint) if sprint else None
-            file_tree = sprint.repo.file_tree if sprint and sprint.repo else None
+            readme = _resolve_readme(sprint)
+            file_tree = sprint.repo.file_tree if sprint.repo else None
 
             # Work-unit boundary before the (long) LLM call.
             requirement.last_heartbeat = _now()
@@ -127,6 +145,22 @@ def analyze_requirement_task(requirement_id: int) -> None:
                 result = llm.check_clarity(
                     requirement.name, requirement.description, readme, file_tree
                 )
+
+            # The LLM call is the long wait — the row may have been failed
+            # (sprint finished), deleted, or reset meanwhile. Re-read the
+            # status and discard a stale result rather than overwrite it.
+            with session.no_autoflush:
+                current_status = session.exec(
+                    select(Requirement.status).where(Requirement.id == requirement_id)
+                ).one_or_none()
+            if current_status != RequirementStatus.ANALYZING:
+                logger.info(
+                    "Requirement %d changed to '%s' mid-analysis — discarding result",
+                    requirement_id,
+                    current_status,
+                )
+                session.rollback()
+                return
 
             if result.clear:
                 requirement.status = RequirementStatus.READY

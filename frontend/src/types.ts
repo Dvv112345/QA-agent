@@ -46,6 +46,7 @@ export interface RequirementResponse {
   status: RequirementStatus
   clarifying_question: string | null
   revision_count: number
+  clarification_cap_reached: boolean
   error: string | null
   created_at: string
   updated_at: string

@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 
 QUEUE_NAME = "qa-jobs"
 
+# Socket timeout for enqueue-side Redis calls (enqueue, ping, job lookups) so
+# a dead Redis never hangs a request or a reconciler tick.  RQ raises the
+# worker connection's timeout above its blocking-dequeue window on startup,
+# so this small value never breaks the worker's BLPOP waits.
+REDIS_SOCKET_TIMEOUT = 5
+
 # Dotted path enqueued instead of a function object so the web process never
 # imports the task module (task modules must not be imported by queue/worker
 # modules — circular-import rule).  RQ resolves it to the real function at
@@ -85,6 +91,7 @@ class QueueService:
                 password=REDIS_PASSWORD,
                 db=REDIS_DB,
                 decode_responses=False,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
             )
             self._redis.ping()
             self._queue = rq.Queue(QUEUE_NAME, connection=self._redis)

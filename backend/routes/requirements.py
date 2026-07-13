@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
-from backend.config import MAX_CLARIFICATION_ROUNDS
 from backend.database import get_session
 from backend.models.database import Requirement, RequirementStatus, Sprint
 from backend.models.types import (
@@ -148,7 +147,7 @@ async def answer_requirement(
             status_code=422,
             detail="Only requirements awaiting clarification can be answered.",
         )
-    if requirement.revision_count >= MAX_CLARIFICATION_ROUNDS:
+    if requirement.clarification_cap_reached:
         raise HTTPException(
             status_code=422,
             detail="Clarification limit reached — confirm the requirement or edit it manually.",

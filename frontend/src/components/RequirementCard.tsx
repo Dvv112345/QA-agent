@@ -9,9 +9,6 @@ import {
 import type { RequirementResponse, RequirementStatus } from '../types'
 import './RequirementCard.css'
 
-// Mirrors the backend's MAX_CLARIFICATION_ROUNDS default.
-const MAX_CLARIFICATION_ROUNDS = 3
-
 const STATUS_LABELS: Record<RequirementStatus, string> = {
   pending: 'Queued',
   analyzing: 'Analyzing',
@@ -44,7 +41,7 @@ export default function RequirementCard({
   const { status } = requirement
   const inProgress = status === 'pending' || status === 'analyzing'
   const wasRewritten = requirement.description !== requirement.original_description
-  const capReached = requirement.revision_count >= MAX_CLARIFICATION_ROUNDS
+  const capReached = requirement.clarification_cap_reached
 
   const runAction = (
     promise: Promise<RequirementResponse>,

@@ -124,6 +124,17 @@ class TestPendingSweep:
 
         assert stub_queue.enqueued == [req.id]
 
+    def test_skips_pending_on_finished_sprint(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session, active=False)
+        req = _seed_requirement(db_session, sprint)
+
+        reconcile_once()
+
+        assert stub_queue.enqueued == []
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.PENDING
+        assert row.job_id is None
+
 
 class TestStaleHeartbeatSweep:
     def test_stale_analyzing_returns_to_pending(self, db_session, stub_queue):

@@ -80,6 +80,7 @@ class RequirementResponse(SQLModel):
     status: str
     clarifying_question: str | None = None
     revision_count: int
+    clarification_cap_reached: bool
     error: str | None = None
     created_at: datetime
     updated_at: datetime

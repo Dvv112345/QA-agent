@@ -173,6 +173,30 @@ class TestListRequirements:
         assert "retry_count" not in row
         assert "last_heartbeat" not in row
 
+    @pytest.mark.asyncio
+    async def test_clarification_cap_flag(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        below_cap = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.NEEDS_CLARIFICATION,
+            clarifying_question="Which users?",
+            revision_count=2,
+        )
+        at_cap = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.NEEDS_CLARIFICATION,
+            clarifying_question="Which users?",
+            revision_count=3,
+        )
+
+        resp = await async_client.get(f"/api/sprints/{sprint.id}/requirements")
+
+        rows = {row["id"]: row for row in resp.json()}
+        assert rows[below_cap.id]["clarification_cap_reached"] is False
+        assert rows[at_cap.id]["clarification_cap_reached"] is True
+
 
 # ── POST /api/requirements/{id}/answer ───────────────────────────────
 
