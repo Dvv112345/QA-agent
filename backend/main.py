@@ -1,5 +1,8 @@
+import asyncio
+import contextlib
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,6 +57,24 @@ def _check_redis_health() -> str:
         return f"unavailable: {exc}"
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Run the reconciler loop for the app's lifetime.
+
+    Note: httpx ``ASGITransport`` never runs lifespan, so this is inert in
+    the API test suite — ``reconcile_once`` is unit-tested directly.
+    """
+    from backend.services.reconciler import reconciler_loop
+
+    task = asyncio.create_task(reconciler_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     # Structured logging
@@ -64,7 +85,7 @@ def create_app() -> FastAPI:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    app = FastAPI(title="QA Agent Backend", version=VERSION)
+    app = FastAPI(title="QA Agent Backend", version=VERSION, lifespan=_lifespan)
 
     # ------------------------------------------------------------------
     # Database initialisation

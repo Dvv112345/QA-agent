@@ -81,6 +81,11 @@ JOB_RESULT_TTL: int = _get_int("JOB_RESULT_TTL", 3600)
 MAX_CLARIFICATION_ROUNDS: int = _get_int("MAX_CLARIFICATION_ROUNDS", 3)
 MAX_AUTO_RETRIES: int = _get_int("MAX_AUTO_RETRIES", 3)
 
+# ── Reconciler ────────────────────────────────────────────────────────
+RECONCILER_INTERVAL: int = _get_int("RECONCILER_INTERVAL", 30)
+# Must exceed OPENAI_TIMEOUT so a slow LLM call is never mistaken for a dead worker.
+HEARTBEAT_STALE_SECONDS: int = _get_int("HEARTBEAT_STALE_SECONDS", 180)
+
 # ── LLM (OpenAI-compatible; DeepSeek by default) ─────────────────────
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL: str | None = os.environ.get("OPENAI_BASE_URL") or None
