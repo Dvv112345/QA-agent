@@ -1,8 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { fetchSprint, finishSprint } from '../services/api'
-import type { SprintResponse } from '../types'
+import RequirementCard from '../components/RequirementCard'
+import RequirementForm from '../components/RequirementForm'
+import { fetchRequirements, fetchSprint, finishSprint } from '../services/api'
+import type { RequirementResponse, SprintResponse } from '../types'
 import './SprintDetailPage.css'
+
+const POLL_INTERVAL_MS = 2500
+
+// Statuses that still change without user input — worth polling for.
+function isInProgress(requirement: RequirementResponse): boolean {
+  return requirement.status === 'pending' || requirement.status === 'analyzing'
+}
 
 export default function SprintDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -12,6 +21,10 @@ export default function SprintDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [finishing, setFinishing] = useState(false)
+  const [requirements, setRequirements] = useState<RequirementResponse[]>([])
+  const [requirementsError, setRequirementsError] = useState<string | null>(null)
+
+  const fetchingRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -28,10 +41,39 @@ export default function SprintDetailPage() {
           setLoading(false)
         }
       })
+    fetchRequirements(sprintId)
+      .then((data) => {
+        if (!cancelled) setRequirements(data)
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setRequirementsError(err.message)
+      })
     return () => {
       cancelled = true
     }
   }, [sprintId])
+
+  // Poll while any requirement is still queued or being analyzed.
+  const shouldPoll = requirements.some(isInProgress)
+
+  useEffect(() => {
+    if (!shouldPoll) return
+
+    const pollId = setInterval(() => {
+      if (fetchingRef.current) return
+      fetchingRef.current = true
+      fetchRequirements(sprintId)
+        .then(setRequirements)
+        .catch(() => {
+          /* transient poll failure — retry on next tick */
+        })
+        .finally(() => {
+          fetchingRef.current = false
+        })
+    }, POLL_INTERVAL_MS)
+
+    return () => clearInterval(pollId)
+  }, [shouldPoll, sprintId])
 
   const handleFinish = () => {
     setFinishing(true)
@@ -41,11 +83,24 @@ export default function SprintDetailPage() {
       .finally(() => setFinishing(false))
   }
 
+  const handleSubmitted = (created: RequirementResponse[]) => {
+    setRequirements((prev) => [...prev, ...created])
+  }
+
+  const handleUpdated = (updated: RequirementResponse) => {
+    setRequirements((prev) => prev.map((req) => (req.id === updated.id ? updated : req)))
+  }
+
+  const handleRemoved = (removedId: number) => {
+    setRequirements((prev) => prev.filter((req) => req.id !== removedId))
+  }
+
   if (loading) return <p className="sprint-detail-message">Loading sprint&hellip;</p>
   if (error) return <p className="sprint-detail-message sprint-detail-error">{error}</p>
   if (!sprint) return <p className="sprint-detail-message">Sprint not found.</p>
 
   const repo = sprint.repo
+  const analyzedCount = requirements.filter((req) => !isInProgress(req)).length
 
   return (
     <div className="sprint-detail">
@@ -85,6 +140,30 @@ export default function SprintDetailPage() {
           </dl>
         </section>
       )}
+
+      <section className="requirements-section">
+        <h2>Requirements</h2>
+
+        {requirementsError && <p className="sprint-detail-error">{requirementsError}</p>}
+
+        {requirements.length > 0 && (
+          <p className="requirements-summary">
+            {analyzedCount} of {requirements.length} analyzed
+          </p>
+        )}
+
+        {requirements.map((requirement) => (
+          <RequirementCard
+            key={requirement.id}
+            requirement={requirement}
+            sprintActive={sprint.active}
+            onUpdated={handleUpdated}
+            onRemoved={handleRemoved}
+          />
+        ))}
+
+        {sprint.active && <RequirementForm sprintId={sprintId} onSubmitted={handleSubmitted} />}
+      </section>
 
       {sprint.active && (
         <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>

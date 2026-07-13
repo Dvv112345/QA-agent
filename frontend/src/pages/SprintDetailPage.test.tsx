@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import SprintDetailPage from './SprintDetailPage'
-import type { SprintResponse } from '../types'
+import type { RequirementResponse, SprintResponse } from '../types'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -10,13 +10,17 @@ vi.mock('../services/api', async (importOriginal) => {
     ...actual,
     fetchSprint: vi.fn(),
     finishSprint: vi.fn(),
+    fetchRequirements: vi.fn(),
+    submitRequirements: vi.fn(),
   }
 })
 
-import { fetchSprint, finishSprint } from '../services/api'
+import { fetchRequirements, fetchSprint, finishSprint, submitRequirements } from '../services/api'
 
 const mockFetchSprint = fetchSprint as ReturnType<typeof vi.fn>
 const mockFinishSprint = finishSprint as ReturnType<typeof vi.fn>
+const mockFetchRequirements = fetchRequirements as ReturnType<typeof vi.fn>
+const mockSubmitRequirements = submitRequirements as ReturnType<typeof vi.fn>
 
 const fakeSprint: SprintResponse = {
   id: 1,
@@ -46,9 +50,27 @@ function renderPage(sprintId = '1') {
   return render(<RouterProvider router={router} />)
 }
 
+function makeRequirement(overrides: Partial<RequirementResponse> = {}): RequirementResponse {
+  return {
+    id: 1,
+    sprint_id: 1,
+    name: 'Login',
+    description: 'Users can log in.',
+    original_description: 'Users can log in.',
+    status: 'ready',
+    clarifying_question: null,
+    revision_count: 0,
+    error: null,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
 describe('SprintDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockFetchRequirements.mockResolvedValue([])
   })
 
   it('shows loading state initially', () => {
@@ -120,5 +142,124 @@ describe('SprintDetailPage', () => {
       expect(screen.getByText('Sprint 1')).toBeInTheDocument()
     })
     expect(screen.getByRole('link', { name: /back to sprints/i })).toHaveAttribute('href', '/')
+  })
+
+  describe('requirements section', () => {
+    it('renders fetched requirement cards with a summary', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([
+        makeRequirement({ id: 1, name: 'Login', status: 'ready' }),
+        makeRequirement({ id: 2, name: 'Logout', status: 'pending' }),
+      ])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Login')).toBeInTheDocument()
+      })
+      expect(screen.getByText('Logout')).toBeInTheDocument()
+      expect(screen.getByText('1 of 2 analyzed')).toBeInTheDocument()
+    })
+
+    it('shows the requirement form on active sprints', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+      })
+      expect(screen.getByText('Add Requirements')).toBeInTheDocument()
+    })
+
+    it('hides the form and card actions on finished sprints', async () => {
+      mockFetchSprint.mockResolvedValue({ ...fakeSprint, active: false })
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'ready' })])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Login')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('Add Requirements')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+    })
+
+    it('appends rows submitted through the form', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Add Requirements')).toBeInTheDocument()
+      })
+
+      mockSubmitRequirements.mockResolvedValue([
+        makeRequirement({ id: 9, name: 'Search', status: 'pending' }),
+      ])
+
+      fireEvent.change(screen.getByLabelText('Requirement 1 name'), {
+        target: { value: 'Search' },
+      })
+      fireEvent.change(screen.getByLabelText('Requirement 1 description'), {
+        target: { value: 'Users can search.' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Submit Requirements' }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Search')).toBeInTheDocument()
+      })
+    })
+  })
+
+  describe('polling', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('polls while a requirement is pending and stops once all are terminal', async () => {
+      vi.useFakeTimers()
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'pending' })])
+      renderPage()
+
+      // Flush the initial fetches
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(mockFetchRequirements).toHaveBeenCalledTimes(1)
+
+      // First tick: still pending → keeps polling
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'analyzing' })])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(mockFetchRequirements).toHaveBeenCalledTimes(2)
+
+      // Second tick: now terminal → polling stops
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'ready' })])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(mockFetchRequirements).toHaveBeenCalledTimes(3)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000)
+      })
+      expect(mockFetchRequirements).toHaveBeenCalledTimes(3)
+    })
+
+    it('does not poll when all requirements are terminal', async () => {
+      vi.useFakeTimers()
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'confirmed' })])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000)
+      })
+      expect(mockFetchRequirements).toHaveBeenCalledTimes(1)
+    })
   })
 })
