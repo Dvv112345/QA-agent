@@ -48,6 +48,25 @@ def _mock_database_engine(monkeypatch):
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
 
 
+# ── Globally isolate tests from Redis ─────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _isolate_redis(monkeypatch):
+    """Make QueueService connection a no-op so no test touches live Redis.
+
+    With ``_connect`` neutralised the service reports ``available == False``
+    and ``enqueue_analysis`` returns ``None``.  Tests that assert enqueue
+    behaviour swap in a recording stub instead.
+    """
+    import backend.services.queue as queue_module
+
+    monkeypatch.setattr(queue_module.QueueService, "_connect", lambda self: None)
+    queue_module.reset_queue_service()
+    yield
+    queue_module.reset_queue_service()
+
+
 # ── Test database session ────────────────────────────────────────────
 
 
