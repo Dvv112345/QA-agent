@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import backend.services.reconciler as reconciler_module
-from backend.models.database import Requirement, RequirementStatus
+from backend.models.database import SPRINT_FINISHED_ERROR, Requirement, RequirementStatus
 from backend.services.reconciler import reconcile_once
 from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
 
@@ -53,7 +53,7 @@ def _stale_time() -> datetime:
 
 
 class TestRedisUnavailable:
-    def test_noop_when_redis_down(self, db_session, monkeypatch):
+    def test_no_enqueue_when_redis_down(self, db_session, monkeypatch):
         stub = _StubQueueService(available=False)
         monkeypatch.setattr(reconciler_module, "get_queue_service", lambda: stub)
         monkeypatch.setattr(reconciler_module, "reset_queue_service", lambda: None)
@@ -66,6 +66,32 @@ class TestRedisUnavailable:
         row = _reload(db_session, req.id)
         assert row.status == RequirementStatus.PENDING
         assert row.job_id is None
+        assert stub.enqueued == []
+
+    def test_db_sweeps_run_when_redis_down(self, db_session, monkeypatch):
+        """The stale-heartbeat and inactive-sprint sweeps don't need the queue."""
+        stub = _StubQueueService(available=False)
+        monkeypatch.setattr(reconciler_module, "get_queue_service", lambda: stub)
+        monkeypatch.setattr(reconciler_module, "reset_queue_service", lambda: None)
+
+        active = _seed_sprint(db_session)
+        stale = _seed_requirement(
+            db_session,
+            active,
+            status=RequirementStatus.ANALYZING,
+            last_heartbeat=_stale_time(),
+        )
+        finished = _seed_sprint(db_session, active=False)
+        orphaned = _seed_requirement(db_session, finished)
+
+        reconcile_once()
+
+        stale_row = _reload(db_session, stale.id)
+        assert stale_row.status == RequirementStatus.PENDING
+        assert stale_row.retry_count == 1
+        orphaned_row = _reload(db_session, orphaned.id)
+        assert orphaned_row.status == RequirementStatus.FAILED
+        assert orphaned_row.error == SPRINT_FINISHED_ERROR
         assert stub.enqueued == []
 
     def test_reconnects_via_reset(self, db_session, monkeypatch):
@@ -124,16 +150,73 @@ class TestPendingSweep:
 
         assert stub_queue.enqueued == [req.id]
 
-    def test_skips_pending_on_finished_sprint(self, db_session, stub_queue):
+
+class TestInactiveSprintSweep:
+    def test_fails_pending_on_finished_sprint(self, db_session, stub_queue):
         sprint = _seed_sprint(db_session, active=False)
-        req = _seed_requirement(db_session, sprint)
+        req = _seed_requirement(db_session, sprint, pending_answer="stale answer")
 
         reconcile_once()
 
         assert stub_queue.enqueued == []
         row = _reload(db_session, req.id)
-        assert row.status == RequirementStatus.PENDING
-        assert row.job_id is None
+        assert row.status == RequirementStatus.FAILED
+        assert row.error == SPRINT_FINISHED_ERROR
+        assert row.pending_answer is None
+        assert row.retry_count == 0
+
+    def test_fails_stale_analyzing_on_finished_sprint(self, db_session, stub_queue):
+        """Runs before the stale-heartbeat sweep — failed, never re-pended."""
+        sprint = _seed_sprint(db_session, active=False)
+        req = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.ANALYZING,
+            last_heartbeat=_stale_time(),
+        )
+
+        reconcile_once()
+
+        assert stub_queue.enqueued == []
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.FAILED
+        assert row.error == SPRINT_FINISHED_ERROR
+        assert row.retry_count == 0
+        assert row.last_heartbeat is None
+
+    def test_fails_fresh_analyzing_on_finished_sprint(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session, active=False)
+        req = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.ANALYZING,
+            last_heartbeat=datetime.now(timezone.utc),
+        )
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.FAILED
+        assert row.error == SPRINT_FINISHED_ERROR
+
+    def test_terminal_rows_on_finished_sprint_untouched(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session, active=False)
+        seeded = {
+            _seed_requirement(db_session, sprint, status=status).id: status
+            for status in (
+                RequirementStatus.NEEDS_CLARIFICATION,
+                RequirementStatus.READY,
+                RequirementStatus.CONFIRMED,
+                RequirementStatus.FAILED,
+            )
+        }
+
+        reconcile_once()
+
+        for req_id, status in seeded.items():
+            row = _reload(db_session, req_id)
+            assert row.status == status
+            assert row.error is None
 
 
 class TestStaleHeartbeatSweep:
