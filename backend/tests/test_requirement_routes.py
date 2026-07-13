@@ -1,6 +1,7 @@
 """Tests for backend/routes/requirements.py — requirement CRUD and state transitions."""
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -461,3 +462,108 @@ class TestFinishedSprint:
         resp = await async_client.get(f"/api/sprints/{sprint.id}/requirements")
         assert resp.status_code == 200
         assert len(resp.json()) == 1
+
+
+# ── Enqueue wiring (recording stub) ──────────────────────────────────
+
+
+class _StubQueueService:
+    """Records enqueued requirement ids and returns fake jobs."""
+
+    def __init__(self, available: bool = True):
+        self.available = available
+        self.enqueued: list[int] = []
+
+    def enqueue_analysis(self, requirement_id: int):
+        if not self.available:
+            return None
+        self.enqueued.append(requirement_id)
+        return SimpleNamespace(id=f"job-{requirement_id}")
+
+
+@pytest.fixture
+def stub_queue(monkeypatch):
+    stub = _StubQueueService()
+    import backend.routes.requirements as requirements_module
+
+    monkeypatch.setattr(requirements_module, "get_queue_service", lambda: stub)
+    return stub
+
+
+class TestEnqueueWiring:
+    @pytest.mark.asyncio
+    async def test_create_enqueues_each_row(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/requirements",
+            json=[
+                {"name": "A", "description": "a"},
+                {"name": "B", "description": "b"},
+            ],
+        )
+
+        ids = [row["id"] for row in resp.json()]
+        assert stub_queue.enqueued == ids
+        for req_id in ids:
+            row = db_session.get(Requirement, req_id)
+            db_session.refresh(row)
+            assert row.job_id == f"job-{req_id}"
+
+    @pytest.mark.asyncio
+    async def test_answer_enqueues(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.NEEDS_CLARIFICATION,
+            clarifying_question="Q?",
+        )
+
+        await async_client.post(f"/api/requirements/{req.id}/answer", json={"answer": "A."})
+        assert stub_queue.enqueued == [req.id]
+
+    @pytest.mark.asyncio
+    async def test_edit_enqueues(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, status=RequirementStatus.READY)
+
+        await async_client.patch(f"/api/requirements/{req.id}", json={"description": "New."})
+        assert stub_queue.enqueued == [req.id]
+
+    @pytest.mark.asyncio
+    async def test_restart_enqueues(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, status=RequirementStatus.FAILED)
+
+        await async_client.post(f"/api/requirements/{req.id}/restart")
+        assert stub_queue.enqueued == [req.id]
+
+    @pytest.mark.asyncio
+    async def test_confirm_and_delete_do_not_enqueue(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        ready = _seed_requirement(db_session, sprint, status=RequirementStatus.READY)
+        pending = _seed_requirement(db_session, sprint, status=RequirementStatus.PENDING)
+
+        await async_client.post(f"/api/requirements/{ready.id}/confirm")
+        await async_client.delete(f"/api/requirements/{pending.id}")
+        assert stub_queue.enqueued == []
+
+    @pytest.mark.asyncio
+    async def test_enqueue_failure_leaves_row_pending(self, async_client, db_session, monkeypatch):
+        stub = _StubQueueService(available=False)
+        import backend.routes.requirements as requirements_module
+
+        monkeypatch.setattr(requirements_module, "get_queue_service", lambda: stub)
+        sprint = _seed_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/requirements",
+            json=[{"name": "A", "description": "a"}],
+        )
+
+        assert resp.status_code == 201
+        row = db_session.get(Requirement, resp.json()[0]["id"])
+        db_session.refresh(row)
+        assert row.status == RequirementStatus.PENDING
+        assert row.job_id is None

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "qa-agent"
 version = "0.1.0"
-description = "QA Agent — accepts source code (zip) and requirement documents (markdown) for analysis"
+description = "QA Agent — manages GitHub repositories and QA sprints for automated quality assurance analysis"
 readme = "backend/README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -34,6 +34,7 @@ dependencies = [
     "psycopg2-binary>=2.9,<3.0",
     "httpx>=0.27,<1.0",
     "cryptography>=42,<45",
+    "openai>=1.40,<3.0",
 ]
 
 [project.optional-dependencies]

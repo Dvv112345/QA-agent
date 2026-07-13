@@ -15,6 +15,7 @@ from backend.models.types import (
     RequirementEditRequest,
     RequirementResponse,
 )
+from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,25 @@ def _ensure_sprint_active(sprint: Sprint) -> None:
 
 def _touch(requirement: Requirement) -> None:
     requirement.updated_at = datetime.now(timezone.utc)
+
+
+def _enqueue_analysis(session: Session, rows: list[Requirement]) -> None:
+    """Best-effort enqueue after commit — failure is the reconciler's job.
+
+    Successful enqueues persist the job id for the reconciler's dedup check.
+    """
+    queue_service = get_queue_service()
+    enqueued = False
+    for row in rows:
+        job = queue_service.enqueue_analysis(row.id)
+        if job is not None:
+            row.job_id = job.id
+            session.add(row)
+            enqueued = True
+    if enqueued:
+        session.commit()
+        for row in rows:
+            session.refresh(row)
 
 
 @router.post(
@@ -87,6 +107,8 @@ async def create_requirements(
     session.commit()
     for row in rows:
         session.refresh(row)
+
+    _enqueue_analysis(session, rows)
 
     logger.info("Created %d requirements for sprint id=%d", len(rows), sprint_id)
     return rows
@@ -141,6 +163,7 @@ async def answer_requirement(
     session.add(requirement)
     session.commit()
     session.refresh(requirement)
+    _enqueue_analysis(session, [requirement])
     return requirement
 
 
@@ -200,6 +223,7 @@ async def edit_requirement(
     session.add(requirement)
     session.commit()
     session.refresh(requirement)
+    _enqueue_analysis(session, [requirement])
     return requirement
 
 
@@ -225,6 +249,7 @@ async def restart_requirement(
     session.add(requirement)
     session.commit()
     session.refresh(requirement)
+    _enqueue_analysis(session, [requirement])
     return requirement
 
 

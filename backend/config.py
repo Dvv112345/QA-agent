@@ -80,3 +80,9 @@ JOB_RESULT_TTL: int = _get_int("JOB_RESULT_TTL", 3600)
 # ── Requirement analysis ──────────────────────────────────────────────
 MAX_CLARIFICATION_ROUNDS: int = _get_int("MAX_CLARIFICATION_ROUNDS", 3)
 MAX_AUTO_RETRIES: int = _get_int("MAX_AUTO_RETRIES", 3)
+
+# ── LLM (OpenAI-compatible; DeepSeek by default) ─────────────────────
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL: str | None = os.environ.get("OPENAI_BASE_URL") or None
+OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
+OPENAI_TIMEOUT: int = _get_int("OPENAI_TIMEOUT", 60)
