@@ -19,6 +19,7 @@ from backend.utils.crypto import decrypt_token
 from backend.utils.github_utils import (
     GitHubError,
     download_readme,
+    fetch_file_tree,
     fetch_repo_metadata,
     parse_github_url,
 )
@@ -93,6 +94,13 @@ async def create_sprint(
 
     repo.name = metadata["full_name"]
     repo.description = metadata.get("description")
+
+    # ── Refresh repo file tree (best-effort LLM prompt context) ──────
+    try:
+        repo.file_tree = await fetch_file_tree(owner, repo_name, metadata["default_branch"], token)
+    except GitHubError as exc:
+        logger.warning("Sprint '%s': file tree refresh failed: %s", name, exc)
+
     session.add(repo)
 
     # ── Resolve README ────────────────────────────────────────────────

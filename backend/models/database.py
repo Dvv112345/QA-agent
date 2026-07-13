@@ -15,6 +15,7 @@ class Repo(SQLModel, table=True):
     name: str
     description: str | None = Field(default=None)
     active: bool = Field(default=True)
+    file_tree: str | None = Field(default=None)  # filtered path listing for LLM prompt context
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )

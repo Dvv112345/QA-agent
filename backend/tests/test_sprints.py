@@ -352,3 +352,78 @@ class TestFinishSprint:
             json={"active": False},
         )
         assert resp.status_code == 404
+
+
+# == Repo file-tree capture during sprint creation ====================
+
+
+class TestSprintFileTreeCapture:
+    """The trees API is fetched best-effort during ``POST /api/sprints``."""
+
+    @pytest.mark.asyncio
+    async def test_stores_file_tree_on_repo(self, async_client, httpx_mock, db_session):
+        readme = base64.b64encode(b"# README").decode()
+        repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
+
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo",
+            json={"full_name": "owner/test-repo", "description": "d", "default_branch": "main"},
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/git/trees/main?recursive=1",
+            json={
+                "tree": [
+                    {"path": "src/app.py", "type": "blob"},
+                    {"path": "logo.png", "type": "blob"},
+                ],
+                "truncated": False,
+            },
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/readme",
+            json={"content": readme},
+        )
+
+        resp = await async_client.post(
+            "/api/sprints",
+            data={"name": "Sprint", "repo_id": str(repo_id)},
+        )
+
+        assert resp.status_code == 201
+        from backend.models.database import Repo
+
+        repo = db_session.get(Repo, repo_id)
+        db_session.refresh(repo)
+        assert repo.file_tree == "src/app.py"
+
+    @pytest.mark.asyncio
+    async def test_tree_fetch_failure_does_not_block_sprint(
+        self, async_client, httpx_mock, db_session
+    ):
+        readme = base64.b64encode(b"# README").decode()
+        repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
+
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo",
+            json={"full_name": "owner/test-repo", "description": "d", "default_branch": "main"},
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/git/trees/main?recursive=1",
+            status_code=500,
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/readme",
+            json={"content": readme},
+        )
+
+        resp = await async_client.post(
+            "/api/sprints",
+            data={"name": "Sprint", "repo_id": str(repo_id)},
+        )
+
+        assert resp.status_code == 201
+        from backend.models.database import Repo
+
+        repo = db_session.get(Repo, repo_id)
+        db_session.refresh(repo)
+        assert repo.file_tree is None

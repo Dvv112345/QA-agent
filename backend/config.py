@@ -67,6 +67,7 @@ ENCRYPTION_KEY: str = os.environ.get("ENCRYPTION_KEY", "")
 
 # ── GitHub API ────────────────────────────────────────────────────────
 GITHUB_API_TIMEOUT: int = _get_int("GITHUB_API_TIMEOUT", 15)
+FILE_TREE_MAX_CHARS: int = _get_int("FILE_TREE_MAX_CHARS", 20000)
 
 # ── Redis / RQ ────────────────────────────────────────────────────────
 REDIS_HOST: str = os.environ.get("REDIS_HOST", "localhost")
