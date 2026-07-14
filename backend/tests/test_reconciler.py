@@ -12,8 +12,9 @@ from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprin
 
 
 class _StubJob:
-    def __init__(self, status: str):
+    def __init__(self, status: str, started_at: datetime | None = None):
         self._status = status
+        self.started_at = started_at
 
     def get_status(self):
         return self._status
@@ -282,4 +283,117 @@ class TestStaleHeartbeatSweep:
         assert row.status == RequirementStatus.FAILED
         assert row.retry_count == 3
         assert row.error is not None
+        assert stub_queue.enqueued == []
+
+
+class TestStalePendingJobSweep:
+    """Pending rows whose RQ job started but the worker crashed before the
+    task's first commit flipped the row to analyzing."""
+
+    def test_stale_started_job_retries_to_pending_and_reenqueues(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, job_id="crashed-job")
+        stub_queue.jobs["crashed-job"] = _StubJob("started", started_at=_stale_time())
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.PENDING
+        assert row.retry_count == 1
+        assert row.job_id == f"job-{req.id}"
+        assert stub_queue.enqueued == [req.id]
+
+    def test_stale_started_job_exhausted_retries_marks_failed(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, job_id="crashed-job", retry_count=2)
+        stub_queue.jobs["crashed-job"] = _StubJob("started", started_at=_stale_time())
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.FAILED
+        assert row.retry_count == 3
+        assert row.error is not None
+        assert row.job_id is None
+        assert stub_queue.enqueued == []
+
+    def test_fresh_started_job_not_touched(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, job_id="live-job")
+        stub_queue.jobs["live-job"] = _StubJob("started", started_at=datetime.now(timezone.utc))
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.PENDING
+        assert row.retry_count == 0
+        assert row.job_id == "live-job"
+        assert stub_queue.enqueued == []
+
+    def test_started_job_missing_started_at_treated_as_stale(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, job_id="crashed-job")
+        stub_queue.jobs["crashed-job"] = _StubJob("started", started_at=None)
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.PENDING
+        assert row.retry_count == 1
+        assert stub_queue.enqueued == [req.id]
+
+    def test_queued_job_never_treated_as_stale(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, job_id="queued-job")
+        # Queued jobs have no started_at in RQ; a stray value must still be ignored.
+        stub_queue.jobs["queued-job"] = _StubJob("queued", started_at=_stale_time())
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.PENDING
+        assert row.retry_count == 0
+        assert row.job_id == "queued-job"
+        assert stub_queue.enqueued == []
+
+    def test_recycled_analyzing_row_not_double_counted(self, db_session, stub_queue):
+        """A single crash mid-analysis must only increment retry_count once,
+        even though both the stale-heartbeat sweep and the pending sweep's
+        job-status check would otherwise independently detect it."""
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.ANALYZING,
+            last_heartbeat=_stale_time(),
+            job_id="crashed-job",
+        )
+        stub_queue.jobs["crashed-job"] = _StubJob("started", started_at=_stale_time())
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.PENDING
+        assert row.retry_count == 1
+        assert row.job_id == f"job-{req.id}"
+        assert stub_queue.enqueued == [req.id]
+
+    def test_recycled_analyzing_row_exhaustion_not_double_counted(self, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.ANALYZING,
+            last_heartbeat=_stale_time(),
+            job_id="crashed-job",
+            retry_count=2,
+        )
+        stub_queue.jobs["crashed-job"] = _StubJob("started", started_at=_stale_time())
+
+        reconcile_once()
+
+        row = _reload(db_session, req.id)
+        assert row.status == RequirementStatus.FAILED
+        assert row.retry_count == 3
+        assert row.job_id is None
         assert stub_queue.enqueued == []

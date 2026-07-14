@@ -88,6 +88,11 @@ MAX_AUTO_RETRIES: int = _get_int("MAX_AUTO_RETRIES", 3)
 RECONCILER_INTERVAL: int = _get_int("RECONCILER_INTERVAL", 30)
 # Must exceed OPENAI_TIMEOUT so a slow LLM call is never mistaken for a dead worker.
 HEARTBEAT_STALE_SECONDS: int = _get_int("HEARTBEAT_STALE_SECONDS", 180)
+# Age in seconds after which a pending row's "started" RQ job counts as a
+# crashed worker (died before flipping the row to analyzing). The flip is a
+# single fast commit under normal operation, so this is intentionally much
+# shorter than HEARTBEAT_STALE_SECONDS (which tolerates a slow LLM call).
+PENDING_JOB_STALE_SECONDS: int = _get_int("PENDING_JOB_STALE_SECONDS", 30)
 
 # ── LLM (OpenAI-compatible; DeepSeek by default) ─────────────────────
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
