@@ -21,6 +21,8 @@ const STATUS_LABELS: Record<RequirementStatus, string> = {
 interface Props {
   requirement: RequirementResponse
   sprintActive: boolean
+  /** Requirement set frozen (test environment confirmed) — hides Remove. */
+  locked?: boolean
   onUpdated: (requirement: RequirementResponse) => void
   onRemoved: (id: number) => void
 }
@@ -28,6 +30,7 @@ interface Props {
 export default function RequirementCard({
   requirement,
   sprintActive,
+  locked = false,
   onUpdated,
   onRemoved,
 }: Props) {
@@ -198,15 +201,17 @@ export default function RequirementCard({
                   Restart
                 </button>
               )}
-              <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
-                Remove
-              </button>
+              {!locked && (
+                <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
+                  Remove
+                </button>
+              )}
             </div>
           )}
         </>
       )}
 
-      {sprintActive && inProgress && (
+      {sprintActive && inProgress && !locked && (
         <div className="requirement-card-actions">
           <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
             Remove

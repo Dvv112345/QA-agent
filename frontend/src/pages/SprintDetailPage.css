@@ -84,3 +84,11 @@
   font-size: 0.9rem;
   margin: 0 0 0.75rem;
 }
+
+.sprint-detail-continue {
+  margin-bottom: 1.5rem;
+}
+
+.sprint-detail-continue .sprint-detail-error {
+  margin: 0.5rem 0 0;
+}
