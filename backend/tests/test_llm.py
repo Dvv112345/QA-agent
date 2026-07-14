@@ -6,7 +6,15 @@ from types import SimpleNamespace
 import pytest
 
 from backend.services import llm
-from backend.services.llm import ClarityResult, LLMError, check_clarity, revise_requirement
+from backend.services.llm import (
+    ClarityResult,
+    LLMError,
+    TestEnvironmentResult,
+    check_clarity,
+    check_test_environment,
+    revise_requirement,
+    revise_test_environment,
+)
 
 
 class _StubClient:
@@ -143,3 +151,86 @@ class TestReviseRequirement:
         stub_client.content = json.dumps({"clear": True, "clarifying_question": None})
         with pytest.raises(LLMError, match="rewritten description"):
             revise_requirement("Login", "desc", "Q?", "A.", None, None)
+
+
+_REQS = [("Login", "Users can log in."), ("Search", "Users can search products.")]
+
+
+class TestCheckTestEnvironment:
+    def test_parses_sufficient_result(self, stub_client):
+        stub_client.content = json.dumps({"sufficient": True, "clarifying_question": None})
+        result = check_test_environment("SSH to staging as qa.", _REQS, None, None)
+        assert result == TestEnvironmentResult(sufficient=True, clarifying_question=None)
+
+    def test_parses_insufficient_result(self, stub_client):
+        stub_client.content = json.dumps(
+            {"sufficient": False, "clarifying_question": "What are the credentials?"}
+        )
+        result = check_test_environment("SSH to staging.", _REQS, None, None)
+        assert result.sufficient is False
+        assert result.clarifying_question == "What are the credentials?"
+
+    def test_insufficient_without_question_raises(self, stub_client):
+        stub_client.content = json.dumps({"sufficient": False, "clarifying_question": None})
+        with pytest.raises(LLMError, match="no clarifying question"):
+            check_test_environment("SSH to staging.", _REQS, None, None)
+
+    def test_malformed_json_raises(self, stub_client):
+        stub_client.content = "not json at all"
+        with pytest.raises(LLMError, match="malformed"):
+            check_test_environment("SSH to staging.", _REQS, None, None)
+
+    def test_requirements_and_contexts_in_prompt(self, stub_client):
+        stub_client.content = json.dumps({"sufficient": True, "clarifying_question": None})
+        check_test_environment("SSH to staging.", _REQS, "# My README", "src/app.py\nsrc/db.py")
+        prompt = _user_prompt(stub_client)
+        assert "Login: Users can log in." in prompt
+        assert "Search: Users can search products." in prompt
+        assert "# My README" in prompt
+        assert "src/app.py" in prompt
+        assert "SSH to staging." in prompt
+
+    def test_long_readme_truncated(self, stub_client):
+        stub_client.content = json.dumps({"sufficient": True, "clarifying_question": None})
+        check_test_environment("SSH to staging.", _REQS, "x" * 20000, None)
+        assert len(_user_prompt(stub_client)) < 20000
+
+
+class TestReviseTestEnvironment:
+    def test_parses_rewritten_result(self, stub_client):
+        stub_client.content = json.dumps(
+            {
+                "sufficient": True,
+                "clarifying_question": None,
+                "rewritten_content": "SSH to staging.example.com as qa with key ~/.ssh/qa.",
+            }
+        )
+        result = revise_test_environment(
+            "SSH to staging.", "Which host?", "staging.example.com", _REQS, None, None
+        )
+        assert result.sufficient is True
+        assert result.rewritten_content == "SSH to staging.example.com as qa with key ~/.ssh/qa."
+
+    def test_question_answer_and_requirements_in_prompt(self, stub_client):
+        stub_client.content = json.dumps(
+            {"sufficient": True, "clarifying_question": None, "rewritten_content": "New."}
+        )
+        revise_test_environment(
+            "SSH to staging.", "Which host?", "staging.example.com", _REQS, None, None
+        )
+        prompt = _user_prompt(stub_client)
+        assert "Which host?" in prompt
+        assert "staging.example.com" in prompt
+        assert "Login: Users can log in." in prompt
+
+    def test_missing_rewrite_raises(self, stub_client):
+        stub_client.content = json.dumps({"sufficient": True, "clarifying_question": None})
+        with pytest.raises(LLMError, match="rewritten content"):
+            revise_test_environment("SSH.", "Q?", "A.", _REQS, None, None)
+
+    def test_insufficient_without_question_raises(self, stub_client):
+        stub_client.content = json.dumps(
+            {"sufficient": False, "clarifying_question": None, "rewritten_content": "New."}
+        )
+        with pytest.raises(LLMError, match="no clarifying question"):
+            revise_test_environment("SSH.", "Q?", "A.", _REQS, None, None)
