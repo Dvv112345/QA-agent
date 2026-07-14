@@ -23,6 +23,9 @@ export interface SprintResponse {
   directory: string
   created_at: string
   repo: RepoResponse | null
+  requirements_complete: boolean
+  has_test_environment_submission: boolean
+  requirements_locked: boolean
 }
 
 export interface ReadmeStatusResponse {
@@ -48,6 +51,22 @@ export interface RequirementResponse {
   revision_count: number
   clarification_cap_reached: boolean
   error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type TestEnvironmentStatus = 'needs_info' | 'ready' | 'confirmed'
+
+export interface TestEnvironmentResponse {
+  id: number
+  sprint_id: number
+  content: string
+  original_content: string
+  status: TestEnvironmentStatus
+  clarifying_question: string | null
+  revision_count: number
+  clarification_cap_reached: boolean
+  requirements_stale: boolean
   created_at: string
   updated_at: string
 }

@@ -33,6 +33,9 @@ const fakeSprint: SprintResponse = {
     active: true,
     created_at: '2026-01-01T00:00:00Z',
   },
+  requirements_complete: false,
+  has_test_environment_submission: false,
+  requirements_locked: false,
 }
 
 function renderPage() {

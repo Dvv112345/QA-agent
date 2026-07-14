@@ -5,6 +5,7 @@ import type {
   RequirementInput,
   RequirementResponse,
   SprintResponse,
+  TestEnvironmentResponse,
 } from '../types'
 
 const API_BASE = import.meta.env.VITE_API_BASE
@@ -170,6 +171,47 @@ export async function deleteRequirement(id: number): Promise<void> {
     method: 'DELETE',
   })
   await handleResponse(response)
+}
+
+// ── Test environment ─────────────────────────────────────────────────
+
+export async function fetchTestEnvironment(
+  sprintId: number,
+): Promise<TestEnvironmentResponse | null> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-environment`)
+  if (response.status === 404) return null // no submission yet — not an error
+  return handleResponse<TestEnvironmentResponse>(response)
+}
+
+export async function submitTestEnvironment(
+  sprintId: number,
+  content: string,
+): Promise<TestEnvironmentResponse> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-environment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  return handleResponse<TestEnvironmentResponse>(response)
+}
+
+export async function answerTestEnvironment(
+  id: number,
+  answer: string,
+): Promise<TestEnvironmentResponse> {
+  const response = await fetch(`${API_BASE}/api/test-environment/${id}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer }),
+  })
+  return handleResponse<TestEnvironmentResponse>(response)
+}
+
+export async function confirmTestEnvironment(id: number): Promise<TestEnvironmentResponse> {
+  const response = await fetch(`${API_BASE}/api/test-environment/${id}/confirm`, {
+    method: 'POST',
+  })
+  return handleResponse<TestEnvironmentResponse>(response)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
