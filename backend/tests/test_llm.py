@@ -65,7 +65,7 @@ class TestGetClient:
 class TestCheckClarity:
     def test_parses_clear_result(self, stub_client):
         result = check_clarity("Login", "Users can log in.", None, None)
-        assert result == ClarityResult(clear=True, clarifying_questions=None)
+        assert result == ClarityResult(clear=True, clarifying_question=None)
 
     def test_parses_unclear_result(self, stub_client):
         stub_client.content = json.dumps({"clear": False, "clarifying_question": "Which users?"})

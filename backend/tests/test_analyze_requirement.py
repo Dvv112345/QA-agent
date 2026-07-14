@@ -12,8 +12,8 @@ from backend.services.llm import ClarityResult, LLMError
 from backend.tasks.analyze_requirement import analyze_requirement_task
 from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
 
-CLEAR = ClarityResult(clear=True, clarifying_questions=None)
-UNCLEAR = ClarityResult(clear=False, clarifying_questions="Which users?")
+CLEAR = ClarityResult(clear=True, clarifying_question=None)
+UNCLEAR = ClarityResult(clear=False, clarifying_question="Which users?")
 
 
 @pytest.fixture(autouse=True)
@@ -119,7 +119,7 @@ class TestRevisionPath:
         )
         llm_stub.result = ClarityResult(
             clear=True,
-            clarifying_questions=None,
+            clarifying_question=None,
             rewritten_description="Registered users can log in.",
         )
 

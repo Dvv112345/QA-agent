@@ -39,7 +39,7 @@ class LLMError(Exception):
 
 class ClarityResult(SQLModel):
     clear: bool
-    clarifying_questions: str | None = None
+    clarifying_question: str | None = None
     rewritten_description: str | None = None
 
 
@@ -68,7 +68,7 @@ _CHECK_SYSTEM_PROMPT = (
     "Judge whether the given requirement is clear and specific enough to write "
     "test cases against. If it is not, ask clarifying questions"
     "Respond with a JSON object of the shape "
-    '{"clear": boolean, "clarifying_questions": string or null}.'
+    '{"clear": boolean, "clarifying_question": string or null}.'
 )
 
 _REVISE_SYSTEM_PROMPT = (
@@ -78,7 +78,7 @@ _REVISE_SYSTEM_PROMPT = (
     "the rewritten requirement is clear and specific enough to write test cases "
     "against; if not, ask new clarifying questions. "
     "Respond with a JSON object of the shape "
-    '{"clear": boolean, "clarifying_questions": string or null, '
+    '{"clear": boolean, "clarifying_question": string or null, '
     '"rewritten_description": string}.'
 )
 
@@ -114,7 +114,7 @@ def _complete(system_prompt: str, user_prompt: str) -> ClarityResult:
     except (json.JSONDecodeError, ValueError) as exc:
         raise LLMError(f"LLM returned malformed output: {exc}") from exc
 
-    if not result.clear and not result.clarifying_questions:
+    if not result.clear and not result.clarifying_question:
         raise LLMError("LLM judged the requirement unclear but gave no clarifying question.")
     return result
 
