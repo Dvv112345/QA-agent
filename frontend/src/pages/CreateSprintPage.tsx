@@ -81,7 +81,7 @@ export default function CreateSprintPage() {
     setLoading(true)
     setError(null)
     createSprint(name.trim(), selectedRepoId, readmeFile ?? undefined)
-      .then(() => navigate('/'))
+      .then((sprint) => navigate(`/sprints/${sprint.id}`))
       .catch((err: Error) => {
         setError(err.message)
         setLoading(false)

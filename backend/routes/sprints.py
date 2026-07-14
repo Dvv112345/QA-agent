@@ -2,13 +2,20 @@
 
 import logging
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import Session, select
 
 from backend.config import STORAGE_LOCATION
 from backend.database import get_session
-from backend.models.database import Repo, Sprint
+from backend.models.database import (
+    SPRINT_FINISHED_ERROR,
+    Repo,
+    Requirement,
+    RequirementStatus,
+    Sprint,
+)
 from backend.models.types import (
     SprintResponse,
     SprintUpdateRequest,
@@ -19,6 +26,7 @@ from backend.utils.crypto import decrypt_token
 from backend.utils.github_utils import (
     GitHubError,
     download_readme,
+    fetch_file_tree,
     fetch_repo_metadata,
     parse_github_url,
 )
@@ -93,6 +101,13 @@ async def create_sprint(
 
     repo.name = metadata["full_name"]
     repo.description = metadata.get("description")
+
+    # ── Refresh repo file tree (best-effort LLM prompt context) ──────
+    try:
+        repo.file_tree = await fetch_file_tree(owner, repo_name, metadata["default_branch"], token)
+    except GitHubError as exc:
+        logger.warning("Sprint '%s': file tree refresh failed: %s", name, exc)
+
     session.add(repo)
 
     # ── Resolve README ────────────────────────────────────────────────
@@ -197,8 +212,34 @@ async def finish_sprint(
 
     sprint.active = False
     session.add(sprint)
+
+    # ── Fail requirements still awaiting analysis ─────────────────────
+    # Analysis on a finished sprint would only mutate cards the user can
+    # no longer act on, so mark in-progress rows failed in the same commit.
+    in_progress = session.exec(
+        select(Requirement).where(
+            Requirement.sprint_id == sprint_id,
+            Requirement.status.in_(  # type: ignore[attr-defined]
+                [RequirementStatus.PENDING, RequirementStatus.ANALYZING]
+            ),
+        )
+    ).all()
+    for requirement in in_progress:
+        requirement.status = RequirementStatus.FAILED
+        requirement.error = SPRINT_FINISHED_ERROR
+        requirement.last_heartbeat = None
+        requirement.pending_answer = None
+        requirement.updated_at = datetime.now(timezone.utc)
+        session.add(requirement)
+
     session.commit()
     session.refresh(sprint)
 
+    if in_progress:
+        logger.info(
+            "Sprint id=%d: %d in-progress requirements marked failed on finish",
+            sprint_id,
+            len(in_progress),
+        )
     logger.info("Sprint finished: id=%d name=%s", sprint.id, sprint.name)
     return sprint

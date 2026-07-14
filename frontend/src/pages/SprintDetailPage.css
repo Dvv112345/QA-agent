@@ -69,3 +69,18 @@
   margin: 0;
   word-break: break-all;
 }
+
+.requirements-section {
+  margin-bottom: 1.5rem;
+}
+
+.requirements-section h2 {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+
+.requirements-summary {
+  color: var(--color-text-secondary, #666);
+  font-size: 0.9rem;
+  margin: 0 0 0.75rem;
+}

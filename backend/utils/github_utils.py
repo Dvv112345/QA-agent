@@ -9,7 +9,7 @@ from typing import Any
 import certifi
 import httpx
 
-from backend.config import GITHUB_API_TIMEOUT
+from backend.config import FILE_TREE_MAX_CHARS, GITHUB_API_TIMEOUT
 
 _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
@@ -195,3 +195,114 @@ async def download_readme(owner: str, repo: str, token: str | None = None) -> st
         return None
 
     raise _classify_error(response.status_code, bool(token))
+
+
+# ── Repo file tree ───────────────────────────────────────────────────
+
+# Directory names excluded from the file tree (matched against every
+# path segment except the filename).
+TREE_EXCLUDED_DIRS = {
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    "vendor",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".idea",
+    ".vscode",
+}
+
+# Filename suffixes excluded from the file tree: binaries/media,
+# minified assets, and source maps.
+TREE_EXCLUDED_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".webp",
+    ".mp4",
+    ".pdf",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".zip",
+    ".gz",
+    ".jar",
+    ".exe",
+    ".dll",
+    ".so",
+    ".pyc",
+    ".min.js",
+    ".min.css",
+    ".map",
+)
+
+# Exact filenames excluded from the file tree (lockfiles and OS noise).
+TREE_EXCLUDED_FILENAMES = {
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "uv.lock",
+    "Cargo.lock",
+    ".DS_Store",
+}
+
+_TREE_TRUNCATION_MARKER = "\n… (truncated)"
+
+
+def is_relevant_tree_path(path: str) -> bool:
+    """Return whether a repo file path is worth including in LLM prompt context."""
+    parts = path.split("/")
+    if any(segment in TREE_EXCLUDED_DIRS for segment in parts[:-1]):
+        return False
+    filename = parts[-1]
+    if filename in TREE_EXCLUDED_FILENAMES:
+        return False
+    return not filename.lower().endswith(TREE_EXCLUDED_SUFFIXES)
+
+
+async def fetch_file_tree(
+    owner: str,
+    repo: str,
+    default_branch: str,
+    token: str | None = None,
+) -> str | None:
+    """Fetch the repo's file listing as newline-separated paths.
+
+    Irrelevant files (binaries, lockfiles, dependency directories) are
+    filtered out, and the result is capped at ``FILE_TREE_MAX_CHARS``.
+    Returns ``None`` when the tree is empty or unavailable (404 — e.g. an
+    empty repository), mirroring ``download_readme``'s no-README semantics.
+    Raises the appropriate ``GitHubError`` subclass on other failures.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1"
+    async with httpx.AsyncClient(verify=_SSL_CONTEXT) as client:
+        try:
+            data = await _get(client, url, token)
+        except RepoNotFoundError:
+            return None
+
+    paths = [
+        entry["path"]
+        for entry in data.get("tree", [])
+        if entry.get("type") == "blob" and is_relevant_tree_path(entry.get("path", ""))
+    ]
+    if not paths:
+        return None
+
+    text = "\n".join(paths)
+    truncated = bool(data.get("truncated"))
+    if len(text) > FILE_TREE_MAX_CHARS:
+        text = text[:FILE_TREE_MAX_CHARS]
+        truncated = True
+    if truncated:
+        text += _TREE_TRUNCATION_MARKER
+    return text

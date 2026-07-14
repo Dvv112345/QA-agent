@@ -352,3 +352,116 @@ class TestFinishSprint:
             json={"active": False},
         )
         assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_marks_in_progress_requirements_failed(self, async_client, db_session):
+        from backend.models.database import SPRINT_FINISHED_ERROR, Requirement, RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        pending = _seed_requirement(db_session, sprint)
+        analyzing = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.ANALYZING,
+            pending_answer="stale answer",
+        )
+        untouched = {
+            _seed_requirement(db_session, sprint, status=status).id: status
+            for status in (
+                RequirementStatus.NEEDS_CLARIFICATION,
+                RequirementStatus.READY,
+                RequirementStatus.CONFIRMED,
+                RequirementStatus.FAILED,
+            )
+        }
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for req_id in (pending.id, analyzing.id):
+            row = db_session.get(Requirement, req_id)
+            assert row.status == RequirementStatus.FAILED
+            assert row.error == SPRINT_FINISHED_ERROR
+            assert row.last_heartbeat is None
+            assert row.pending_answer is None
+        for req_id, status in untouched.items():
+            row = db_session.get(Requirement, req_id)
+            assert row.status == status
+            assert row.error is None
+
+
+# == Repo file-tree capture during sprint creation ====================
+
+
+class TestSprintFileTreeCapture:
+    """The trees API is fetched best-effort during ``POST /api/sprints``."""
+
+    @pytest.mark.asyncio
+    async def test_stores_file_tree_on_repo(self, async_client, httpx_mock, db_session):
+        readme = base64.b64encode(b"# README").decode()
+        repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
+
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo",
+            json={"full_name": "owner/test-repo", "description": "d", "default_branch": "main"},
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/git/trees/main?recursive=1",
+            json={
+                "tree": [
+                    {"path": "src/app.py", "type": "blob"},
+                    {"path": "logo.png", "type": "blob"},
+                ],
+                "truncated": False,
+            },
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/readme",
+            json={"content": readme},
+        )
+
+        resp = await async_client.post(
+            "/api/sprints",
+            data={"name": "Sprint", "repo_id": str(repo_id)},
+        )
+
+        assert resp.status_code == 201
+        from backend.models.database import Repo
+
+        repo = db_session.get(Repo, repo_id)
+        db_session.refresh(repo)
+        assert repo.file_tree == "src/app.py"
+
+    @pytest.mark.asyncio
+    async def test_tree_fetch_failure_does_not_block_sprint(
+        self, async_client, httpx_mock, db_session
+    ):
+        readme = base64.b64encode(b"# README").decode()
+        repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
+
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo",
+            json={"full_name": "owner/test-repo", "description": "d", "default_branch": "main"},
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/git/trees/main?recursive=1",
+            status_code=500,
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/readme",
+            json={"content": readme},
+        )
+
+        resp = await async_client.post(
+            "/api/sprints",
+            data={"name": "Sprint", "repo_id": str(repo_id)},
+        )
+
+        assert resp.status_code == 201
+        from backend.models.database import Repo
+
+        repo = db_session.get(Repo, repo_id)
+        db_session.refresh(repo)
+        assert repo.file_tree is None

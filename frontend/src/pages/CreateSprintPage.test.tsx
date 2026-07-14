@@ -14,6 +14,15 @@ vi.mock('../services/api', async (importOriginal) => {
   }
 })
 
+const mockNavigate = vi.fn()
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>()
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  }
+})
+
 import { fetchRepos, checkReadmeStatus, createSprint } from '../services/api'
 
 const mockFetchRepos = fetchRepos as ReturnType<typeof vi.fn>
@@ -98,7 +107,7 @@ describe('CreateSprintPage', () => {
   it('calls createSprint on form submission', async () => {
     mockFetchRepos.mockResolvedValue([fakeRepo])
     mockCheckReadmeStatus.mockResolvedValue({ has_readme: true })
-    mockCreateSprint.mockResolvedValue({} as never)
+    mockCreateSprint.mockResolvedValue({ id: 42 } as never)
     renderPage()
 
     await waitFor(() => {
@@ -122,6 +131,32 @@ describe('CreateSprintPage', () => {
 
     await waitFor(() => {
       expect(mockCreateSprint).toHaveBeenCalledWith('My Sprint', 1, undefined)
+    })
+  })
+
+  it('navigates to the sprint detail page after creation', async () => {
+    mockFetchRepos.mockResolvedValue([fakeRepo])
+    mockCheckReadmeStatus.mockResolvedValue({ has_readme: true })
+    mockCreateSprint.mockResolvedValue({ id: 42 } as never)
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('owner/repo')).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } })
+
+    await waitFor(() => {
+      expect(screen.getByText(/readme found/i)).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Sprint 1'), {
+      target: { value: 'My Sprint' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Sprint' }))
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/sprints/42')
     })
   })
 

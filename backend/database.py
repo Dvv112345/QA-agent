@@ -27,6 +27,15 @@ def get_session() -> Generator[Session, None, None]:
         yield session
 
 
+def new_session() -> Session:
+    """Create a standalone session for non-request code (worker, reconciler).
+
+    Reads the module-level engine at call time so that test fixtures which
+    replace ``_engine`` also apply to worker code paths.
+    """
+    return Session(_engine)
+
+
 def init_db() -> None:
     """Create all tables that do not yet exist in the database.
 

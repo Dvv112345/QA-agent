@@ -67,6 +67,7 @@ ENCRYPTION_KEY: str = os.environ.get("ENCRYPTION_KEY", "")
 
 # ── GitHub API ────────────────────────────────────────────────────────
 GITHUB_API_TIMEOUT: int = _get_int("GITHUB_API_TIMEOUT", 15)
+FILE_TREE_MAX_CHARS: int = _get_int("FILE_TREE_MAX_CHARS", 20000)
 
 # ── Redis / RQ ────────────────────────────────────────────────────────
 REDIS_HOST: str = os.environ.get("REDIS_HOST", "localhost")
@@ -75,3 +76,26 @@ REDIS_PASSWORD: str | None = os.environ.get("REDIS_PASSWORD") or None
 REDIS_DB: int = _get_int("REDIS_DB", 0)
 JOB_TIMEOUT: int = _get_int("JOB_TIMEOUT", 300)
 JOB_RESULT_TTL: int = _get_int("JOB_RESULT_TTL", 3600)
+# RQ's idle BLPOP wait is (WORKER_TTL - 15). A blocking socket call can't be
+# interrupted by Ctrl+C on Windows, so this bounds worst-case shutdown latency.
+WORKER_TTL: int = _get_int("WORKER_TTL", 30)
+
+# ── Requirement analysis ──────────────────────────────────────────────
+MAX_CLARIFICATION_ROUNDS: int = _get_int("MAX_CLARIFICATION_ROUNDS", 3)
+MAX_AUTO_RETRIES: int = _get_int("MAX_AUTO_RETRIES", 3)
+
+# ── Reconciler ────────────────────────────────────────────────────────
+RECONCILER_INTERVAL: int = _get_int("RECONCILER_INTERVAL", 30)
+# Must exceed OPENAI_TIMEOUT so a slow LLM call is never mistaken for a dead worker.
+HEARTBEAT_STALE_SECONDS: int = _get_int("HEARTBEAT_STALE_SECONDS", 180)
+# Age in seconds after which a pending row's "started" RQ job counts as a
+# crashed worker (died before flipping the row to analyzing). The flip is a
+# single fast commit under normal operation, so this is intentionally much
+# shorter than HEARTBEAT_STALE_SECONDS (which tolerates a slow LLM call).
+PENDING_JOB_STALE_SECONDS: int = _get_int("PENDING_JOB_STALE_SECONDS", 30)
+
+# ── LLM (OpenAI-compatible; DeepSeek by default) ─────────────────────
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL: str | None = os.environ.get("OPENAI_BASE_URL") or None
+OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
+OPENAI_TIMEOUT: int = _get_int("OPENAI_TIMEOUT", 60)

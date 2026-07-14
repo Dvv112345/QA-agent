@@ -1,5 +1,8 @@
+import asyncio
+import contextlib
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +14,7 @@ from backend.database import init_db
 from backend.models.types import HealthResponse
 from backend.routes.auth import router as auth_router
 from backend.routes.repos import router as repos_router
+from backend.routes.requirements import router as requirements_router
 from backend.routes.sprints import router as sprints_router
 
 logger = logging.getLogger(__name__)
@@ -53,6 +57,24 @@ def _check_redis_health() -> str:
         return f"unavailable: {exc}"
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Run the reconciler loop for the app's lifetime.
+
+    Note: httpx ``ASGITransport`` never runs lifespan, so this is inert in
+    the API test suite — ``reconcile_once`` is unit-tested directly.
+    """
+    from backend.services.reconciler import reconciler_loop
+
+    task = asyncio.create_task(reconciler_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     # Structured logging
@@ -63,7 +85,7 @@ def create_app() -> FastAPI:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    app = FastAPI(title="QA Agent Backend", version=VERSION)
+    app = FastAPI(title="QA Agent Backend", version=VERSION, lifespan=_lifespan)
 
     # ------------------------------------------------------------------
     # Database initialisation
@@ -84,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
     app.include_router(sprints_router, prefix="/api")
+    app.include_router(requirements_router, prefix="/api")
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.

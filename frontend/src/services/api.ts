@@ -2,6 +2,8 @@ import type {
   AuthCheckResponse,
   ReadmeStatusResponse,
   RepoResponse,
+  RequirementInput,
+  RequirementResponse,
   SprintResponse,
 } from '../types'
 
@@ -107,6 +109,67 @@ export async function finishSprint(id: number): Promise<SprintResponse> {
     body: JSON.stringify({ active: false }),
   })
   return handleResponse<SprintResponse>(response)
+}
+
+// ── Requirements ─────────────────────────────────────────────────────
+
+export async function submitRequirements(
+  sprintId: number,
+  items: RequirementInput[],
+): Promise<RequirementResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/requirements`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(items),
+  })
+  return handleResponse<RequirementResponse[]>(response)
+}
+
+export async function fetchRequirements(sprintId: number): Promise<RequirementResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/requirements`)
+  return handleResponse<RequirementResponse[]>(response)
+}
+
+export async function answerRequirement(id: number, answer: string): Promise<RequirementResponse> {
+  const response = await fetch(`${API_BASE}/api/requirements/${id}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer }),
+  })
+  return handleResponse<RequirementResponse>(response)
+}
+
+export async function confirmRequirement(id: number): Promise<RequirementResponse> {
+  const response = await fetch(`${API_BASE}/api/requirements/${id}/confirm`, {
+    method: 'POST',
+  })
+  return handleResponse<RequirementResponse>(response)
+}
+
+export async function updateRequirement(
+  id: number,
+  description: string,
+): Promise<RequirementResponse> {
+  const response = await fetch(`${API_BASE}/api/requirements/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description }),
+  })
+  return handleResponse<RequirementResponse>(response)
+}
+
+export async function restartRequirement(id: number): Promise<RequirementResponse> {
+  const response = await fetch(`${API_BASE}/api/requirements/${id}/restart`, {
+    method: 'POST',
+  })
+  return handleResponse<RequirementResponse>(response)
+}
+
+export async function deleteRequirement(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/requirements/${id}`, {
+    method: 'DELETE',
+  })
+  await handleResponse(response)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

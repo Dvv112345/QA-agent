@@ -13,7 +13,9 @@ from backend.utils.github_utils import (
     TokenInvalidError,
     check_readme_exists,
     download_readme,
+    fetch_file_tree,
     fetch_repo_metadata,
+    is_relevant_tree_path,
     parse_github_url,
 )
 
@@ -163,3 +165,112 @@ class TestDownloadReadme:
         )
         result = await download_readme("owner", "repo")
         assert result is None
+
+
+class TestIsRelevantTreePath:
+    """Tests for ``is_relevant_tree_path()``."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/main.py",
+            "README.md",
+            "frontend/src/App.tsx",
+            "docs/guide/setup.md",
+            "distribution/notes.txt",  # 'dist' must match whole segments only
+        ],
+    )
+    def test_relevant_paths(self, path):
+        assert is_relevant_tree_path(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "node_modules/react/index.js",
+            "frontend/node_modules/lodash/lodash.js",
+            "dist/bundle.js",
+            "__pycache__/main.cpython-312.pyc",
+            ".venv/lib/site.py",
+            "logo.png",
+            "assets/video.mp4",
+            "static/app.min.js",
+            "static/app.js.map",
+            "package-lock.json",
+            "backend/poetry.lock",
+            ".DS_Store",
+        ],
+    )
+    def test_excluded_paths(self, path):
+        assert is_relevant_tree_path(path) is False
+
+
+class TestFetchFileTree:
+    """Tests for ``fetch_file_tree()``."""
+
+    _URL = "https://api.github.com/repos/owner/repo/git/trees/main?recursive=1"
+
+    @pytest.mark.asyncio
+    async def test_builds_filtered_path_list(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url=self._URL,
+            json={
+                "tree": [
+                    {"path": "README.md", "type": "blob"},
+                    {"path": "src", "type": "tree"},
+                    {"path": "src/main.py", "type": "blob"},
+                    {"path": "node_modules/react/index.js", "type": "blob"},
+                    {"path": "logo.png", "type": "blob"},
+                    {"path": "package-lock.json", "type": "blob"},
+                ],
+                "truncated": False,
+            },
+        )
+        result = await fetch_file_tree("owner", "repo", "main")
+        assert result == "README.md\nsrc/main.py"
+
+    @pytest.mark.asyncio
+    async def test_marks_api_truncation(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url=self._URL,
+            json={
+                "tree": [{"path": "a.py", "type": "blob"}],
+                "truncated": True,
+            },
+        )
+        result = await fetch_file_tree("owner", "repo", "main")
+        assert result is not None
+        assert result.endswith("(truncated)")
+
+    @pytest.mark.asyncio
+    async def test_caps_oversized_tree(self, httpx_mock: HTTPXMock, monkeypatch):
+        monkeypatch.setattr("backend.utils.github_utils.FILE_TREE_MAX_CHARS", 10)
+        httpx_mock.add_response(
+            url=self._URL,
+            json={
+                "tree": [
+                    {"path": "aaaaaaaa.py", "type": "blob"},
+                    {"path": "bbbbbbbb.py", "type": "blob"},
+                ],
+                "truncated": False,
+            },
+        )
+        result = await fetch_file_tree("owner", "repo", "main")
+        assert result is not None
+        assert result.endswith("(truncated)")
+        assert len(result) <= 10 + len("\n… (truncated)")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_404(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=404)
+        assert await fetch_file_tree("owner", "repo", "main") is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_empty_tree(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, json={"tree": [], "truncated": False})
+        assert await fetch_file_tree("owner", "repo", "main") is None
+
+    @pytest.mark.asyncio
+    async def test_raises_on_500(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=500)
+        with pytest.raises(GitHubUnavailableError):
+            await fetch_file_tree("owner", "repo", "main")
