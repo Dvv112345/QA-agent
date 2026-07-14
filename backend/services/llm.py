@@ -63,10 +63,20 @@ def _get_client() -> openai.OpenAI:
     return _client
 
 
+_CLARITY_BAR = (
+    "A requirement is clear if a competent QA engineer could write at least one "
+    "meaningful test case from it without guessing at the author's intent — it "
+    "does not need to cover every edge case, exact error message, or precise UI "
+    "copy; those are normal test-design decisions, not blockers. Use the "
+    "provided README and file tree to resolve ambiguity yourself before asking "
+    "the user. When in doubt, prefer marking it clear."
+)
+
 _CHECK_SYSTEM_PROMPT = (
     "You are a senior QA engineer reviewing software requirements. "
-    "Judge whether the given requirement is clear and specific enough to write "
-    "test cases against. If it is not, ask clarifying questions"
+    f"{_CLARITY_BAR} If genuinely unclear, ask about the gaps that actually "
+    "block writing a test case — bundle multiple questions into "
+    "clarifying_question if needed, but skip nice-to-know details. "
     "Respond with a JSON object of the shape "
     '{"clear": boolean, "clarifying_question": string or null}.'
 )
@@ -75,8 +85,10 @@ _REVISE_SYSTEM_PROMPT = (
     "You are a senior QA engineer refining software requirements. "
     "Rewrite the requirement description so it incorporates the user's answer "
     "to your clarifying question, keeping the user's intent. Then judge whether "
-    "the rewritten requirement is clear and specific enough to write test cases "
-    "against; if not, ask new clarifying questions. "
+    f"the rewritten requirement is clear enough to write test cases against — "
+    f"{_CLARITY_BAR} If still genuinely unclear, ask new clarifying questions "
+    "about the gaps that actually block writing a test case; bundle multiple "
+    "questions together if needed, but skip nice-to-know details. "
     "Respond with a JSON object of the shape "
     '{"clear": boolean, "clarifying_question": string or null, '
     '"rewritten_description": string}.'

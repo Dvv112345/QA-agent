@@ -76,6 +76,9 @@ REDIS_PASSWORD: str | None = os.environ.get("REDIS_PASSWORD") or None
 REDIS_DB: int = _get_int("REDIS_DB", 0)
 JOB_TIMEOUT: int = _get_int("JOB_TIMEOUT", 300)
 JOB_RESULT_TTL: int = _get_int("JOB_RESULT_TTL", 3600)
+# RQ's idle BLPOP wait is (WORKER_TTL - 15). A blocking socket call can't be
+# interrupted by Ctrl+C on Windows, so this bounds worst-case shutdown latency.
+WORKER_TTL: int = _get_int("WORKER_TTL", 30)
 
 # ── Requirement analysis ──────────────────────────────────────────────
 MAX_CLARIFICATION_ROUNDS: int = _get_int("MAX_CLARIFICATION_ROUNDS", 3)

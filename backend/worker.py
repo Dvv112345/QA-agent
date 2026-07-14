@@ -27,6 +27,7 @@ import sys
 
 from rq import SimpleWorker, Worker
 
+from backend.config import WORKER_TTL
 from backend.services.queue import QUEUE_NAME, get_queue_service
 
 # Windows doesn't support os.fork() — use SimpleWorker instead.
@@ -53,7 +54,10 @@ def cli() -> None:
     # Socket timeouts: QueueService._connect sets a small enqueue-side one;
     # RQ bumps this connection's timeout above its blocking-dequeue window
     # on startup, so dead-connection hangs are bounded without breaking BLPOP.
-    worker = _WorkerClass([QUEUE_NAME], connection=conn)
+    # worker_ttl shrinks that blocking-dequeue window itself (default RQ value
+    # is 420s) — a blocking Redis call can't be interrupted by Ctrl+C on
+    # Windows, so this bounds worst-case shutdown latency to ~WORKER_TTL - 15s.
+    worker = _WorkerClass([QUEUE_NAME], connection=conn, worker_ttl=WORKER_TTL)
     logging.getLogger("rq.worker").info("RQ worker started — listening on queue '%s'", QUEUE_NAME)
     worker.work()
 
