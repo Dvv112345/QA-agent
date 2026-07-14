@@ -1,6 +1,6 @@
 # QA Agent
 
-Automated Quality Assurance analysis for source code and requirement documents. Upload a zip archive of source code and a markdown requirement document to receive a structured directory tree, word-count analysis, and QA insights.
+Automated Quality Assurance analysis for source code and requirement documents. 
 
 ## Quick Start
 
