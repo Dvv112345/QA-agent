@@ -90,12 +90,12 @@ describe('TestEnvironmentPage', () => {
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 
-  it('shows guard notice on inactive sprint with no submission', async () => {
+  it('shows finished notice on inactive sprint with no submission', async () => {
     mockFetchSprint.mockResolvedValue(makeSprint({ active: false }))
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('Confirm all requirements first.')).toBeInTheDocument()
+      expect(screen.getByText('This sprint is finished.')).toBeInTheDocument()
     })
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })

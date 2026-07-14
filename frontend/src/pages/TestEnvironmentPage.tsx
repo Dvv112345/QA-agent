@@ -138,7 +138,9 @@ export default function TestEnvironmentPage() {
       <p className="test-env-sprint-name">{sprint.name}</p>
 
       {guarded ? (
-        <p className="test-env-notice">Confirm all requirements first.</p>
+        <p className="test-env-notice">
+          {active ? 'Confirm all requirements first.' : 'This sprint is finished.'}
+        </p>
       ) : !testEnv || editing ? (
         <div className="test-env-form">
           <p className="test-env-hint">
