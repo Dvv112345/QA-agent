@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
 from backend.config import STORAGE_LOCATION
@@ -169,6 +170,9 @@ async def list_sprints(
     return list(
         session.exec(
             select(Sprint)
+            # The computed SprintResponse flags touch these relationships on
+            # every row — eager-load them to avoid per-row lazy queries.
+            .options(selectinload(Sprint.requirements), selectinload(Sprint.test_environment))
             .order_by(Sprint.active.desc(), Sprint.created_at.desc())  # noqa: E712
             .offset(offset)
             .limit(limit)

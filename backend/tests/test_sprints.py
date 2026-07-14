@@ -465,3 +465,166 @@ class TestSprintFileTreeCapture:
         repo = db_session.get(Repo, repo_id)
         db_session.refresh(repo)
         assert repo.file_tree is None
+
+
+# == Computed flags on SprintResponse =================================
+
+
+def _seed_test_env(db_session, sprint, status=None, **kwargs):
+    from backend.models.database import TestEnvironmentAccess, TestEnvironmentStatus
+
+    row = TestEnvironmentAccess(
+        sprint_id=sprint.id,
+        content=kwargs.pop("content", "SSH into staging as qa@staging."),
+        original_content=kwargs.pop("original_content", "SSH into staging as qa@staging."),
+        status=status or TestEnvironmentStatus.NEEDS_INFO,
+        **kwargs,
+    )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+    return row
+
+
+class TestSprintFlags:
+    """Serialization of the computed flags on list + detail endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_flags_default_false_with_no_requirements(self, async_client, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            assert resp.status_code == 200
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["requirements_complete"] is False
+            assert row["has_test_environment_submission"] is False
+            assert row["requirements_locked"] is False
+
+    @pytest.mark.asyncio
+    async def test_requirements_complete_when_all_confirmed(self, async_client, db_session):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, name="Search")
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["requirements_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_requirements_incomplete_with_non_confirmed_row(self, async_client, db_session):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.READY, name="Search")
+
+        resp = await async_client.get(f"/api/sprints/{sprint.id}")
+        assert resp.json()["requirements_complete"] is False
+
+    @pytest.mark.asyncio
+    async def test_submission_flag_without_lock(self, async_client, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)  # needs_info
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_test_environment_submission"] is True
+            assert row["requirements_locked"] is False
+
+    @pytest.mark.asyncio
+    async def test_locked_when_test_env_confirmed(self, async_client, db_session):
+        from backend.models.database import TestEnvironmentStatus
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_test_environment_submission"] is True
+            assert row["requirements_locked"] is True
+
+
+class TestTestEnvironmentModelProperties:
+    """Unit tests for the TestEnvironmentAccess computed properties."""
+
+    @pytest.mark.parametrize(("revisions", "capped"), [(2, False), (3, True), (4, True)])
+    def test_clarification_cap_reached(self, db_session, revisions, capped):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        row = _seed_test_env(db_session, sprint, revision_count=revisions)
+        assert row.clarification_cap_reached is capped
+
+    def test_not_stale_when_confirmed_requirements_predate_check(self, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        earlier = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        later = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(
+            db_session, sprint, status=RequirementStatus.CONFIRMED, updated_at=earlier
+        )
+        row = _seed_test_env(db_session, sprint, updated_at=later)
+
+        assert row.requirements_stale is False
+
+    def test_stale_when_requirement_confirmed_after_check(self, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        earlier = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        later = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, updated_at=later)
+        row = _seed_test_env(db_session, sprint, updated_at=earlier)
+
+        assert row.requirements_stale is True
+
+    def test_newer_non_confirmed_rows_do_not_trip_staleness(self, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        earlier = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        later = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.READY, updated_at=later)
+        row = _seed_test_env(db_session, sprint, updated_at=earlier)
+
+        assert row.requirements_stale is False
+
+    def test_equal_timestamps_are_not_stale(self, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        moment = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, updated_at=moment)
+        row = _seed_test_env(db_session, sprint, updated_at=moment)
+
+        assert row.requirements_stale is False
