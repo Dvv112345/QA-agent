@@ -53,11 +53,19 @@ class TestGetClient:
         second = llm._get_client()
         assert first is second
 
+    def test_survives_broken_ssl_cert_file(self, monkeypatch, tmp_path):
+        # conda on Windows can leave SSL_CERT_FILE pointing at a missing file
+        # (conftest normally deletes it — re-break it here on purpose).
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing-cacert.pem"))
+        monkeypatch.setattr(llm, "OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(llm, "_client", None)
+        assert llm._get_client() is not None
+
 
 class TestCheckClarity:
     def test_parses_clear_result(self, stub_client):
         result = check_clarity("Login", "Users can log in.", None, None)
-        assert result == ClarityResult(clear=True, clarifying_question=None)
+        assert result == ClarityResult(clear=True, clarifying_questions=None)
 
     def test_parses_unclear_result(self, stub_client):
         stub_client.content = json.dumps({"clear": False, "clarifying_question": "Which users?"})

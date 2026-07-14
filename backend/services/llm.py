@@ -14,11 +14,18 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 
+import certifi
+import httpx
 import openai
 from sqlmodel import SQLModel
 
 from backend.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_TIMEOUT
+
+# On Windows, SSL_CERT_FILE may point to a non-existent file which breaks
+# httpx's default SSL context; use certifi like github_utils does.
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +39,7 @@ class LLMError(Exception):
 
 class ClarityResult(SQLModel):
     clear: bool
-    clarifying_question: str | None = None
+    clarifying_questions: str | None = None
     rewritten_description: str | None = None
 
 
@@ -51,6 +58,7 @@ def _get_client() -> openai.OpenAI:
             api_key=OPENAI_API_KEY,
             base_url=OPENAI_BASE_URL,
             timeout=OPENAI_TIMEOUT,
+            http_client=httpx.Client(verify=_SSL_CONTEXT, timeout=OPENAI_TIMEOUT),
         )
     return _client
 
@@ -58,10 +66,9 @@ def _get_client() -> openai.OpenAI:
 _CHECK_SYSTEM_PROMPT = (
     "You are a senior QA engineer reviewing software requirements. "
     "Judge whether the given requirement is clear and specific enough to write "
-    "test cases against. If it is not, ask exactly one clarifying question — "
-    "the single most important one. "
+    "test cases against. If it is not, ask clarifying questions"
     "Respond with a JSON object of the shape "
-    '{"clear": boolean, "clarifying_question": string or null}.'
+    '{"clear": boolean, "clarifying_questions": string or null}.'
 )
 
 _REVISE_SYSTEM_PROMPT = (
@@ -69,9 +76,9 @@ _REVISE_SYSTEM_PROMPT = (
     "Rewrite the requirement description so it incorporates the user's answer "
     "to your clarifying question, keeping the user's intent. Then judge whether "
     "the rewritten requirement is clear and specific enough to write test cases "
-    "against; if not, ask exactly one new clarifying question. "
+    "against; if not, ask new clarifying questions. "
     "Respond with a JSON object of the shape "
-    '{"clear": boolean, "clarifying_question": string or null, '
+    '{"clear": boolean, "clarifying_questions": string or null, '
     '"rewritten_description": string}.'
 )
 
@@ -107,7 +114,7 @@ def _complete(system_prompt: str, user_prompt: str) -> ClarityResult:
     except (json.JSONDecodeError, ValueError) as exc:
         raise LLMError(f"LLM returned malformed output: {exc}") from exc
 
-    if not result.clear and not result.clarifying_question:
+    if not result.clear and not result.clarifying_questions:
         raise LLMError("LLM judged the requirement unclear but gave no clarifying question.")
     return result
 

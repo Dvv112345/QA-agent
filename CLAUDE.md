@@ -16,23 +16,24 @@ QA Agent is a full-stack application for managing QA analysis of GitHub reposito
 
 All backend commands run from the repo root; frontend commands from `frontend/`.
 
-| Command                            | Purpose                                                     |
-| ---------------------------------- | ----------------------------------------------------------- |
-| `pip install -e ".[dev]"`          | Install backend + dev dependencies (pytest, ruff, …)        |
-| `python -m backend.main`           | Start API server at http://localhost:8000 (docs at `/docs`) |
-| `python -m backend.worker`         | Start an RQ worker (required for requirement analysis)      |
-| `python -m backend.clear_queue`    | Empty the RQ queue and job registries                       |
-| `python -m pytest -v`              | Run all backend tests                                       |
-| `python -m pytest -k <keyword> -v` | Run backend tests matching a keyword                        |
-| `npm install`                      | Install frontend dependencies                               |
-| `npm run dev`                      | Vite dev server with HMR at http://localhost:5173           |
-| `npm run build`                    | Type-check (`tsc -b`) and build for production              |
-| `npm run lint`                     | ESLint                                                      |
-| `npm test` / `npm run test:watch`  | Vitest (single run / watch mode)                            |
-| `pre-commit install`               | Install git hooks (first time only)                         |
-| `pre-commit run --all-files`       | Run all hooks on all files                                  |
+| Command                                 | Purpose                                                                           |
+| --------------------------------------- | --------------------------------------------------------------------------------- |
+| `pip install -e ".[dev]"`               | Install backend + dev dependencies (pytest, ruff, …)                              |
+| `python -m backend.main`                | Start API server at http://localhost:8000 (docs at `/docs`)                       |
+| `python -m backend.worker`              | Start an RQ worker (required for requirement analysis)                            |
+| `python -m backend.scripts.clear_queue` | Empty the RQ queue and job registries                                             |
+| `python -m backend.scripts.reset_db`    | Drop + recreate all tables (`--yes` skips prompt, `--with-storage` wipes uploads) |
+| `python -m pytest -v`                   | Run all backend tests                                                             |
+| `python -m pytest -k <keyword> -v`      | Run backend tests matching a keyword                                              |
+| `npm install`                           | Install frontend dependencies                                                     |
+| `npm run dev`                           | Vite dev server with HMR at http://localhost:5173                                 |
+| `npm run build`                         | Type-check (`tsc -b`) and build for production                                    |
+| `npm run lint`                          | ESLint                                                                            |
+| `npm test` / `npm run test:watch`       | Vitest (single run / watch mode)                                                  |
+| `pre-commit install`                    | Install git hooks (first time only)                                               |
+| `pre-commit run --all-files`            | Run all hooks on all files                                                        |
 
-**Prerequisites for running the backend:** PostgreSQL running with a `qa_agent` database (`createdb qa_agent`), and `backend/.env` present (copy from `backend/.env.example`). Tables are auto-created on startup by `init_db()` — no migrations. Requirement analysis additionally needs Redis, a worker (`python -m backend.worker`, second terminal), and an LLM API key (`OPENAI_API_KEY`); without them requirement rows simply stay `pending`. Tests need none of these (see [Testing](#testing)).
+**Prerequisites for running the backend:** PostgreSQL running with a `qa_agent` database (`createdb qa_agent`), and `backend/.env` present (copy from `backend/.env.example`). Tables are auto-created on startup by `init_db()`; changes to existing tables ship as idempotent migrations run at startup (see Conventions #11). Requirement analysis additionally needs Redis, a worker (`python -m backend.worker`, second terminal), and an LLM API key (`OPENAI_API_KEY`); without them requirement rows simply stay `pending`. Tests need none of these (see [Testing](#testing)).
 
 ## Architecture
 
@@ -59,7 +60,7 @@ All backend commands run from the repo root; frontend commands from `frontend/`.
 | `utils/crypto.py`        | Fernet encrypt/decrypt for GitHub tokens (needs `ENCRYPTION_KEY`)                                         |
 | `utils/github_utils.py`  | GitHub API client: URL parsing, metadata, README download, file-tree fetch, typed `GitHubError` hierarchy |
 | `utils/sprint_utils.py`  | Unique sprint directory generation (DB + filesystem checked, TOCTOU-safe)                                 |
-| `clear_queue.py`         | CLI to empty the RQ queue and job registries                                                              |
+| `scripts/clear_queue.py` | CLI to empty the RQ queue and job registries                                                              |
 | `tests/`                 | pytest suite (see [Testing](#testing))                                                                    |
 
 ### Frontend (`frontend/src/`)
@@ -134,18 +135,22 @@ Shared-secret password gate backed by an HttpOnly session cookie. Optional — w
 - Tests are colocated with source (`*.test.tsx` next to the component).
 - `src/test/test-utils.tsx` exports `renderWithRouter(ui, { initialEntries? })` — wraps the component in `createMemoryRouter` + `RouterProvider` with a catch-all route.
 - Mock the API module (`vi.mock('../services/api')`) rather than raw `fetch` where possible; mock `useNavigate` to assert navigation.
+- Polling/interval tests: install `vi.useFakeTimers()` **before** rendering — an interval registered under real timers can't be advanced later (see `SprintDetailPage.test.tsx`).
 
 ## Gotchas
 
-| Gotcha                                   | Solution                                                                                                                                                    |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`location.state` in `useEffect` deps** | `location.state` is a new reference each render → infinite re-runs. Depend on specific properties instead.                                                  |
-| **MemoryRouter route state format**      | `initialEntries` must be `[{ pathname: '/x', state: {...} }]`, not `['/x', { state }]`.                                                                     |
-| **CI `npm ci` fails on peer deps**       | Lockfile `"peer": true` markers from a different npm version break `npm ci`. The CI workflow runs `npm install --package-lock-only` first to normalize.     |
-| **Empty optional form fields**           | Browsers send empty strings for blank optional form fields — backend routes downgrade `""` to `None` (see `access_token` in `routes/repos.py`).             |
-| **Windows `SSL_CERT_FILE`**              | May point at a missing file and break httpx; `github_utils.py` uses a certifi-based SSL context, and conftest deletes the var for tests.                    |
-| **Sprint directory uniqueness**          | Never generate directories with check-then-create; `generate_sprint_directory` uses `os.makedirs(exist_ok=False)` in a retry loop to avoid the TOCTOU race. |
-| **Token security**                       | GitHub tokens are Fernet-encrypted at rest, never returned in responses (`RepoResponse` omits the field) and never logged. Keep it that way.                |
+| Gotcha                                        | Solution                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`location.state` in `useEffect` deps**      | `location.state` is a new reference each render → infinite re-runs. Depend on specific properties instead.                                                                                                                                                                                                                                                                                                        |
+| **MemoryRouter route state format**           | `initialEntries` must be `[{ pathname: '/x', state: {...} }]`, not `['/x', { state }]`.                                                                                                                                                                                                                                                                                                                           |
+| **CI `npm ci` fails on peer deps**            | Lockfile `"peer": true` markers from a different npm version break `npm ci`. The CI workflow runs `npm install --package-lock-only` first to normalize.                                                                                                                                                                                                                                                           |
+| **Empty optional form fields**                | Browsers send empty strings for blank optional form fields — backend routes downgrade `""` to `None` (see `access_token` in `routes/repos.py`).                                                                                                                                                                                                                                                                   |
+| **Windows `SSL_CERT_FILE`**                   | May point at a missing file and break httpx (any client construction, incl. the OpenAI SDK's); `github_utils.py` and `services/llm.py` use a certifi-based SSL context, and conftest deletes the var for tests. **Every future outbound HTTPS request must apply the same guard**: pass `ssl.create_default_context(cafile=certifi.where())` as the SSL/verify context instead of relying on the library default. |
+| **Sprint directory uniqueness**               | Never generate directories with check-then-create; `generate_sprint_directory` uses `os.makedirs(exist_ok=False)` in a retry loop to avoid the TOCTOU race.                                                                                                                                                                                                                                                       |
+| **Token security**                            | GitHub tokens are Fernet-encrypted at rest, never returned in responses (`RepoResponse` omits the field) and never logged. Keep it that way.                                                                                                                                                                                                                                                                      |
+| **Schema changes need startup migrations**    | `init_db()` (`create_all`) only creates _missing tables_ — it never alters existing ones, so new columns/indexes silently miss existing databases (e.g. the `Requirement.sprint_id` index only auto-applied to fresh DBs). Every schema change to an existing table must ship with an idempotent migration executed at app startup (see Conventions #11).                                                         |
+| **redis-py `socket_timeout` assignment**      | `conn.socket_timeout = X` after construction is a dead attribute write — it never reaches the connection pool. Pass `socket_timeout=` to the `redis.Redis(...)` constructor (see `QueueService._connect`; pinned by `test_socket_timeout_reaches_the_connection_pool`).                                                                                                                                           |
+| **SQLModel doesn't auto-update `updated_at`** | Column defaults only fire on insert. Every mutating endpoint/task must set `updated_at` explicitly on each meaningful transition.                                                                                                                                                                                                                                                                                 |
 
 ### Redis / RQ (active — requirement analysis)
 
@@ -204,6 +209,8 @@ Ruff (lint + format) for Python; Prettier + ESLint for frontend; general hooks (
 7. **Ports**: backend 8000, frontend 5173.
 8. **Commit messages / PR descriptions**: do not mention that they were written by Claude.
 9. **Bulk row updates**: prefer a single set-based `update()` statement over loading rows and mutating them in a loop. The per-row loops in `finish_sprint` and the reconciler sweeps are deliberate exceptions (expected N ≈ 0, per-row logging, Python-side staleness/retry branching) — don't copy that pattern to paths where the row count can grow.
+10. **Config-derived UI decisions**: never duplicate a backend config constant as a frontend literal — expose a computed flag on the response model instead (e.g. `clarification_cap_reached` is a `Requirement` property serialized via `response_model`; the card reads the flag, not `MAX_CLARIFICATION_ROUNDS`).
+11. **Database migrations**: whenever a table model changes (new/altered column, index, constraint), write an accompanying migration and wire it to run at app startup (alongside `init_db()` in the startup path). `create_all` only creates missing tables, so without a migration the change never reaches existing databases. Migrations must be idempotent — startup runs them on every boot.
 
 ## MCP Tools: code-review-graph
 
