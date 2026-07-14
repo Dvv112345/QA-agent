@@ -115,6 +115,8 @@ class Requirement(SQLModel, table=True):
 class TestEnvironmentStatus(str, Enum):
     """Lifecycle status of a sprint's test environment access description."""
 
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
     NEEDS_INFO = "needs_info"
     READY = "ready"
     CONFIRMED = "confirmed"
@@ -126,6 +128,8 @@ class TestEnvironmentAccess(SQLModel, table=True):
     One row per sprint, judged synchronously by the LLM — no queue/worker
     involvement, so no heartbeat/retry columns.
     """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
 
     id: int | None = Field(default=None, primary_key=True)
     sprint_id: int = Field(foreign_key="sprint.id", unique=True)

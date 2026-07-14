@@ -591,3 +591,93 @@ class TestEnqueueWiring:
         db_session.refresh(row)
         assert row.status == RequirementStatus.PENDING
         assert row.job_id is None
+
+
+# == Requirement lock (test environment confirmed) ====================
+
+
+class TestRequirementsLock:
+    """Once the test environment is confirmed, the requirement set is frozen."""
+
+    def _seed_locked_sprint(self, db_session):
+        from backend.models.database import TestEnvironmentStatus
+        from backend.tests.test_sprints import _seed_test_env
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        return sprint
+
+    @pytest.mark.asyncio
+    async def test_create_422_when_locked(self, async_client, db_session):
+        sprint = self._seed_locked_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/requirements",
+            json=[{"name": "New", "description": "New requirement."}],
+        )
+
+        assert resp.status_code == 422
+        assert "locked" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_delete_422_when_locked(self, async_client, db_session):
+        sprint = self._seed_locked_sprint(db_session)
+        confirmed = sprint.requirements[0]
+
+        resp = await async_client.delete(f"/api/requirements/{confirmed.id}")
+
+        assert resp.status_code == 422
+        assert "locked" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("te_status", ["needs_info", "ready"])
+    async def test_create_and_delete_allowed_before_lock(self, async_client, db_session, te_status):
+        from backend.tests.test_sprints import _seed_test_env
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_test_env(db_session, sprint, status=te_status)
+        doomed = _seed_requirement(db_session, sprint, name="Doomed")
+
+        create_resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/requirements",
+            json=[{"name": "New", "description": "New requirement."}],
+        )
+        delete_resp = await async_client.delete(f"/api/requirements/{doomed.id}")
+
+        assert create_resp.status_code == 201
+        assert delete_resp.status_code == 204
+
+    @pytest.mark.asyncio
+    async def test_other_transitions_unaffected_by_lock(self, async_client, db_session):
+        """answer/confirm/edit/restart have no lock check (content-terminal rows only)."""
+        sprint = self._seed_locked_sprint(db_session)
+        needs = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.NEEDS_CLARIFICATION,
+            name="Needs",
+            clarifying_question="Which users?",
+        )
+        ready = _seed_requirement(db_session, sprint, status=RequirementStatus.READY, name="Ready")
+        ready2 = _seed_requirement(
+            db_session, sprint, status=RequirementStatus.READY, name="Ready2"
+        )
+        failed = _seed_requirement(
+            db_session, sprint, status=RequirementStatus.FAILED, name="Failed"
+        )
+
+        answer_resp = await async_client.post(
+            f"/api/requirements/{needs.id}/answer", json={"answer": "Registered users."}
+        )
+        edit_resp = await async_client.patch(
+            f"/api/requirements/{ready.id}", json={"description": "Edited."}
+        )
+        confirm_resp = await async_client.post(f"/api/requirements/{ready2.id}/confirm")
+        restart_resp = await async_client.post(f"/api/requirements/{failed.id}/restart")
+
+        assert answer_resp.status_code == 200
+        assert edit_resp.status_code == 200
+        assert confirm_resp.status_code == 200
+        assert restart_resp.status_code == 200
