@@ -35,7 +35,7 @@ npm install
 npm run dev
 ```
 
-### Word-Count Worker (requires Redis)
+### Worker (requires Redis)
 
 ```bash
 # Start Redis, then in a separate terminal:
