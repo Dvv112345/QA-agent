@@ -10,13 +10,25 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
+## Pages
+
+Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
+
+| Route                           | Page                  | Purpose                                                          |
+| ------------------------------- | --------------------- | ---------------------------------------------------------------- |
+| `/`                             | `SprintListPage`      | All sprints; cards link to detail or test-environment pages      |
+| `/sprints/new`                  | `CreateSprintPage`    | Create a sprint (with inline repo registration + README status)  |
+| `/sprints/:id`                  | `SprintDetailPage`    | Enter requirements, follow analysis via polling, answer/confirm  |
+| `/sprints/:id/test-environment` | `TestEnvironmentPage` | Describe test environment access, answer clarifications, confirm |
+| `/repos`                        | `RepoListPage`        | Registered repos; deactivate unused ones                         |
+
 ## Environment Variables
 
 | Variable        | Default                 | Description          |
 | --------------- | ----------------------- | -------------------- |
 | `VITE_API_BASE` | `http://localhost:8000` | Backend API base URL |
 
-Define in `frontend/.env` (see `.env.example`).
+Define in `frontend/.env` (see `.env.example`). In local dev the Vite server also proxies `/api` → `http://localhost:8000` (`vite.config.ts`), so `VITE_API_BASE` is optional.
 
 ## Login Flow
 
@@ -26,7 +38,7 @@ When `APP_PASSWORD` is set on the backend, the frontend shows a full-screen logi
 2. If `valid: true` — the modal is skipped, the app appears immediately.
 3. If `valid: false` — a password input is shown.
 4. On submit, `POST /api/auth/verify` validates the password. On success the backend sets an HttpOnly session cookie; on failure an inline error is displayed.
-5. The cookie is sent automatically by the browser on every subsequent API request — no changes to `uploadFiles()` or `fetchJobStatus()` are needed.
+5. The cookie is sent automatically by the browser on every subsequent API request — the API functions in `src/services/api.ts` need no per-call auth handling.
 
 If `APP_PASSWORD` is not set on the backend, all auth checks return `{ valid: true }` and the modal never appears.
 
