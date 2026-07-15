@@ -49,6 +49,9 @@ class SprintResponse(SQLModel):
     directory: str
     created_at: datetime
     repo: RepoResponse | None = None
+    requirements_complete: bool = False
+    has_test_environment_submission: bool = False
+    requirements_locked: bool = False
 
 
 class SprintUpdateRequest(SQLModel):
@@ -82,5 +85,30 @@ class RequirementResponse(SQLModel):
     revision_count: int
     clarification_cap_reached: bool
     error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Test environment access ───────────────────────────────────────────
+
+
+class TestEnvironmentSubmitRequest(SQLModel):
+    content: str
+
+
+class TestEnvironmentAnswerRequest(SQLModel):
+    answer: str
+
+
+class TestEnvironmentResponse(SQLModel):
+    id: int
+    sprint_id: int
+    content: str
+    original_content: str
+    status: str
+    clarifying_question: str | None = None
+    revision_count: int
+    clarification_cap_reached: bool
+    requirements_stale: bool
     created_at: datetime
     updated_at: datetime

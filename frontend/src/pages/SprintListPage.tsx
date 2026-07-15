@@ -64,7 +64,14 @@ export default function SprintListPage() {
         <div className="sprint-cards">
           {sprints.map((sprint) => (
             <div key={sprint.id} className="sprint-card">
-              <Link to={`/sprints/${sprint.id}`} className="sprint-card-main">
+              <Link
+                to={
+                  sprint.active && sprint.has_test_environment_submission
+                    ? `/sprints/${sprint.id}/test-environment`
+                    : `/sprints/${sprint.id}`
+                }
+                className="sprint-card-main"
+              >
                 <h2 className="sprint-card-name">{sprint.name}</h2>
                 <p className="sprint-card-repo">{sprint.repo?.name ?? 'Unknown repo'}</p>
                 <time className="sprint-card-date">

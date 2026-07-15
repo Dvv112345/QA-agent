@@ -44,6 +44,14 @@ def _ensure_sprint_active(sprint: Sprint) -> None:
         )
 
 
+def _ensure_requirements_unlocked(sprint: Sprint) -> None:
+    if sprint.requirements_locked:
+        raise HTTPException(
+            status_code=422,
+            detail="Requirements are locked once the test environment access has been confirmed.",
+        )
+
+
 def _touch(requirement: Requirement) -> None:
     requirement.updated_at = datetime.now(timezone.utc)
 
@@ -80,6 +88,7 @@ async def create_requirements(
     """Create a batch of requirements for a sprint (all start ``pending``)."""
     sprint = _get_sprint_or_404(session, sprint_id)
     _ensure_sprint_active(sprint)
+    _ensure_requirements_unlocked(sprint)
 
     if not body:
         raise HTTPException(status_code=422, detail="At least one requirement is required.")
@@ -260,6 +269,7 @@ async def delete_requirement(
     """Remove a requirement from its sprint (allowed in every status)."""
     requirement = _get_requirement_or_404(session, requirement_id)
     _ensure_sprint_active(requirement.sprint)
+    _ensure_requirements_unlocked(requirement.sprint)
 
     session.delete(requirement)
     session.commit()

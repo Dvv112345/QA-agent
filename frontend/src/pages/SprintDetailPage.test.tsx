@@ -15,6 +15,16 @@ vi.mock('../services/api', async (importOriginal) => {
   }
 })
 
+const mockNavigate = vi.fn()
+
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>()
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  }
+})
+
 import { fetchRequirements, fetchSprint, finishSprint, submitRequirements } from '../services/api'
 
 const mockFetchSprint = fetchSprint as ReturnType<typeof vi.fn>
@@ -37,6 +47,9 @@ const fakeSprint: SprintResponse = {
     active: true,
     created_at: '2026-01-01T00:00:00Z',
   },
+  requirements_complete: false,
+  has_test_environment_submission: false,
+  requirements_locked: false,
 }
 
 /**
@@ -207,6 +220,76 @@ describe('SprintDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Search')).toBeInTheDocument()
       })
+    })
+  })
+
+  describe('continue to test environment', () => {
+    it('hides Continue when there are no requirements', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
+    })
+
+    it('hides Continue on finished sprints', async () => {
+      mockFetchSprint.mockResolvedValue({ ...fakeSprint, active: false })
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'confirmed' })])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Login')).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
+    })
+
+    it('shows inline error and does not navigate when requirements are incomplete', async () => {
+      mockFetchSprint.mockResolvedValue({ ...fakeSprint, requirements_complete: false })
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'ready' })])
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+      expect(
+        await screen.findByText('Confirm or delete the remaining requirements before continuing.'),
+      ).toBeInTheDocument()
+      expect(mockNavigate).not.toHaveBeenCalled()
+    })
+
+    it('re-fetches the sprint and navigates when requirements are complete', async () => {
+      // The mount-time flag is stale on purpose — the click handler must
+      // trust the re-fetched value.
+      mockFetchSprint
+        .mockResolvedValueOnce({ ...fakeSprint, requirements_complete: false })
+        .mockResolvedValue({ ...fakeSprint, requirements_complete: true })
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'confirmed' })])
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/sprints/1/test-environment')
+      })
+    })
+  })
+
+  describe('requirement lock', () => {
+    it('hides the form and Remove buttons when requirements are locked', async () => {
+      mockFetchSprint.mockResolvedValue({
+        ...fakeSprint,
+        requirements_complete: true,
+        requirements_locked: true,
+      })
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'confirmed' })])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Login')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('Add Requirements')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
     })
   })
 

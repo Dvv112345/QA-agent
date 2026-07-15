@@ -14,22 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from backend.config import MAX_AUTO_RETRIES, STORAGE_LOCATION, STORE_OFFLINE
+from backend.config import MAX_AUTO_RETRIES
 from backend.database import new_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
     Requirement,
     RequirementStatus,
-    Sprint,
 )
 from backend.services import llm
-from backend.utils.crypto import decrypt_token
-from backend.utils.github_utils import download_readme, parse_github_url
+from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
 
@@ -39,31 +36,6 @@ _ERROR_SUMMARY_MAX_CHARS = 300
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _resolve_readme(sprint: Sprint) -> str | None:
-    """Best-effort README: stored copy → re-download → degrade to ``None``."""
-    if STORE_OFFLINE:
-        path = os.path.join(STORAGE_LOCATION, sprint.directory, "README.md")
-        try:
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as fh:
-                    return fh.read()
-        except OSError as exc:
-            logger.warning("Could not read stored README for sprint %d: %s", sprint.id, exc)
-
-    repo = sprint.repo
-    if repo is None:
-        return None
-    try:
-        owner, repo_name = parse_github_url(repo.github_link)
-        token = decrypt_token(repo.github_token) if repo.github_token else None
-        return asyncio.run(download_readme(owner, repo_name, token))
-    except Exception as exc:
-        logger.warning(
-            "README download failed for sprint %d — analyzing without: %s", sprint.id, exc
-        )
-        return None
 
 
 def _record_failure(session: Session, requirement_id: int, exc: Exception) -> None:
@@ -121,7 +93,7 @@ def analyze_requirement_task(requirement_id: int) -> None:
         session.commit()
 
         try:
-            readme = _resolve_readme(sprint)
+            readme = asyncio.run(resolve_readme(sprint))
             file_tree = sprint.repo.file_tree if sprint.repo else None
 
             # Work-unit boundary before the (long) LLM call.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import RequirementCard from '../components/RequirementCard'
 import RequirementForm from '../components/RequirementForm'
 import { fetchRequirements, fetchSprint, finishSprint } from '../services/api'
@@ -16,6 +16,7 @@ function isInProgress(requirement: RequirementResponse): boolean {
 export default function SprintDetailPage() {
   const { id } = useParams<{ id: string }>()
   const sprintId = Number(id)
+  const navigate = useNavigate()
 
   const [sprint, setSprint] = useState<SprintResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -23,6 +24,8 @@ export default function SprintDetailPage() {
   const [finishing, setFinishing] = useState(false)
   const [requirements, setRequirements] = useState<RequirementResponse[]>([])
   const [requirementsError, setRequirementsError] = useState<string | null>(null)
+  const [continuing, setContinuing] = useState(false)
+  const [continueError, setContinueError] = useState<string | null>(null)
 
   const fetchingRef = useRef(false)
 
@@ -81,6 +84,24 @@ export default function SprintDetailPage() {
       .then(setSprint)
       .catch((err: Error) => setError(err.message))
       .finally(() => setFinishing(false))
+  }
+
+  // The mount-time requirements_complete flag goes stale as the user
+  // confirms requirements on this page — re-fetch before navigating.
+  const handleContinue = () => {
+    setContinuing(true)
+    setContinueError(null)
+    fetchSprint(sprintId)
+      .then((fresh) => {
+        setSprint(fresh)
+        if (fresh.requirements_complete) {
+          navigate(`/sprints/${sprintId}/test-environment`)
+        } else {
+          setContinueError('Confirm or delete the remaining requirements before continuing.')
+        }
+      })
+      .catch((err: Error) => setContinueError(err.message))
+      .finally(() => setContinuing(false))
   }
 
   const handleSubmitted = (created: RequirementResponse[]) => {
@@ -157,13 +178,25 @@ export default function SprintDetailPage() {
             key={requirement.id}
             requirement={requirement}
             sprintActive={sprint.active}
+            locked={sprint.requirements_locked}
             onUpdated={handleUpdated}
             onRemoved={handleRemoved}
           />
         ))}
 
-        {sprint.active && <RequirementForm sprintId={sprintId} onSubmitted={handleSubmitted} />}
+        {sprint.active && !sprint.requirements_locked && (
+          <RequirementForm sprintId={sprintId} onSubmitted={handleSubmitted} />
+        )}
       </section>
+
+      {sprint.active && requirements.length > 0 && (
+        <div className="sprint-detail-continue">
+          <button className="btn btn-primary" disabled={continuing} onClick={handleContinue}>
+            {continuing ? 'Checking…' : 'Continue'}
+          </button>
+          {continueError && <p className="sprint-detail-error">{continueError}</p>}
+        </div>
+      )}
 
       {sprint.active && (
         <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>

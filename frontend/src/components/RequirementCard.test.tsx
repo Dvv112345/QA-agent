@@ -137,6 +137,11 @@ describe('RequirementCard', () => {
       expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
     })
 
+    it('hides Remove when the requirement set is locked', () => {
+      renderCard(makeRequirement({ status: 'confirmed' }), { locked: true })
+      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+    })
+
     it('hides all actions on finished sprints', () => {
       renderCard(makeRequirement({ status: 'needs_clarification', clarifying_question: 'Q?' }), {
         sprintActive: false,

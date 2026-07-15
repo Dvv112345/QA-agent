@@ -16,6 +16,7 @@ from backend.routes.auth import router as auth_router
 from backend.routes.repos import router as repos_router
 from backend.routes.requirements import router as requirements_router
 from backend.routes.sprints import router as sprints_router
+from backend.routes.test_environment import router as test_environment_router
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(repos_router, prefix="/api")
     app.include_router(sprints_router, prefix="/api")
     app.include_router(requirements_router, prefix="/api")
+    app.include_router(test_environment_router, prefix="/api")
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.

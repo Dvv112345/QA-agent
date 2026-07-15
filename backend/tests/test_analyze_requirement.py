@@ -19,13 +19,13 @@ UNCLEAR = ClarityResult(clear=False, clarifying_question="Which users?")
 @pytest.fixture(autouse=True)
 def _isolate_readme_resolution(monkeypatch):
     """Keep README resolution deterministic: no disk reads, no GitHub calls."""
-    import backend.tasks.analyze_requirement as task_module
+    import backend.utils.readme_utils as readme_utils
 
     async def _no_readme(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(task_module, "STORE_OFFLINE", False)
-    monkeypatch.setattr(task_module, "download_readme", _no_readme)
+    monkeypatch.setattr(readme_utils, "STORE_OFFLINE", False)
+    monkeypatch.setattr(readme_utils, "download_readme", _no_readme)
 
 
 @pytest.fixture
@@ -232,10 +232,10 @@ class TestFinishedSprintGuards:
 
 class TestReadmeResolution:
     def test_reads_stored_readme(self, db_session, llm_stub, monkeypatch, tmp_path):
-        import backend.tasks.analyze_requirement as task_module
+        import backend.utils.readme_utils as readme_utils
 
-        monkeypatch.setattr(task_module, "STORE_OFFLINE", True)
-        monkeypatch.setattr(task_module, "STORAGE_LOCATION", str(tmp_path))
+        monkeypatch.setattr(readme_utils, "STORE_OFFLINE", True)
+        monkeypatch.setattr(readme_utils, "STORAGE_LOCATION", str(tmp_path))
 
         sprint = _seed_sprint(db_session)
         readme_dir = tmp_path / sprint.directory
@@ -248,12 +248,12 @@ class TestReadmeResolution:
         assert llm_stub.check_calls[0]["readme"] == "# Stored README"
 
     def test_download_failure_degrades_to_none(self, db_session, llm_stub, monkeypatch):
-        import backend.tasks.analyze_requirement as task_module
+        import backend.utils.readme_utils as readme_utils
 
         async def _fail(*args, **kwargs):
             raise RuntimeError("network down")
 
-        monkeypatch.setattr(task_module, "download_readme", _fail)
+        monkeypatch.setattr(readme_utils, "download_readme", _fail)
 
         sprint = _seed_sprint(db_session)
         req = _seed_requirement(db_session, sprint)
@@ -263,3 +263,18 @@ class TestReadmeResolution:
         row = _reload(db_session, req.id)
         assert row.status == RequirementStatus.READY
         assert llm_stub.check_calls[0]["readme"] is None
+
+    def test_resolve_readme_downloads_when_no_stored_copy(self, db_session, monkeypatch):
+        """Direct unit test of the extracted async resolve_readme."""
+        import asyncio
+
+        import backend.utils.readme_utils as readme_utils
+
+        async def _download(*args, **kwargs):
+            return "# Downloaded README"
+
+        monkeypatch.setattr(readme_utils, "download_readme", _download)
+
+        sprint = _seed_sprint(db_session)
+
+        assert asyncio.run(readme_utils.resolve_readme(sprint)) == "# Downloaded README"
