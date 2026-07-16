@@ -52,6 +52,8 @@ class SprintResponse(SQLModel):
     requirements_complete: bool = False
     has_test_environment_submission: bool = False
     requirements_locked: bool = False
+    has_test_plans: bool = False
+    test_plans_complete: bool = False
 
 
 class SprintUpdateRequest(SQLModel):
@@ -112,3 +114,52 @@ class TestEnvironmentResponse(SQLModel):
     requirements_stale: bool
     created_at: datetime
     updated_at: datetime
+
+
+# ── Test plan ─────────────────────────────────────────────────────────
+
+
+class TestCaseResponse(SQLModel):
+    id: int
+    position: int
+    title: str
+    preconditions: str | None = None
+    steps: str
+    expected_result: str
+    case_type: str
+    priority: str
+
+
+class TestPlanResponse(SQLModel):
+    id: int
+    requirement_id: int
+    requirement_name: str
+    requirement_description: str
+    status: str
+    complexity: str | None = None
+    summary: str | None = None
+    revision_count: int
+    feedback_cap_reached: bool
+    error: str | None = None
+    cases: list[TestCaseResponse] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class TestPlanFeedbackRequest(SQLModel):
+    feedback: str
+
+
+class TestCaseInput(SQLModel):
+    title: str
+    preconditions: str | None = None
+    steps: str
+    expected_result: str
+    case_type: str
+    priority: str
+
+
+class TestPlanEditRequest(SQLModel):
+    complexity: str
+    summary: str
+    cases: list[TestCaseInput]

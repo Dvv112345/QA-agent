@@ -87,6 +87,17 @@ MAX_AUTO_RETRIES: int = _get_int("MAX_AUTO_RETRIES", 3)
 # ── Test environment analysis ─────────────────────────────────────────
 MAX_TEST_ENV_REVISION_ROUNDS: int = _get_int("MAX_TEST_ENV_REVISION_ROUNDS", 3)
 
+# ── Test planning ─────────────────────────────────────────────────────
+MAX_TEST_PLAN_FEEDBACK_ROUNDS: int = _get_int("MAX_TEST_PLAN_FEEDBACK_ROUNDS", 3)
+# Max read_file tool rounds per plan generation before a forced final answer.
+TEST_PLAN_TOOL_ROUNDS: int = _get_int("TEST_PLAN_TOOL_ROUNDS", 8)
+# Per-file character cap for repo files fetched by the tool loop.
+TEST_PLAN_FILE_MAX_CHARS: int = _get_int("TEST_PLAN_FILE_MAX_CHARS", 20000)
+# RQ job_timeout for plan jobs. Must cover a worst-case tool loop (up to
+# TEST_PLAN_TOOL_ROUNDS + 1 LLM calls × OPENAI_TIMEOUT plus GitHub fetches),
+# which JOB_TIMEOUT (sized for single-call analysis jobs) does not.
+TEST_PLAN_JOB_TIMEOUT: int = _get_int("TEST_PLAN_JOB_TIMEOUT", 900)
+
 # ── Reconciler ────────────────────────────────────────────────────────
 RECONCILER_INTERVAL: int = _get_int("RECONCILER_INTERVAL", 30)
 # Must exceed OPENAI_TIMEOUT so a slow LLM call is never mistaken for a dead worker.

@@ -172,7 +172,10 @@ async def list_sprints(
             select(Sprint)
             # The computed SprintResponse flags touch these relationships on
             # every row — eager-load them to avoid per-row lazy queries.
-            .options(selectinload(Sprint.requirements), selectinload(Sprint.test_environment))
+            .options(
+                selectinload(Sprint.requirements).selectinload(Requirement.test_plan),
+                selectinload(Sprint.test_environment),
+            )
             .order_by(Sprint.active.desc(), Sprint.created_at.desc())  # noqa: E712
             .offset(offset)
             .limit(limit)
