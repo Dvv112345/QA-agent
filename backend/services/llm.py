@@ -76,12 +76,12 @@ def _get_client() -> openai.OpenAI:
 
 
 _CLARITY_BAR = (
-    "A requirement is clear if a competent QA engineer could write at least one "
-    "meaningful test case from it without guessing at the author's intent — it "
+    "A requirement is clear if a competent QA engineer could write "
+    "meaningful test cases from it without guessing at the author's intent — it "
     "does not need to cover every edge case, exact error message, or precise UI "
     "copy; those are normal test-design decisions, not blockers. Use the "
     "provided README and file tree to resolve ambiguity yourself before asking "
-    "the user. When in doubt, prefer marking it clear."
+    "the user. "
 )
 
 _CHECK_SYSTEM_PROMPT = (
@@ -187,7 +187,7 @@ _TEST_ENV_BAR = (
     "point) and what credentials to use or how to obtain them. It does not "
     "need deployment internals or exhaustive tooling detail. Use the provided "
     "requirements, README, and file tree to resolve ambiguity yourself before "
-    "asking the user. When in doubt, prefer marking it sufficient."
+    "asking the user. "
 )
 
 _TEST_ENV_CHECK_SYSTEM_PROMPT = (
