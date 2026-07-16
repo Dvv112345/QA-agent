@@ -3,6 +3,8 @@
 import json
 from types import SimpleNamespace
 
+import httpx
+import openai
 import pytest
 
 from backend.services import llm
@@ -12,8 +14,10 @@ from backend.services.llm import (
     TestEnvironmentResult,
     check_clarity,
     check_test_environment,
+    generate_test_plan,
     revise_requirement,
     revise_test_environment,
+    revise_test_plan,
 )
 
 
@@ -234,3 +238,341 @@ class TestReviseTestEnvironment:
         )
         with pytest.raises(LLMError, match="no clarifying question"):
             revise_test_environment("SSH.", "Q?", "A.", _REQS, None, None)
+
+
+# ── Test plan generation (bounded read_file tool loop) ────────────────
+
+
+_PLAN_PAYLOAD = {
+    "complexity": "medium",
+    "summary": "Covers the login flows.",
+    "cases": [
+        {
+            "title": "Valid login",
+            "preconditions": "A registered user exists.",
+            "steps": ["Open the login page", "Enter valid credentials", "Submit"],
+            "expected_result": "User lands on the dashboard.",
+            "case_type": "functional",
+            "priority": "high",
+        }
+    ],
+}
+
+
+def _plan_payload(**overrides) -> dict:
+    """A valid plan payload with top-level and first-case overrides applied."""
+    payload = json.loads(json.dumps(_PLAN_PAYLOAD))
+    case_overrides = overrides.pop("case", {})
+    payload.update(overrides)
+    if payload["cases"]:
+        payload["cases"][0].update(case_overrides)
+    return payload
+
+
+def _final_response(payload) -> SimpleNamespace:
+    content = payload if isinstance(payload, str) else json.dumps(payload)
+    message = SimpleNamespace(content=content, tool_calls=None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def _tool_call_response(*paths: str) -> SimpleNamespace:
+    tool_calls = [
+        SimpleNamespace(
+            id=f"call_{i}",
+            type="function",
+            function=SimpleNamespace(name="read_file", arguments=json.dumps({"path": path})),
+        )
+        for i, path in enumerate(paths)
+    ]
+    message = SimpleNamespace(content=None, tool_calls=tool_calls)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class _SequenceClient:
+    """Returns queued responses (or raises queued exceptions) per create() call."""
+
+    def __init__(self, *items):
+        self.items = list(items)
+        self.requests: list[dict] = []
+
+        stub = self
+
+        class _Completions:
+            def create(self, **kwargs):
+                stub.requests.append(kwargs)
+                item = stub.items.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return item
+
+        self.chat = SimpleNamespace(completions=_Completions())
+
+
+def _sequence_client(monkeypatch, *items) -> _SequenceClient:
+    client = _SequenceClient(*items)
+    monkeypatch.setattr(llm, "_get_client", lambda: client)
+    return client
+
+
+def _bad_request_error(message: str = "tools are not supported") -> openai.BadRequestError:
+    request = httpx.Request("POST", "https://api.test/chat/completions")
+    response = httpx.Response(400, request=request)
+    return openai.BadRequestError(message, response=response, body=None)
+
+
+def _generate(**overrides):
+    kwargs = {
+        "name": "Login",
+        "description": "Users can log in.",
+        "sibling_names": ["Search", "Checkout"],
+        "test_env_content": "SSH to staging as qa.",
+        "readme": None,
+        "file_tree": None,
+        "read_file": lambda path: "FILE CONTENT",
+        "on_round": lambda: None,
+    }
+    kwargs.update(overrides)
+    return generate_test_plan(**kwargs)
+
+
+class TestGenerateTestPlan:
+    def test_happy_path_without_tool_calls(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
+
+        result = _generate()
+
+        assert result.complexity == "medium"
+        assert result.summary == "Covers the login flows."
+        assert len(result.cases) == 1
+        assert result.cases[0].title == "Valid login"
+        assert result.cases[0].steps == ["Open the login page", "Enter valid credentials", "Submit"]
+        assert len(client.requests) == 1
+        # Every round sends tools together with strict JSON mode — the
+        # DeepSeek spike (2026-07-16) confirmed the combination works and
+        # that omitting response_format yields unparseable final answers.
+        tools = client.requests[0]["tools"]
+        assert [t["function"]["name"] for t in tools] == ["read_file"]
+        assert client.requests[0]["response_format"] == {"type": "json_object"}
+
+    def test_tool_round_trip(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _final_response(_plan_payload()),
+        )
+        read_paths: list[str] = []
+
+        def read_file(path: str) -> str:
+            read_paths.append(path)
+            return "FILE CONTENT"
+
+        result = _generate(read_file=read_file)
+
+        assert result.complexity == "medium"
+        assert read_paths == ["src/app.py"]
+        assert len(client.requests) == 2
+        tool_messages = [
+            m
+            for m in client.requests[1]["messages"]
+            if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "tool"
+        ]
+        assert len(tool_messages) == 1
+        assert "FILE CONTENT" in tool_messages[0]["content"]
+
+    def test_on_round_called_after_every_api_round(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _final_response(_plan_payload()),
+        )
+        rounds = []
+
+        _generate(on_round=lambda: rounds.append(1))
+
+        assert len(rounds) == 2
+
+    def test_total_budget_stated_in_initial_prompt(self, monkeypatch):
+        monkeypatch.setattr(llm, "TEST_PLAN_TOOL_ROUNDS", 3)
+        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
+
+        _generate()
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "up to 3" in prompt
+        assert "read_file" in prompt
+
+    def test_remaining_budget_appended_to_tool_result(self, monkeypatch):
+        monkeypatch.setattr(llm, "TEST_PLAN_TOOL_ROUNDS", 3)
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _final_response(_plan_payload()),
+        )
+
+        _generate()
+
+        tool_messages = [
+            m
+            for m in client.requests[1]["messages"]
+            if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        assert "2 of 3 rounds remaining" in tool_messages[-1]["content"]
+        assert "FILE CONTENT" in tool_messages[-1]["content"]
+
+    def test_round_cap_forces_final_json_answer(self, monkeypatch):
+        monkeypatch.setattr(llm, "TEST_PLAN_TOOL_ROUNDS", 2)
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("a.py"),
+            _tool_call_response("b.py"),
+            _final_response(_plan_payload()),
+        )
+
+        result = _generate()
+
+        assert result.complexity == "medium"
+        assert len(client.requests) == 3
+        final = client.requests[2]
+        assert final["tool_choice"] == "none"
+        assert final["response_format"] == {"type": "json_object"}
+        last_message = final["messages"][-1]
+        assert last_message["role"] == "user"
+        assert "exhaust" in last_message["content"].lower()
+
+    def test_read_file_none_skips_tools(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
+
+        result = _generate(read_file=None)
+
+        assert result.complexity == "medium"
+        assert len(client.requests) == 1
+        assert "tools" not in client.requests[0]
+        assert client.requests[0]["response_format"] == {"type": "json_object"}
+
+    def test_bad_request_on_first_round_falls_back_to_no_tools(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _bad_request_error(),
+            _final_response(_plan_payload()),
+        )
+
+        result = _generate()
+
+        assert result.complexity == "medium"
+        assert len(client.requests) == 2
+        assert "tools" not in client.requests[1]
+        assert client.requests[1]["response_format"] == {"type": "json_object"}
+
+    def test_bad_request_after_first_round_raises(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _bad_request_error(),
+        )
+
+        with pytest.raises(LLMError):
+            _generate()
+
+    def test_other_openai_error_raises_llm_error(self, monkeypatch):
+        error = openai.APIConnectionError(request=httpx.Request("POST", "https://api.test"))
+        _sequence_client(monkeypatch, error)
+
+        with pytest.raises(LLMError, match="LLM request failed"):
+            _generate()
+
+    def test_malformed_json_raises(self, monkeypatch):
+        _sequence_client(monkeypatch, _final_response("not json at all"))
+
+        with pytest.raises(LLMError, match="malformed"):
+            _generate()
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            _plan_payload(cases=[]),
+            _plan_payload(case={"title": "   "}),
+            _plan_payload(case={"steps": []}),
+            _plan_payload(case={"steps": ["   ", ""]}),
+            _plan_payload(case={"expected_result": "  "}),
+            _plan_payload(case={"case_type": ""}),
+            _plan_payload(case={"priority": "urgent"}),
+            _plan_payload(complexity="extreme"),
+        ],
+        ids=[
+            "empty-cases",
+            "blank-title",
+            "no-steps",
+            "blank-steps",
+            "blank-expected-result",
+            "blank-case-type",
+            "bad-priority",
+            "bad-complexity",
+        ],
+    )
+    def test_invalid_plan_raises(self, monkeypatch, payload):
+        _sequence_client(monkeypatch, _final_response(payload))
+
+        with pytest.raises(LLMError):
+            _generate()
+
+    def test_prompt_contains_all_context(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
+
+        _generate(readme="# My README", file_tree="src/app.py\nsrc/db.py")
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "Login" in prompt
+        assert "Users can log in." in prompt
+        assert "Search" in prompt
+        assert "Checkout" in prompt
+        assert "SSH to staging as qa." in prompt
+        assert "# My README" in prompt
+        assert "src/app.py" in prompt
+
+    def test_long_readme_truncated(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
+
+        _generate(readme="x" * 20000)
+
+        assert len(client.requests[0]["messages"][1]["content"]) < 20000
+
+
+class TestReviseTestPlan:
+    def _revise(self, **overrides):
+        kwargs = {
+            "name": "Login",
+            "description": "Users can log in.",
+            "sibling_names": ["Search"],
+            "test_env_content": "SSH to staging as qa.",
+            "readme": None,
+            "file_tree": None,
+            "current_plan_json": json.dumps(_PLAN_PAYLOAD),
+            "feedback": "Add negative test cases for lockout.",
+            "read_file": lambda path: "FILE CONTENT",
+            "on_round": lambda: None,
+        }
+        kwargs.update(overrides)
+        return revise_test_plan(**kwargs)
+
+    def test_returns_validated_plan(self, monkeypatch):
+        _sequence_client(monkeypatch, _final_response(_plan_payload()))
+
+        result = self._revise()
+
+        assert result.complexity == "medium"
+        assert result.cases[0].title == "Valid login"
+
+    def test_prompt_includes_current_plan_and_feedback(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
+
+        self._revise()
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "Valid login" in prompt  # from the current plan JSON
+        assert "Add negative test cases for lockout." in prompt
+
+    def test_invalid_revision_raises(self, monkeypatch):
+        _sequence_client(monkeypatch, _final_response(_plan_payload(cases=[])))
+
+        with pytest.raises(LLMError):
+            self._revise()
