@@ -391,6 +391,50 @@ class TestFinishSprint:
             assert row.status == status
             assert row.error is None
 
+    @pytest.mark.asyncio
+    async def test_marks_in_progress_test_plans_failed(self, async_client, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            RequirementStatus,
+            TestPlan,
+            TestPlanStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+
+        def _plan(status, **kwargs):
+            requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+            return _seed_test_plan(db_session, requirement, status=status, **kwargs)
+
+        pending = _plan(TestPlanStatus.PENDING, pending_feedback="stale feedback")
+        generating = _plan(TestPlanStatus.GENERATING, last_heartbeat=datetime.now(timezone.utc))
+        untouched = {
+            _plan(status).id: status
+            for status in (
+                TestPlanStatus.DRAFT,
+                TestPlanStatus.APPROVED,
+                TestPlanStatus.FAILED,
+            )
+        }
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for plan_id in (pending.id, generating.id):
+            row = db_session.get(TestPlan, plan_id)
+            assert row.status == TestPlanStatus.FAILED
+            assert row.error == SPRINT_FINISHED_ERROR
+            assert row.last_heartbeat is None
+            assert row.pending_feedback is None
+        for plan_id, status in untouched.items():
+            row = db_session.get(TestPlan, plan_id)
+            assert row.status == status
+            assert row.error is None
+
 
 # == Repo file-tree capture during sprint creation ====================
 
