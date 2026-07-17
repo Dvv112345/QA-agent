@@ -90,8 +90,8 @@ describe('TestPlanCard', () => {
     expect(screen.getByText('Submit valid credentials')).toBeInTheDocument()
     expect(screen.getByText(/A registered user exists./)).toBeInTheDocument()
     expect(screen.getByText(/User lands on the dashboard./)).toBeInTheDocument()
-    expect(screen.getByText('functional')).toBeInTheDocument()
-    expect(screen.getByText('high')).toBeInTheDocument()
+    expect(screen.getByText('functional test')).toBeInTheDocument()
+    expect(screen.getByText('high priority')).toBeInTheDocument()
   })
 
   it('toggles the requirement description', () => {

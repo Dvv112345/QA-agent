@@ -119,9 +119,9 @@ export default function TestPlanCard({ plan, sprintActive, onUpdated }: Props) {
                 <div className="test-plan-case-header">
                   <h4>{testCase.title}</h4>
                   <div className="test-plan-case-chips">
-                    <span className="case-chip">{testCase.case_type}</span>
+                    <span className="case-chip">{testCase.case_type} test</span>
                     <span className={`case-chip case-chip-priority-${testCase.priority}`}>
-                      {testCase.priority}
+                      {testCase.priority} priority
                     </span>
                   </div>
                 </div>
