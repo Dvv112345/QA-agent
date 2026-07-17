@@ -4,6 +4,7 @@ import RepoListPage from './pages/RepoListPage'
 import SprintDetailPage from './pages/SprintDetailPage'
 import SprintListPage from './pages/SprintListPage'
 import TestEnvironmentPage from './pages/TestEnvironmentPage'
+import TestPlansPage from './pages/TestPlansPage'
 import RootLayout from './RootLayout'
 
 export const routes = [
@@ -14,6 +15,7 @@ export const routes = [
       { path: '/sprints/new', element: <CreateSprintPage /> },
       { path: '/sprints/:id', element: <SprintDetailPage /> },
       { path: '/sprints/:id/test-environment', element: <TestEnvironmentPage /> },
+      { path: '/sprints/:id/test-plans', element: <TestPlansPage /> },
       { path: '/repos', element: <RepoListPage /> },
     ],
   },

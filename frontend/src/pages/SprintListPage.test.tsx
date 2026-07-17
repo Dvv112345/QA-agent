@@ -36,6 +36,8 @@ const fakeSprint: SprintResponse = {
   requirements_complete: false,
   has_test_environment_submission: false,
   requirements_locked: false,
+  has_test_plans: false,
+  test_plans_complete: false,
 }
 
 function renderPage() {
@@ -128,6 +130,43 @@ describe('SprintListPage', () => {
         expect(screen.getByText('Sprint 1')).toBeInTheDocument()
       })
       expect(screen.getByRole('link', { name: /sprint 1/i })).toHaveAttribute('href', expectedHref)
+    })
+
+    it('prefers the test-plans page when the sprint has plans', async () => {
+      mockFetchSprints.mockResolvedValue([
+        {
+          ...fakeSprint,
+          active: true,
+          has_test_environment_submission: true,
+          has_test_plans: true,
+        },
+      ])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+      })
+      expect(screen.getByRole('link', { name: /sprint 1/i })).toHaveAttribute(
+        'href',
+        '/sprints/1/test-plans',
+      )
+    })
+
+    it('ignores has_test_plans on finished sprints', async () => {
+      mockFetchSprints.mockResolvedValue([
+        {
+          ...fakeSprint,
+          active: false,
+          has_test_environment_submission: true,
+          has_test_plans: true,
+        },
+      ])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+      })
+      expect(screen.getByRole('link', { name: /sprint 1/i })).toHaveAttribute('href', '/sprints/1')
     })
   })
 })

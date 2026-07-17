@@ -253,6 +253,14 @@ export default function TestEnvironmentPage() {
         </>
       )}
 
+      {testEnv?.status === 'confirmed' && (
+        <div className="test-env-continue">
+          <Link to={`/sprints/${sprintId}/test-plans`} className="btn btn-primary">
+            Continue to Test Plans
+          </Link>
+        </div>
+      )}
+
       {actionError && <p className="test-env-error">{actionError}</p>}
 
       {active && (
