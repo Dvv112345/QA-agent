@@ -218,13 +218,17 @@ async def edit_test_plan(
     plan.summary = body.summary
     plan.cases.clear()
     for position, case in enumerate(body.cases):
+        # Stored steps stay canonical (one non-blank line per step) — blank
+        # lines would otherwise leak into revision prompts via the
+        # serialized plan JSON.
+        steps = "\n".join(line.strip() for line in case.steps.splitlines() if line.strip())
         plan.cases.append(
             TestCase(
                 test_plan_id=plan.id,
                 position=position,
                 title=case.title,
                 preconditions=case.preconditions,
-                steps=case.steps,
+                steps=steps,
                 expected_result=case.expected_result,
                 case_type=case.case_type,
                 priority=case.priority,

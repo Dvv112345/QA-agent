@@ -456,6 +456,19 @@ class TestEdit:
         assert old_case_id not in surviving_ids
         assert stub_queue.enqueued_plans == []  # no LLM, no enqueue
 
+    @pytest.mark.asyncio
+    async def test_steps_normalized_on_save(self, async_client, db_session, stub_queue):
+        sprint, requirements = _seed_locked_sprint(db_session)
+        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.DRAFT)
+
+        resp = await async_client.patch(
+            f"/api/test-plans/{plan.id}",
+            json=_edit_body(case={"steps": "  First step  \n\n   \nSecond step\n"}),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["cases"][0]["steps"] == "First step\nSecond step"
+
 
 # ── POST /api/test-plans/{id}/approve ────────────────────────────────
 
