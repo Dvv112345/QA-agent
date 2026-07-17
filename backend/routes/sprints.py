@@ -16,6 +16,8 @@ from backend.models.database import (
     Requirement,
     RequirementStatus,
     Sprint,
+    TestPlan,
+    TestPlanStatus,
 )
 from backend.models.types import (
     SprintResponse,
@@ -172,7 +174,10 @@ async def list_sprints(
             select(Sprint)
             # The computed SprintResponse flags touch these relationships on
             # every row — eager-load them to avoid per-row lazy queries.
-            .options(selectinload(Sprint.requirements), selectinload(Sprint.test_environment))
+            .options(
+                selectinload(Sprint.requirements).selectinload(Requirement.test_plan),
+                selectinload(Sprint.test_environment),
+            )
             .order_by(Sprint.active.desc(), Sprint.created_at.desc())  # noqa: E712
             .offset(offset)
             .limit(limit)
@@ -236,6 +241,25 @@ async def finish_sprint(
         requirement.updated_at = datetime.now(timezone.utc)
         session.add(requirement)
 
+    # ── Fail test plans still awaiting generation (same rationale) ────
+    in_progress_plans = session.exec(
+        select(TestPlan)
+        .join(Requirement, TestPlan.requirement_id == Requirement.id)  # type: ignore[arg-type]
+        .where(
+            Requirement.sprint_id == sprint_id,
+            TestPlan.status.in_(  # type: ignore[attr-defined]
+                [TestPlanStatus.PENDING, TestPlanStatus.GENERATING]
+            ),
+        )
+    ).all()
+    for plan in in_progress_plans:
+        plan.status = TestPlanStatus.FAILED
+        plan.error = SPRINT_FINISHED_ERROR
+        plan.last_heartbeat = None
+        plan.pending_feedback = None
+        plan.updated_at = datetime.now(timezone.utc)
+        session.add(plan)
+
     session.commit()
     session.refresh(sprint)
 
@@ -244,6 +268,12 @@ async def finish_sprint(
             "Sprint id=%d: %d in-progress requirements marked failed on finish",
             sprint_id,
             len(in_progress),
+        )
+    if in_progress_plans:
+        logger.info(
+            "Sprint id=%d: %d in-progress test plans marked failed on finish",
+            sprint_id,
+            len(in_progress_plans),
         )
     logger.info("Sprint finished: id=%d name=%s", sprint.id, sprint.name)
     return sprint

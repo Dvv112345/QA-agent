@@ -6,7 +6,11 @@ from typing import Optional
 
 from sqlmodel import Field, Relationship, SQLModel
 
-from backend.config import MAX_CLARIFICATION_ROUNDS, MAX_TEST_ENV_REVISION_ROUNDS
+from backend.config import (
+    MAX_CLARIFICATION_ROUNDS,
+    MAX_TEST_ENV_REVISION_ROUNDS,
+    MAX_TEST_PLAN_FEEDBACK_ROUNDS,
+)
 
 
 class Repo(SQLModel, table=True):
@@ -64,6 +68,19 @@ class Sprint(SQLModel, table=True):
             and self.test_environment.status == TestEnvironmentStatus.CONFIRMED
         )
 
+    @property
+    def has_test_plans(self) -> bool:
+        """Whether at least one requirement has a test plan row."""
+        return any(r.test_plan is not None for r in self.requirements)
+
+    @property
+    def test_plans_complete(self) -> bool:
+        """Whether every requirement has an approved test plan (and one exists)."""
+        return len(self.requirements) > 0 and all(
+            r.test_plan is not None and r.test_plan.status == TestPlanStatus.APPROVED
+            for r in self.requirements
+        )
+
 
 class RequirementStatus(str, Enum):
     """Lifecycle status of a requirement's clarity analysis."""
@@ -105,6 +122,9 @@ class Requirement(SQLModel, table=True):
     )
 
     sprint: Sprint | None = Relationship(back_populates="requirements")
+    test_plan: Optional["TestPlan"] = Relationship(
+        back_populates="requirement", sa_relationship_kwargs={"uselist": False}
+    )
 
     @property
     def clarification_cap_reached(self) -> bool:
@@ -167,3 +187,96 @@ class TestEnvironmentAccess(SQLModel, table=True):
             r.status == RequirementStatus.CONFIRMED and r.updated_at > self.updated_at
             for r in self.sprint.requirements
         )
+
+
+class TestPlanStatus(str, Enum):
+    """Lifecycle status of a requirement's generated test plan."""
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    PENDING = "pending"
+    GENERATING = "generating"
+    DRAFT = "draft"
+    APPROVED = "approved"
+    FAILED = "failed"
+
+
+class TestPlan(SQLModel, table=True):
+    """LLM-generated test plan for a single confirmed requirement.
+
+    Generated asynchronously by an RQ worker (same machinery columns as
+    ``Requirement``: status/retry_count/job_id/last_heartbeat/error).
+    """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    id: int | None = Field(default=None, primary_key=True)
+    requirement_id: int = Field(foreign_key="requirement.id", unique=True)
+    complexity: str | None = Field(default=None)  # low / medium / high
+    summary: str | None = Field(default=None)
+    status: str = Field(default=TestPlanStatus.PENDING)
+    pending_feedback: str | None = Field(default=None)  # user feedback awaiting the revise job
+    revision_count: int = Field(default=0)  # LLM feedback revisions only (direct edits don't count)
+    retry_count: int = Field(default=0)  # automatic re-enqueues (reconciler/task)
+    job_id: str | None = Field(default=None)  # RQ job id — reconciler dedup guard
+    last_heartbeat: datetime | None = Field(default=None)  # worker liveness while generating
+    error: str | None = Field(default=None)  # user-facing summary when failed
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    requirement: Optional["Requirement"] = Relationship(back_populates="test_plan")
+    cases: list["TestCase"] = Relationship(
+        back_populates="test_plan",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "TestCase.position"},
+    )
+
+    @property
+    def feedback_cap_reached(self) -> bool:
+        """Whether the feedback/revise rounds are exhausted (direct edit only)."""
+        return self.revision_count >= MAX_TEST_PLAN_FEEDBACK_ROUNDS
+
+    @property
+    def requirement_name(self) -> str:
+        """Name of the requirement this plan covers (serialized for plan cards)."""
+        return self.requirement.name if self.requirement is not None else ""
+
+    @property
+    def requirement_description(self) -> str:
+        """Description of the requirement this plan covers (serialized for plan cards)."""
+        return self.requirement.description if self.requirement is not None else ""
+
+
+class TestCasePriority(str, Enum):
+    """Execution priority of a test case."""
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class TestCase(SQLModel, table=True):
+    """A single test case belonging to a test plan.
+
+    Rows are replaced wholesale on every LLM revision or direct edit
+    (delete-orphan cascade from ``TestPlan.cases``).
+    """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    id: int | None = Field(default=None, primary_key=True)
+    test_plan_id: int = Field(foreign_key="testplan.id", index=True)
+    position: int
+    title: str
+    preconditions: str | None = Field(default=None)
+    steps: str  # newline-joined step list
+    expected_result: str
+    case_type: str
+    priority: str  # TestCasePriority value
+
+    test_plan: Optional["TestPlan"] = Relationship(back_populates="cases")

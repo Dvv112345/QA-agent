@@ -4,6 +4,11 @@
   padding: 2rem 1rem;
 }
 
+.back-links {
+  display: flex;
+  gap: 1.25rem;
+}
+
 .test-env-message {
   text-align: center;
   padding: 2rem;
@@ -155,6 +160,10 @@
   display: flex;
   gap: 0.5rem;
   margin-top: 1rem;
+}
+
+.test-env-continue {
+  margin-top: 1.5rem;
 }
 
 .test-env-footer {

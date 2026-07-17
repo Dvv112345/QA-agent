@@ -30,6 +30,7 @@ from backend.config import (
     REDIS_HOST,
     REDIS_PASSWORD,
     REDIS_PORT,
+    TEST_PLAN_JOB_TIMEOUT,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,11 +43,12 @@ QUEUE_NAME = "qa-jobs"
 # so this small value never breaks the worker's BLPOP waits.
 REDIS_SOCKET_TIMEOUT = 5
 
-# Dotted path enqueued instead of a function object so the web process never
-# imports the task module (task modules must not be imported by queue/worker
-# modules — circular-import rule).  RQ resolves it to the real function at
+# Dotted paths enqueued instead of function objects so the web process never
+# imports the task modules (task modules must not be imported by queue/worker
+# modules — circular-import rule).  RQ resolves them to the real functions at
 # execution time, so jobs still show their real name in ``rq info``.
 ANALYZE_REQUIREMENT_TASK = "backend.tasks.analyze_requirement.analyze_requirement_task"
+GENERATE_TEST_PLAN_TASK = "backend.tasks.generate_test_plan.generate_test_plan_task"
 
 # ── Module-level singleton ────────────────────────────────────────────────
 _queue_service: QueueService | None = None
@@ -127,32 +129,46 @@ class QueueService:
         """Return the RQ queue handle (used by ``clear_queue``)."""
         return self._queue
 
-    def enqueue_analysis(self, requirement_id: int) -> rq.job.Job | None:
-        """Enqueue a requirement-analysis job and return the RQ Job handle.
+    def _enqueue(
+        self, task_path: str, row_id: int, job_timeout: int, label: str
+    ) -> rq.job.Job | None:
+        """Enqueue one job and return the RQ Job handle.
 
         Returns ``None`` when Redis is unavailable or the enqueue fails —
         the row stays ``pending`` and the reconciler retries later.
         """
         if self._queue is None:
-            logger.warning(
-                "Cannot enqueue analysis for requirement %d — Redis unavailable",
-                requirement_id,
-            )
+            logger.warning("Cannot enqueue %s for row %d — Redis unavailable", label, row_id)
             return None
 
         try:
             job = self._queue.enqueue(
-                ANALYZE_REQUIREMENT_TASK,
-                requirement_id,
-                job_timeout=JOB_TIMEOUT,
+                task_path,
+                row_id,
+                job_timeout=job_timeout,
                 result_ttl=JOB_RESULT_TTL,
             )
         except (redis.exceptions.RedisError, OSError) as exc:
-            logger.warning("Enqueue failed for requirement %d: %s", requirement_id, exc)
+            logger.warning("Enqueue failed for %s %d: %s", label, row_id, exc)
             return None
 
-        logger.info("Enqueued analysis job %s for requirement %d", job.id, requirement_id)
+        logger.info("Enqueued %s job %s for row %d", label, job.id, row_id)
         return job
+
+    def enqueue_analysis(self, requirement_id: int) -> rq.job.Job | None:
+        """Enqueue a requirement-analysis job and return the RQ Job handle."""
+        return self._enqueue(ANALYZE_REQUIREMENT_TASK, requirement_id, JOB_TIMEOUT, "analysis")
+
+    def enqueue_test_plan(self, test_plan_id: int) -> rq.job.Job | None:
+        """Enqueue a test-plan generation job and return the RQ Job handle.
+
+        Plan jobs get their own (much larger) timeout — the tool loop can
+        legitimately run many LLM rounds, which ``JOB_TIMEOUT`` would
+        hard-kill on Linux.
+        """
+        return self._enqueue(
+            GENERATE_TEST_PLAN_TASK, test_plan_id, TEST_PLAN_JOB_TIMEOUT, "test plan"
+        )
 
     def get_job(self, job_id: str) -> rq.job.Job | None:
         """Fetch an RQ job by id, or ``None`` when it doesn't exist.

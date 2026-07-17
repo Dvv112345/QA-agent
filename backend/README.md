@@ -1,6 +1,6 @@
 # QA Agent Backend
 
-FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM — and confirming it locks the sprint's requirement set.
+FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM — and confirming it locks the sprint's requirement set. Finally, an LLM generates a test plan per requirement on the same worker infrastructure, reading repository files through a bounded tool loop to ground the test cases; each draft plan goes through a capped feedback loop or uncapped direct edit until approved.
 
 ## Quick Start
 
@@ -21,9 +21,9 @@ python -m backend.main
 
 The API is served at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`. Tables are created automatically on startup.
 
-### Background worker (requirement analysis)
+### Background worker (requirement analysis + test-plan generation)
 
-Requirement clarity analysis runs on RQ workers backed by Redis. The API works without them — requirements just stay `pending` until a worker picks them up (a reconciler in the API process re-enqueues the backlog automatically when Redis recovers).
+Requirement clarity analysis and test-plan generation run on RQ workers backed by Redis (both task types share the same queue and workers). The API works without them — rows just stay `pending` until a worker picks them up (a reconciler in the API process re-enqueues the backlog automatically when Redis recovers).
 
 ```bash
 # Terminal 2 — start a worker (repo root; reads the same backend/.env)
@@ -35,34 +35,38 @@ python -m backend.worker
 python -m backend.scripts.clear_queue
 ```
 
-On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). Analysis also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved.
+On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). The worker also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved.
 
 ## Environment Variables
 
 `.env.example` documents every variable. The important ones:
 
-| Variable                                                    | Default                                                  | Description                                                                                              |
-| ----------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                                              | `postgresql://postgres:postgres@localhost:5432/qa_agent` | PostgreSQL connection string.                                                                            |
-| `ENCRYPTION_KEY`                                            | _(unset)_                                                | Fernet key for encrypting GitHub tokens at rest. Required to register repos with a token.                |
-| `APP_PASSWORD`                                              | _(unset)_                                                | Shared password for accessing the QA Agent UI. When unset, authentication is disabled.                   |
-| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint README files to disk.                                                  |
-| `STORAGE_LOCATION`                                          | `./uploads`                                              | Directory for sprint files when `STORE_OFFLINE=true`.                                                    |
-| `CORS_ORIGINS`                                              | `http://localhost:5173`                                  | Comma-separated list of allowed origins.                                                                 |
-| `GITHUB_API_TIMEOUT`                                        | `15`                                                     | Timeout in seconds for GitHub API requests.                                                              |
-| `FILE_TREE_MAX_CHARS`                                       | `20000`                                                  | Character cap for the repo file-tree listing captured at sprint creation.                                |
-| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | `localhost` / `6379` / _(unset)_ / `0`                   | Redis connection for the analysis queue.                                                                 |
-| `JOB_TIMEOUT` / `JOB_RESULT_TTL` / `WORKER_TTL`             | `300` / `3600` / `30`                                    | RQ job timeout, result retention, and worker heartbeat TTL (bounds Windows shutdown lag).                |
-| `OPENAI_API_KEY`                                            | _(unset)_                                                | LLM API key. Required for requirement analysis and the test-environment check; never logged or returned. |
-| `OPENAI_BASE_URL`                                           | `https://api.deepseek.com`                               | Any OpenAI-compatible provider.                                                                          |
-| `OPENAI_MODEL`                                              | `deepseek-v4-flash`                                      | Model used for the LLM checks.                                                                           |
-| `OPENAI_TIMEOUT`                                            | `60`                                                     | Timeout in seconds for LLM requests.                                                                     |
-| `MAX_CLARIFICATION_ROUNDS`                                  | `3`                                                      | Clarification Q&A rounds per requirement; past the cap only confirm-as-is or manual edit.                |
-| `MAX_AUTO_RETRIES`                                          | `3`                                                      | Automatic retries before a requirement is marked `failed`; manual Restart stays uncapped.                |
-| `MAX_TEST_ENV_REVISION_ROUNDS`                              | `3`                                                      | Answer/revise rounds for the test-environment text; direct edit stays uncapped.                          |
-| `RECONCILER_INTERVAL`                                       | `30`                                                     | Seconds between reconciler ticks (re-enqueues lost/backlogged jobs).                                     |
-| `HEARTBEAT_STALE_SECONDS`                                   | `180`                                                    | Age after which an `analyzing` heartbeat counts as a crashed worker; keep above `OPENAI_TIMEOUT`.        |
-| `PENDING_JOB_STALE_SECONDS`                                 | `30`                                                     | Age after which a `pending` row's started RQ job counts as a crashed worker.                             |
+| Variable                                                    | Default                                                  | Description                                                                                                                     |
+| ----------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                              | `postgresql://postgres:postgres@localhost:5432/qa_agent` | PostgreSQL connection string.                                                                                                   |
+| `ENCRYPTION_KEY`                                            | _(unset)_                                                | Fernet key for encrypting GitHub tokens at rest. Required to register repos with a token.                                       |
+| `APP_PASSWORD`                                              | _(unset)_                                                | Shared password for accessing the QA Agent UI. When unset, authentication is disabled.                                          |
+| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint README files to disk.                                                                         |
+| `STORAGE_LOCATION`                                          | `./uploads`                                              | Directory for sprint files when `STORE_OFFLINE=true`.                                                                           |
+| `CORS_ORIGINS`                                              | `http://localhost:5173`                                  | Comma-separated list of allowed origins.                                                                                        |
+| `GITHUB_API_TIMEOUT`                                        | `15`                                                     | Timeout in seconds for GitHub API requests.                                                                                     |
+| `FILE_TREE_MAX_CHARS`                                       | `20000`                                                  | Character cap for the repo file-tree listing captured at sprint creation.                                                       |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | `localhost` / `6379` / _(unset)_ / `0`                   | Redis connection for the analysis queue.                                                                                        |
+| `JOB_TIMEOUT` / `JOB_RESULT_TTL` / `WORKER_TTL`             | `300` / `3600` / `30`                                    | RQ job timeout, result retention, and worker heartbeat TTL (bounds Windows shutdown lag).                                       |
+| `OPENAI_API_KEY`                                            | _(unset)_                                                | LLM API key. Required for requirement analysis, the test-environment check, and test-plan generation; never logged or returned. |
+| `OPENAI_BASE_URL`                                           | `https://api.deepseek.com`                               | Any OpenAI-compatible provider.                                                                                                 |
+| `OPENAI_MODEL`                                              | `deepseek-v4-flash`                                      | Model used for the LLM checks.                                                                                                  |
+| `OPENAI_TIMEOUT`                                            | `60`                                                     | Timeout in seconds for LLM requests.                                                                                            |
+| `MAX_CLARIFICATION_ROUNDS`                                  | `3`                                                      | Clarification Q&A rounds per requirement; past the cap only confirm-as-is or manual edit.                                       |
+| `MAX_AUTO_RETRIES`                                          | `3`                                                      | Automatic retries before a requirement is marked `failed`; manual Restart stays uncapped.                                       |
+| `MAX_TEST_ENV_REVISION_ROUNDS`                              | `3`                                                      | Answer/revise rounds for the test-environment text; direct edit stays uncapped.                                                 |
+| `MAX_TEST_PLAN_FEEDBACK_ROUNDS`                             | `3`                                                      | Feedback/revise rounds per test plan; direct edit stays uncapped.                                                               |
+| `TEST_PLAN_TOOL_ROUNDS`                                     | `8`                                                      | Max `read_file` LLM rounds per plan generation before the final answer is forced.                                               |
+| `TEST_PLAN_FILE_MAX_CHARS`                                  | `20000`                                                  | Per-file character cap for repo files fetched by the tool loop.                                                                 |
+| `TEST_PLAN_JOB_TIMEOUT`                                     | `900`                                                    | RQ job timeout for plan jobs — sized for a worst-case tool loop, unlike `JOB_TIMEOUT`.                                          |
+| `RECONCILER_INTERVAL`                                       | `30`                                                     | Seconds between reconciler ticks (re-enqueues lost/backlogged jobs).                                                            |
+| `HEARTBEAT_STALE_SECONDS`                                   | `180`                                                    | Age after which an `analyzing` heartbeat counts as a crashed worker; keep above `OPENAI_TIMEOUT`.                               |
+| `PENDING_JOB_STALE_SECONDS`                                 | `30`                                                     | Age after which a `pending` row's started RQ job counts as a crashed worker.                                                    |
 
 Generate an encryption key with:
 
@@ -157,11 +161,13 @@ Create a sprint linked to a repo. Refreshes repo metadata from GitHub and captur
   "repo": { "id": 1, "name": "owner/repo", "...": "..." },
   "requirements_complete": false,
   "has_test_environment_submission": false,
-  "requirements_locked": false
+  "requirements_locked": false,
+  "has_test_plans": false,
+  "test_plans_complete": false
 }
 ```
 
-The three boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), and `requirements_locked` (the test environment is confirmed, freezing the requirement set).
+The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `requirements_locked` (the test environment is confirmed, freezing the requirement set), `has_test_plans` (≥1 requirement has a test-plan row), and `test_plans_complete` (every requirement has an `approved` plan).
 
 **Errors:** 404 (repo not found), 422 (empty name, deactivated repo, invalid README, or no README available), 502 (GitHub API failure).
 
@@ -175,7 +181,7 @@ Get a single sprint with its repo info. 404 if not found.
 
 #### `PATCH /api/sprints/{sprint_id}`
 
-Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements are marked `failed` — nothing analyzes on a finished sprint.
+Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements and `pending`/`generating` test plans are marked `failed` — nothing runs on a finished sprint.
 
 **Errors:** 404 (not found), 422 (already finished or `active` not `false`).
 
@@ -257,6 +263,68 @@ Finalize the access description. Terminal — and it **locks the sprint's requir
 
 **Errors:** 404, 422 (not `ready`, finished sprint, requirements incomplete, or `requirements_stale` — a confirmed requirement changed since the last check; re-POST the current content to re-check first).
 
+### Test Plans
+
+The third sprint stage, available once the test environment is confirmed (`requirements_locked`). One plan per confirmed requirement, generated asynchronously on the RQ worker: the LLM may call a `read_file(path)` tool up to `TEST_PLAN_TOOL_ROUNDS` times (paths validated against the captured file tree, contents truncated to `TEST_PLAN_FILE_MAX_CHARS`) before returning a structured plan — complexity (`low`/`medium`/`high`), summary, and ≥1 test case (title, optional preconditions, newline-joined steps, expected result, type, priority). Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) → approved` (terminal), plus `failed` (restartable). Poll the list endpoint to observe progress.
+
+#### `POST /api/sprints/{sprint_id}/test-plans/generate`
+
+Create a `pending` plan for every confirmed requirement and enqueue one generation job each. Idempotent — requirements that already have a plan are skipped, `failed` plans are reset like Restart (keeping any interrupted feedback), and the sprint's full plan list is returned either way.
+
+**Response** (200): `list[TestPlanResponse]`
+
+```json
+[
+  {
+    "id": 1,
+    "requirement_id": 1,
+    "requirement_name": "Login",
+    "requirement_description": "Registered users can log in…",
+    "status": "pending",
+    "complexity": null,
+    "summary": null,
+    "revision_count": 0,
+    "feedback_cap_reached": false,
+    "error": null,
+    "cases": [],
+    "created_at": "2026-07-17T12:00:00Z",
+    "updated_at": "2026-07-17T12:00:00Z"
+  }
+]
+```
+
+Once drafted, `cases` holds objects with `id`, `position`, `title`, `preconditions`, `steps` (newline-joined), `expected_result`, `case_type`, and `priority`.
+
+**Errors:** 404 (sprint), 422 (finished sprint, or test environment not confirmed).
+
+#### `GET /api/sprints/{sprint_id}/test-plans`
+
+List a sprint's plans, ordered by requirement creation — the polling endpoint (plain DB read; readable on finished sprints). 404 on unknown sprint.
+
+#### `POST /api/test-plans/{plan_id}/feedback`
+
+Send free-text feedback on a `draft` plan (`{ "feedback": "..." }`); the plan re-enters generation and the LLM produces a full revised plan. Capped at `MAX_TEST_PLAN_FEEDBACK_ROUNDS` (default 3) per plan — past the cap this returns 422 and the plan must be edited directly (uncapped).
+
+**Errors:** 404, 422 (not `draft`, cap reached, empty feedback, finished sprint).
+
+#### `PATCH /api/test-plans/{plan_id}`
+
+Directly edit a `draft` plan — no LLM involved, uncapped, never increments `revision_count`, stays `draft`. Body: `{ "complexity": "low|medium|high", "summary": "...", "cases": [{ "title": "...", "preconditions": null, "steps": "one step per line", "expected_result": "...", "case_type": "...", "priority": "high|medium|low" }, …] }`. Cases are replaced wholesale.
+
+**Errors:** 404, 422 (not `draft`, finished sprint, or field validation: no cases, blank title/steps/expected result/type, invalid priority/complexity).
+
+#### `POST /api/test-plans/{plan_id}/approve`
+
+Approve a `draft` plan. Terminal — no unapprove, no regenerate; feedback/edit return 422 afterwards. When every requirement's plan is approved, `SprintResponse.test_plans_complete` flips to `true`.
+
+**Errors:** 404, 422 (not `draft`, finished sprint).
+
+#### `POST /api/test-plans/{plan_id}/restart`
+
+Restart a `failed` plan (clears the error and retry counter; keeps pending feedback so an interrupted revision resumes; uncapped).
+
+**Errors:** 404, 422 (not `failed`, finished sprint).
+
 ### Authentication
 
 #### `POST /api/auth/verify`
@@ -303,7 +371,7 @@ backend/
   database.py          # Engine, session dependency, table initialisation
   worker.py            # RQ worker CLI (python -m backend.worker)
   models/
-    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess
+    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase
     types.py           # Request/response types
   routes/
     auth.py            # POST /api/auth/verify, GET /api/auth/check
@@ -311,13 +379,15 @@ backend/
     sprints.py         # Sprint create/list/get/finish
     requirements.py    # Requirement CRUD + clarification/confirm/restart
     test_environment.py # Test environment get/submit/answer/confirm (synchronous LLM check)
+    test_plans.py      # Test plan generate/list/feedback/edit/approve/restart
   services/
     storage.py         # Conditional README persistence (STORE_OFFLINE)
     queue.py           # RQ queue service (graceful degradation when Redis is down)
-    llm.py             # OpenAI-SDK client for clarity checks and revisions
-    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats
+    llm.py             # OpenAI-SDK client: clarity/test-env checks + test-plan tool loop
+    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans)
   tasks/
     analyze_requirement.py  # The analysis task executed by the worker
+    generate_test_plan.py   # The plan-generation task (bounded read_file tool loop)
   scripts/
     clear_queue.py     # Queue maintenance CLI (python -m backend.scripts.clear_queue)
     reset_db.py        # Drop + recreate all tables (python -m backend.scripts.reset_db)
@@ -334,6 +404,6 @@ backend/
 
 - Python 3.10+
 - PostgreSQL
-- Redis (for requirement analysis; optional otherwise)
-- An LLM API key (`OPENAI_API_KEY` — for requirement analysis and the test-environment check)
+- Redis (for requirement analysis and test-plan generation; optional otherwise)
+- An LLM API key (`OPENAI_API_KEY` — for requirement analysis, the test-environment check, and test-plan generation)
 - Dependencies declared in `pyproject.toml` (install with `pip install -e ".[dev]"` from the repo root)

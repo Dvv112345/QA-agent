@@ -26,6 +26,8 @@ export interface SprintResponse {
   requirements_complete: boolean
   has_test_environment_submission: boolean
   requirements_locked: boolean
+  has_test_plans: boolean
+  test_plans_complete: boolean
 }
 
 export interface ReadmeStatusResponse {
@@ -56,6 +58,52 @@ export interface RequirementResponse {
 }
 
 export type TestEnvironmentStatus = 'needs_info' | 'ready' | 'confirmed'
+
+export type TestPlanStatus = 'pending' | 'generating' | 'draft' | 'approved' | 'failed'
+
+export type TestCasePriority = 'high' | 'medium' | 'low'
+
+export interface TestCaseResponse {
+  id: number
+  position: number
+  title: string
+  preconditions: string | null
+  steps: string
+  expected_result: string
+  case_type: string
+  priority: TestCasePriority
+}
+
+export interface TestPlanResponse {
+  id: number
+  requirement_id: number
+  requirement_name: string
+  requirement_description: string
+  status: TestPlanStatus
+  complexity: string | null
+  summary: string | null
+  revision_count: number
+  feedback_cap_reached: boolean
+  error: string | null
+  cases: TestCaseResponse[]
+  created_at: string
+  updated_at: string
+}
+
+export interface TestCaseInput {
+  title: string
+  preconditions: string | null
+  steps: string
+  expected_result: string
+  case_type: string
+  priority: TestCasePriority
+}
+
+export interface TestPlanEditRequest {
+  complexity: string
+  summary: string
+  cases: TestCaseInput[]
+}
 
 export interface TestEnvironmentResponse {
   id: number

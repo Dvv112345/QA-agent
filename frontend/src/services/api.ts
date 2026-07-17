@@ -6,6 +6,8 @@ import type {
   RequirementResponse,
   SprintResponse,
   TestEnvironmentResponse,
+  TestPlanEditRequest,
+  TestPlanResponse,
 } from '../types'
 
 const API_BASE = import.meta.env.VITE_API_BASE
@@ -212,6 +214,58 @@ export async function confirmTestEnvironment(id: number): Promise<TestEnvironmen
     method: 'POST',
   })
   return handleResponse<TestEnvironmentResponse>(response)
+}
+
+// ── Test plans ───────────────────────────────────────────────────────
+
+export async function generateTestPlans(sprintId: number): Promise<TestPlanResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-plans/generate`, {
+    method: 'POST',
+  })
+  return handleResponse<TestPlanResponse[]>(response)
+}
+
+export async function fetchTestPlans(sprintId: number): Promise<TestPlanResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-plans`)
+  return handleResponse<TestPlanResponse[]>(response)
+}
+
+export async function submitTestPlanFeedback(
+  id: number,
+  feedback: string,
+): Promise<TestPlanResponse> {
+  const response = await fetch(`${API_BASE}/api/test-plans/${id}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ feedback }),
+  })
+  return handleResponse<TestPlanResponse>(response)
+}
+
+export async function updateTestPlan(
+  id: number,
+  body: TestPlanEditRequest,
+): Promise<TestPlanResponse> {
+  const response = await fetch(`${API_BASE}/api/test-plans/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return handleResponse<TestPlanResponse>(response)
+}
+
+export async function approveTestPlan(id: number): Promise<TestPlanResponse> {
+  const response = await fetch(`${API_BASE}/api/test-plans/${id}/approve`, {
+    method: 'POST',
+  })
+  return handleResponse<TestPlanResponse>(response)
+}
+
+export async function restartTestPlan(id: number): Promise<TestPlanResponse> {
+  const response = await fetch(`${API_BASE}/api/test-plans/${id}/restart`, {
+    method: 'POST',
+  })
+  return handleResponse<TestPlanResponse>(response)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

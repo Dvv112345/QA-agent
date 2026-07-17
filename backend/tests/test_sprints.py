@@ -391,6 +391,50 @@ class TestFinishSprint:
             assert row.status == status
             assert row.error is None
 
+    @pytest.mark.asyncio
+    async def test_marks_in_progress_test_plans_failed(self, async_client, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            RequirementStatus,
+            TestPlan,
+            TestPlanStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+
+        def _plan(status, **kwargs):
+            requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+            return _seed_test_plan(db_session, requirement, status=status, **kwargs)
+
+        pending = _plan(TestPlanStatus.PENDING, pending_feedback="stale feedback")
+        generating = _plan(TestPlanStatus.GENERATING, last_heartbeat=datetime.now(timezone.utc))
+        untouched = {
+            _plan(status).id: status
+            for status in (
+                TestPlanStatus.DRAFT,
+                TestPlanStatus.APPROVED,
+                TestPlanStatus.FAILED,
+            )
+        }
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for plan_id in (pending.id, generating.id):
+            row = db_session.get(TestPlan, plan_id)
+            assert row.status == TestPlanStatus.FAILED
+            assert row.error == SPRINT_FINISHED_ERROR
+            assert row.last_heartbeat is None
+            assert row.pending_feedback is None
+        for plan_id, status in untouched.items():
+            row = db_session.get(TestPlan, plan_id)
+            assert row.status == status
+            assert row.error is None
+
 
 # == Repo file-tree capture during sprint creation ====================
 
@@ -628,3 +672,206 @@ class TestTestEnvironmentModelProperties:
         row = _seed_test_env(db_session, sprint, updated_at=moment)
 
         assert row.requirements_stale is False
+
+
+# == Test plan models + Sprint flags ===================================
+
+
+def _seed_test_plan(db_session, requirement, status=None, **kwargs):
+    from backend.models.database import TestPlan, TestPlanStatus
+
+    plan = TestPlan(
+        requirement_id=requirement.id,
+        status=status or TestPlanStatus.PENDING,
+        **kwargs,
+    )
+    db_session.add(plan)
+    db_session.commit()
+    db_session.refresh(plan)
+    return plan
+
+
+def _seed_test_case(db_session, plan, position=0, **kwargs):
+    from backend.models.database import TestCase
+
+    case = TestCase(
+        test_plan_id=plan.id,
+        position=position,
+        title=kwargs.pop("title", "Valid login"),
+        steps=kwargs.pop("steps", "Open the login page\nSubmit valid credentials"),
+        expected_result=kwargs.pop("expected_result", "User lands on the dashboard."),
+        case_type=kwargs.pop("case_type", "functional"),
+        priority=kwargs.pop("priority", "high"),
+        **kwargs,
+    )
+    db_session.add(case)
+    db_session.commit()
+    db_session.refresh(case)
+    return case
+
+
+class TestTestPlanModelProperties:
+    """Unit tests for the TestPlan computed properties and case cascade."""
+
+    @pytest.mark.parametrize(("revisions", "capped"), [(2, False), (3, True), (4, True)])
+    def test_feedback_cap_reached(self, db_session, revisions, capped):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint)
+        plan = _seed_test_plan(db_session, requirement, revision_count=revisions)
+
+        assert plan.feedback_cap_reached is capped
+
+    def test_requirement_name_and_description_passthrough(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(
+            db_session, sprint, name="Login", description="Users can log in."
+        )
+        plan = _seed_test_plan(db_session, requirement)
+
+        assert plan.requirement_name == "Login"
+        assert plan.requirement_description == "Users can log in."
+
+    def test_requirement_fallbacks_empty_when_unloaded(self):
+        from backend.models.database import TestPlan
+
+        plan = TestPlan(requirement_id=1)
+
+        assert plan.requirement_name == ""
+        assert plan.requirement_description == ""
+
+    def test_deleting_plan_cascades_to_cases(self, db_session):
+        from sqlmodel import select
+
+        from backend.models.database import TestCase, TestPlan
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint)
+        plan = _seed_test_plan(db_session, requirement)
+        _seed_test_case(db_session, plan, position=0)
+        _seed_test_case(db_session, plan, position=1, title="Invalid login")
+
+        db_session.delete(plan)
+        db_session.commit()
+
+        assert db_session.get(TestPlan, plan.id) is None
+        assert db_session.exec(select(TestCase)).all() == []
+
+    def test_cases_ordered_by_position(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint)
+        plan = _seed_test_plan(db_session, requirement)
+        second = _seed_test_case(db_session, plan, position=1, title="Second")
+        first = _seed_test_case(db_session, plan, position=0, title="First")
+
+        db_session.refresh(plan)
+        assert [c.id for c in plan.cases] == [first.id, second.id]
+
+
+class TestSprintTestPlanFlags:
+    """`has_test_plans` / `test_plans_complete` — model values and serialization."""
+
+    def test_false_with_no_requirements(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+
+        assert sprint.has_test_plans is False
+        assert sprint.test_plans_complete is False
+
+    def test_false_with_requirements_but_no_plans(self, db_session):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+
+        db_session.refresh(sprint)
+        assert sprint.has_test_plans is False
+        assert sprint.test_plans_complete is False
+
+    def test_has_test_plans_with_one_plan(self, db_session):
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        planned = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, name="Search")
+        _seed_test_plan(db_session, planned, status=TestPlanStatus.DRAFT)
+
+        db_session.refresh(sprint)
+        assert sprint.has_test_plans is True
+        assert sprint.test_plans_complete is False
+
+    def test_incomplete_while_any_plan_not_approved(self, db_session):
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        approved = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        draft = _seed_requirement(
+            db_session, sprint, status=RequirementStatus.CONFIRMED, name="Search"
+        )
+        _seed_test_plan(db_session, approved, status=TestPlanStatus.APPROVED)
+        _seed_test_plan(db_session, draft, status=TestPlanStatus.DRAFT)
+
+        db_session.refresh(sprint)
+        assert sprint.has_test_plans is True
+        assert sprint.test_plans_complete is False
+
+    def test_complete_when_all_plans_approved(self, db_session):
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        for name in ("Login", "Search"):
+            requirement = _seed_requirement(
+                db_session, sprint, status=RequirementStatus.CONFIRMED, name=name
+            )
+            _seed_test_plan(db_session, requirement, status=TestPlanStatus.APPROVED)
+
+        db_session.refresh(sprint)
+        assert sprint.has_test_plans is True
+        assert sprint.test_plans_complete is True
+
+    @pytest.mark.asyncio
+    async def test_flags_serialized_on_list_and_detail(self, async_client, db_session):
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            assert resp.status_code == 200
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_test_plans"] is False
+            assert row["test_plans_complete"] is False
+
+        plan = _seed_test_plan(db_session, requirement, status=TestPlanStatus.DRAFT)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_test_plans"] is True
+            assert row["test_plans_complete"] is False
+
+        plan.status = TestPlanStatus.APPROVED
+        db_session.add(plan)
+        db_session.commit()
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_test_plans"] is True
+            assert row["test_plans_complete"] is True

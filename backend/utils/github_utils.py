@@ -4,6 +4,7 @@ import base64
 import logging
 import re
 import ssl
+import urllib.parse
 from typing import Any
 
 import certifi
@@ -306,3 +307,54 @@ async def fetch_file_tree(
     if truncated:
         text += _TREE_TRUNCATION_MARKER
     return text
+
+
+# ── Repo file contents ───────────────────────────────────────────────
+
+
+async def fetch_file(
+    owner: str,
+    repo: str,
+    path: str,
+    token: str | None = None,
+    ref: str | None = None,
+) -> str | None:
+    """Fetch a repository file's text content via the GitHub contents API.
+
+    Returns the decoded UTF-8 text, or ``None`` when the path does not
+    exist (404).  A directory response or non-decodable content (binary,
+    or files too large for the contents API to inline) raises
+    ``GitHubError``; other HTTP failures raise the appropriate
+    ``GitHubError`` subclass.
+    """
+    # Repo paths can contain spaces/# — quote each segment, keep separators.
+    quoted_path = urllib.parse.quote(path, safe="/")
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted_path}"
+    if ref:
+        url += f"?ref={urllib.parse.quote(ref)}"
+
+    headers = _build_headers(token)
+    async with httpx.AsyncClient(verify=_SSL_CONTEXT) as client:
+        try:
+            response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
+        except httpx.TimeoutException:
+            raise GitHubUnavailableError(
+                f"GitHub file fetch timed out after {GITHUB_API_TIMEOUT}s"
+            ) from None
+        except httpx.RequestError as exc:
+            raise GitHubUnavailableError(f"Could not reach GitHub API: {exc}") from exc
+
+    if response.status_code == 404:
+        return None
+    if not response.is_success:
+        raise _classify_error(response.status_code, bool(token))
+
+    data = response.json()
+    # A directory returns a JSON list; files >1 MB come back without inline
+    # content — neither is readable text for our purposes.
+    if not isinstance(data, dict) or data.get("type") != "file" or not data.get("content"):
+        raise GitHubError(f"{path!r} is not a readable text file.")
+    try:
+        return base64.b64decode(data["content"]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise GitHubError(f"{path!r} is not a readable text file: {exc}") from exc

@@ -7,12 +7,14 @@ from pytest_httpx import HTTPXMock
 
 from backend.utils.github_utils import (
     AuthenticationRequiredError,
+    GitHubError,
     GitHubUnavailableError,
     RateLimitedError,
     RepoNotFoundError,
     TokenInvalidError,
     check_readme_exists,
     download_readme,
+    fetch_file,
     fetch_file_tree,
     fetch_repo_metadata,
     is_relevant_tree_path,
@@ -274,3 +276,96 @@ class TestFetchFileTree:
         httpx_mock.add_response(url=self._URL, status_code=500)
         with pytest.raises(GitHubUnavailableError):
             await fetch_file_tree("owner", "repo", "main")
+
+
+class TestFetchFile:
+    """Tests for ``fetch_file()`` — the contents API used by the plan tool loop."""
+
+    _URL = "https://api.github.com/repos/owner/repo/contents/src/app.py"
+
+    @staticmethod
+    def _file_json(text: str, **overrides) -> dict:
+        payload = {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(text.encode("utf-8")).decode(),
+            "size": len(text),
+        }
+        payload.update(overrides)
+        return payload
+
+    @pytest.mark.asyncio
+    async def test_decodes_base64_content(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, json=self._file_json("print('hello')\n"))
+        assert await fetch_file("owner", "repo", "src/app.py") == "print('hello')\n"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_404(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=404)
+        assert await fetch_file("owner", "repo", "src/app.py") is None
+
+    @pytest.mark.asyncio
+    async def test_ref_forwarded_as_query_param(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=f"{self._URL}?ref=dev", json=self._file_json("x = 1"))
+        assert await fetch_file("owner", "repo", "src/app.py", ref="dev") == "x = 1"
+
+    @pytest.mark.asyncio
+    async def test_path_is_url_quoted(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/contents/docs/release%20notes.md",
+            json=self._file_json("# Notes"),
+        )
+        assert await fetch_file("owner", "repo", "docs/release notes.md") == "# Notes"
+
+    @pytest.mark.asyncio
+    async def test_directory_listing_raises(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/contents/src",
+            json=[{"type": "file", "name": "app.py", "path": "src/app.py"}],
+        )
+        with pytest.raises(GitHubError, match="not a readable text file"):
+            await fetch_file("owner", "repo", "src")
+
+    @pytest.mark.asyncio
+    async def test_missing_content_raises(self, httpx_mock: HTTPXMock):
+        # The contents API omits inline content for files over 1 MB.
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"type": "file", "encoding": "none", "content": "", "size": 2_000_000},
+        )
+        with pytest.raises(GitHubError, match="not a readable text file"):
+            await fetch_file("owner", "repo", "src/app.py")
+
+    @pytest.mark.asyncio
+    async def test_undecodable_content_raises(self, httpx_mock: HTTPXMock):
+        binary = base64.b64encode(b"\xff\xfe\x00\x01binary").decode()
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"type": "file", "encoding": "base64", "content": binary, "size": 10},
+        )
+        with pytest.raises(GitHubError, match="not a readable text file"):
+            await fetch_file("owner", "repo", "src/app.py")
+
+    @pytest.mark.asyncio
+    async def test_401_without_token_raises_auth_required(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=401)
+        with pytest.raises(AuthenticationRequiredError):
+            await fetch_file("owner", "repo", "src/app.py")
+
+    @pytest.mark.asyncio
+    async def test_401_with_token_raises_token_invalid(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=401)
+        with pytest.raises(TokenInvalidError):
+            await fetch_file("owner", "repo", "src/app.py", token="ghp_x")
+
+    @pytest.mark.asyncio
+    async def test_403_raises_rate_limited(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=403)
+        with pytest.raises(RateLimitedError):
+            await fetch_file("owner", "repo", "src/app.py")
+
+    @pytest.mark.asyncio
+    async def test_500_raises_unavailable(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=500)
+        with pytest.raises(GitHubUnavailableError):
+            await fetch_file("owner", "repo", "src/app.py")

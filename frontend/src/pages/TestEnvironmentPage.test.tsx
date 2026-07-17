@@ -45,6 +45,8 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     requirements_complete: true,
     has_test_environment_submission: false,
     requirements_locked: false,
+    has_test_plans: false,
+    test_plans_complete: false,
     ...overrides,
   }
 }
@@ -293,10 +295,47 @@ describe('TestEnvironmentPage', () => {
 
     const back = await screen.findByRole('link', { name: /back to requirements/i })
     expect(back).toHaveAttribute('href', '/sprints/1')
+    expect(screen.getByRole('link', { name: /back to sprints/i })).toHaveAttribute('href', '/')
 
     fireEvent.click(screen.getByRole('button', { name: 'Finish Sprint' }))
     await waitFor(() => {
       expect(mockFinishSprint).toHaveBeenCalledWith(1)
     })
+  })
+
+  it('shows the Continue to Test Plans link when confirmed', async () => {
+    mockFetchSprint.mockResolvedValue(
+      makeSprint({ has_test_environment_submission: true, requirements_locked: true }),
+    )
+    mockFetchTestEnvironment.mockResolvedValue(
+      makeTestEnv({ status: 'confirmed', clarifying_question: null }),
+    )
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: 'Continue to Test Plans' })
+    expect(link).toHaveAttribute('href', '/sprints/1/test-plans')
+  })
+
+  it('shows the Continue link on a finished sprint with a confirmed env', async () => {
+    mockFetchSprint.mockResolvedValue(
+      makeSprint({ active: false, has_test_environment_submission: true }),
+    )
+    mockFetchTestEnvironment.mockResolvedValue(
+      makeTestEnv({ status: 'confirmed', clarifying_question: null }),
+    )
+    renderPage()
+
+    expect(await screen.findByRole('link', { name: 'Continue to Test Plans' })).toBeInTheDocument()
+  })
+
+  it('hides the Continue link while not confirmed', async () => {
+    mockFetchSprint.mockResolvedValue(makeSprint({ has_test_environment_submission: true }))
+    mockFetchTestEnvironment.mockResolvedValue(
+      makeTestEnv({ status: 'ready', clarifying_question: null }),
+    )
+    renderPage()
+
+    await screen.findByText('SSH to staging as qa.')
+    expect(screen.queryByRole('link', { name: 'Continue to Test Plans' })).not.toBeInTheDocument()
   })
 })

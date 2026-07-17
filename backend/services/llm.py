@@ -15,14 +15,22 @@ from __future__ import annotations
 import json
 import logging
 import ssl
-from typing import TypeVar
+from collections.abc import Callable
+from typing import Literal, TypeVar
 
 import certifi
 import httpx
 import openai
 from sqlmodel import SQLModel
 
-from backend.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_TIMEOUT
+from backend.config import (
+    OPENAI_API_KEY,
+    OPENAI_BASE_URL,
+    OPENAI_MODEL,
+    OPENAI_TIMEOUT,
+    TEST_PLAN_TOOL_ROUNDS,
+)
+from backend.models.database import TestCasePriority
 
 # On Windows, SSL_CERT_FILE may point to a non-existent file which breaks
 # httpx's default SSL context; use certifi like github_utils does.
@@ -257,3 +265,263 @@ def revise_test_environment(
     if not result.rewritten_content:
         raise LLMError("LLM revision did not include rewritten content.")
     return result
+
+
+# ── Test plans ────────────────────────────────────────────────────────
+
+
+class TestCaseResult(SQLModel):
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    title: str
+    preconditions: str | None = None
+    steps: list[str]
+    expected_result: str
+    case_type: str
+    priority: TestCasePriority
+
+
+class TestPlanResult(SQLModel):
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    complexity: Literal["low", "medium", "high"]
+    summary: str
+    cases: list[TestCaseResult]
+
+
+# OpenAI function schema for the repo file-reading tool offered to the model.
+_READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": (
+            "Read a file from the repository under test. The path must be one "
+            "of the paths listed in the provided repository file tree."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Repository-relative file path."}
+            },
+            "required": ["path"],
+        },
+    },
+}
+
+
+_TEST_PLAN_BAR = (
+    "Rate the requirement's testing complexity as low, medium, or high and "
+    "scale the plan accordingly: a trivial requirement needs only a few "
+    "focused checks, while a complex one needs thorough coverage including "
+    "edge and negative cases. Write steps a QA engineer can execute "
+    "concretely against the described test environment. The other "
+    "requirements listed are scope boundaries only — do not write test "
+    "cases for them. Use the read_file tool with paths taken from the "
+    "provided file tree to ground routes, parameters, and validation rules "
+    "in the real code before finalizing. "
+)
+
+_TEST_PLAN_JSON_SHAPE = (
+    "Respond with ONLY a JSON object of the shape "
+    '{"complexity": "low"|"medium"|"high", "summary": string, '
+    '"cases": [{"title": string, "preconditions": string or null, '
+    '"steps": [string], "expected_result": string, "case_type": string, '
+    '"priority": "high"|"medium"|"low"}]}.'
+)
+
+_TEST_PLAN_SYSTEM_PROMPT = (
+    "You are a senior QA engineer writing a test plan for a single software "
+    f"requirement. {_TEST_PLAN_BAR}{_TEST_PLAN_JSON_SHAPE}"
+)
+
+_TEST_PLAN_REVISE_SYSTEM_PROMPT = (
+    "You are a senior QA engineer revising a test plan for a single software "
+    "requirement according to the user's feedback. Produce the full revised "
+    "plan — repeat unchanged cases verbatim. "
+    f"{_TEST_PLAN_BAR}{_TEST_PLAN_JSON_SHAPE}"
+)
+
+
+def _validate_test_plan(result: TestPlanResult) -> TestPlanResult:
+    """Reject structurally valid but unusable plans (empty/blank fields)."""
+    if not result.cases:
+        raise LLMError("LLM returned a test plan with no test cases.")
+    for case in result.cases:
+        if not case.title.strip() or not case.expected_result.strip() or not case.case_type.strip():
+            raise LLMError("LLM returned a test case with a blank title, expected result, or type.")
+        if not any(step.strip() for step in case.steps):
+            raise LLMError("LLM returned a test case with no executable steps.")
+    return result
+
+
+def _parse_test_plan(content: str | None) -> TestPlanResult:
+    try:
+        return TestPlanResult.model_validate(json.loads(content or ""))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise LLMError(f"LLM returned malformed output: {exc}") from exc
+
+
+def _complete_with_tools(
+    system_prompt: str,
+    user_prompt: str,
+    read_file: Callable[[str], str] | None,
+    on_round: Callable[[], None],
+) -> TestPlanResult:
+    """Run a bounded read_file tool loop and parse the final JSON plan.
+
+    Every round sends ``tools`` together with strict JSON mode — verified
+    against DeepSeek (2026-07-16): the combination works, and omitting
+    ``response_format`` yields unparseable (fenced) final answers.  After
+    ``TEST_PLAN_TOOL_ROUNDS`` tool rounds, one final call is forced with
+    ``tool_choice="none"``.  ``read_file`` never raises — it returns error
+    strings the model can react to.  With ``read_file=None`` (no file tree)
+    this degrades to a plain completion.
+    """
+    if read_file is None:
+        return _complete(system_prompt, user_prompt, TestPlanResult)
+
+    client = _get_client()
+    budget_prompt = (
+        f"{user_prompt}\n\n"
+        f"You may use up to {TEST_PLAN_TOOL_ROUNDS} rounds of read_file calls "
+        "before you must answer with the JSON plan."
+    )
+    messages: list = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": budget_prompt},
+    ]
+
+    for round_no in range(1, TEST_PLAN_TOOL_ROUNDS + 1):
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                tools=[_READ_FILE_TOOL],
+                response_format={"type": "json_object"},
+            )
+        except openai.BadRequestError as exc:
+            if round_no == 1:
+                # Provider rejects tools — regenerate context-only.
+                logger.warning(
+                    "LLM provider rejected tool calls; falling back to "
+                    "context-only test plan generation: %s",
+                    exc,
+                )
+                return _complete(system_prompt, user_prompt, TestPlanResult)
+            raise LLMError(f"LLM request failed: {exc}") from exc
+        except openai.OpenAIError as exc:
+            raise LLMError(f"LLM request failed: {exc}") from exc
+
+        on_round()
+        message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None)
+        if not tool_calls:
+            return _parse_test_plan(message.content)
+
+        messages.append(message)
+        for tool_call in tool_calls:
+            try:
+                arguments = json.loads(tool_call.function.arguments or "{}")
+                requested_path = str(arguments.get("path", ""))
+            except (json.JSONDecodeError, AttributeError):
+                requested_path = ""
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": read_file(requested_path),
+                }
+            )
+        remaining = TEST_PLAN_TOOL_ROUNDS - round_no
+        messages[-1]["content"] += (
+            f"\n[read_file budget: {remaining} of {TEST_PLAN_TOOL_ROUNDS} rounds "
+            "remaining — respond with the JSON plan when you have enough context]"
+        )
+
+    # Round cap hit — force the final answer.
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Your read_file budget is exhausted. Respond now with only the JSON test plan."
+            ),
+        }
+    )
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            tools=[_READ_FILE_TOOL],
+            tool_choice="none",
+            response_format={"type": "json_object"},
+        )
+    except openai.OpenAIError as exc:
+        raise LLMError(f"LLM request failed: {exc}") from exc
+    on_round()
+    return _parse_test_plan(response.choices[0].message.content)
+
+
+def _test_plan_context(
+    name: str,
+    description: str,
+    sibling_names: list[str],
+    test_env_content: str | None,
+    readme: str | None,
+    file_tree: str | None,
+) -> list[str]:
+    """Shared user-prompt blocks for generate and revise."""
+    parts = _context_sections(readme, file_tree)
+    if test_env_content:
+        parts.append(f"Test environment access:\n---\n{test_env_content}\n---")
+    if sibling_names:
+        parts.append(
+            "Other requirements in this sprint (scope boundaries — do not "
+            "write test cases for them):\n" + "\n".join(f"- {sibling}" for sibling in sibling_names)
+        )
+    parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
+    return parts
+
+
+def generate_test_plan(
+    name: str,
+    description: str,
+    sibling_names: list[str],
+    test_env_content: str | None,
+    readme: str | None,
+    file_tree: str | None,
+    read_file: Callable[[str], str] | None,
+    on_round: Callable[[], None],
+) -> TestPlanResult:
+    """Generate a structured test plan for one requirement.
+
+    Runs a bounded ``read_file`` tool loop (``TEST_PLAN_TOOL_ROUNDS``);
+    with ``read_file=None`` falls back to a plain single completion.
+    """
+    parts = _test_plan_context(
+        name, description, sibling_names, test_env_content, readme, file_tree
+    )
+    result = _complete_with_tools(_TEST_PLAN_SYSTEM_PROMPT, "\n\n".join(parts), read_file, on_round)
+    return _validate_test_plan(result)
+
+
+def revise_test_plan(
+    name: str,
+    description: str,
+    sibling_names: list[str],
+    test_env_content: str | None,
+    readme: str | None,
+    file_tree: str | None,
+    current_plan_json: str,
+    feedback: str,
+    read_file: Callable[[str], str] | None,
+    on_round: Callable[[], None],
+) -> TestPlanResult:
+    """Revise a draft test plan per user feedback (same loop + validation)."""
+    parts = _test_plan_context(
+        name, description, sibling_names, test_env_content, readme, file_tree
+    )
+    parts.append(f"Current test plan (JSON):\n{current_plan_json}\n\nUser's feedback:\n{feedback}")
+    result = _complete_with_tools(
+        _TEST_PLAN_REVISE_SYSTEM_PROMPT, "\n\n".join(parts), read_file, on_round
+    )
+    return _validate_test_plan(result)

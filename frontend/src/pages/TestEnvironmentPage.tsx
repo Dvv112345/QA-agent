@@ -122,9 +122,14 @@ export default function TestEnvironmentPage() {
 
   return (
     <div className="test-env">
-      <Link to={`/sprints/${sprintId}`} className="back-link">
-        &larr; Back to Requirements
-      </Link>
+      <nav className="back-links">
+        <Link to="/" className="back-link">
+          &larr; Back to Sprints
+        </Link>
+        <Link to={`/sprints/${sprintId}`} className="back-link">
+          &larr; Back to Requirements
+        </Link>
+      </nav>
 
       <header className="test-env-header">
         <h1>Test Environment Access</h1>
@@ -251,6 +256,14 @@ export default function TestEnvironmentPage() {
             </div>
           )}
         </>
+      )}
+
+      {testEnv?.status === 'confirmed' && (
+        <div className="test-env-continue">
+          <Link to={`/sprints/${sprintId}/test-plans`} className="btn btn-primary">
+            Continue to Test Plans
+          </Link>
+        </div>
       )}
 
       {actionError && <p className="test-env-error">{actionError}</p>}

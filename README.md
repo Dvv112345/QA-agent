@@ -1,6 +1,6 @@
 # QA Agent
 
-Automated Quality Assurance analysis for source code and requirement documents. Register GitHub repositories, create sprints against them, have an LLM check each sprint requirement for QA-clarity through a clarification loop, then describe and validate test environment access to lock the requirement set.
+Automated Quality Assurance analysis for source code and requirement documents. Register GitHub repositories, create sprints against them, have an LLM check each sprint requirement for QA-clarity through a clarification loop, describe and validate test environment access to lock the requirement set, then generate a reviewable test plan per requirement — the LLM reads repository files to ground test cases in the real code, and each plan goes through a feedback/edit loop until approved.
 
 ## Quick Start
 
@@ -9,8 +9,8 @@ Automated Quality Assurance analysis for source code and requirement documents. 
 - Python 3.10+
 - Node.js 22+
 - PostgreSQL with a `qa_agent` database (`createdb qa_agent`)
-- Redis (optional — required for requirement analysis)
-- An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis and the test-environment check)
+- Redis (optional — required for requirement analysis and test-plan generation)
+- An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis, the test-environment check, and test-plan generation)
 
 ### Backend
 
