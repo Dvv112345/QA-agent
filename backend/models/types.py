@@ -2,6 +2,8 @@ from datetime import datetime
 
 from sqlmodel import SQLModel
 
+from backend.models.database import TestCasePriority
+
 # ── Health ────────────────────────────────────────────────────────────
 
 
@@ -127,7 +129,7 @@ class TestCaseResponse(SQLModel):
     steps: str
     expected_result: str
     case_type: str
-    priority: str
+    priority: TestCasePriority
 
 
 class TestPlanResponse(SQLModel):
@@ -156,7 +158,7 @@ class TestCaseInput(SQLModel):
     steps: str
     expected_result: str
     case_type: str
-    priority: str
+    priority: TestCasePriority
 
 
 class TestPlanEditRequest(SQLModel):

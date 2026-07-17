@@ -30,6 +30,7 @@ from backend.config import (
     OPENAI_TIMEOUT,
     TEST_PLAN_TOOL_ROUNDS,
 )
+from backend.models.database import TestCasePriority
 
 # On Windows, SSL_CERT_FILE may point to a non-existent file which breaks
 # httpx's default SSL context; use certifi like github_utils does.
@@ -277,7 +278,7 @@ class TestCaseResult(SQLModel):
     steps: list[str]
     expected_result: str
     case_type: str
-    priority: Literal["high", "medium", "low"]
+    priority: TestCasePriority
 
 
 class TestPlanResult(SQLModel):

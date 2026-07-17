@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(verify_auth)])
 
-_VALID_PRIORITIES = {"high", "medium", "low"}
 _VALID_COMPLEXITIES = {"low", "medium", "high"}
 
 
@@ -209,10 +208,6 @@ async def edit_test_plan(
             )
         if not case.case_type.strip():
             raise HTTPException(status_code=422, detail="Every test case needs a non-empty type.")
-        if case.priority not in _VALID_PRIORITIES:
-            raise HTTPException(
-                status_code=422, detail="priority must be one of: high, medium, low."
-            )
 
     plan.complexity = body.complexity
     plan.summary = body.summary

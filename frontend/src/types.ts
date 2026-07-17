@@ -61,6 +61,8 @@ export type TestEnvironmentStatus = 'needs_info' | 'ready' | 'confirmed'
 
 export type TestPlanStatus = 'pending' | 'generating' | 'draft' | 'approved' | 'failed'
 
+export type TestCasePriority = 'high' | 'medium' | 'low'
+
 export interface TestCaseResponse {
   id: number
   position: number
@@ -69,7 +71,7 @@ export interface TestCaseResponse {
   steps: string
   expected_result: string
   case_type: string
-  priority: string
+  priority: TestCasePriority
 }
 
 export interface TestPlanResponse {
@@ -94,7 +96,7 @@ export interface TestCaseInput {
   steps: string
   expected_result: string
   case_type: string
-  priority: string
+  priority: TestCasePriority
 }
 
 export interface TestPlanEditRequest {

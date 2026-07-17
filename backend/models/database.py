@@ -250,6 +250,16 @@ class TestPlan(SQLModel, table=True):
         return self.requirement.description if self.requirement is not None else ""
 
 
+class TestCasePriority(str, Enum):
+    """Execution priority of a test case."""
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class TestCase(SQLModel, table=True):
     """A single test case belonging to a test plan.
 
@@ -267,6 +277,6 @@ class TestCase(SQLModel, table=True):
     steps: str  # newline-joined step list
     expected_result: str
     case_type: str
-    priority: str  # high / medium / low
+    priority: str  # TestCasePriority value
 
     test_plan: Optional["TestPlan"] = Relationship(back_populates="cases")

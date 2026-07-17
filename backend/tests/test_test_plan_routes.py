@@ -395,7 +395,6 @@ class TestEdit:
             (_edit_body(case={"steps": "  \n  "}), "step"),
             (_edit_body(case={"expected_result": ""}), "expected result"),
             (_edit_body(case={"case_type": " "}), "type"),
-            (_edit_body(case={"priority": "urgent"}), "priority"),
             (_edit_body(complexity="extreme"), "complexity"),
         ],
         ids=[
@@ -404,7 +403,6 @@ class TestEdit:
             "blank-steps",
             "blank-expected-result",
             "blank-case-type",
-            "bad-priority",
             "bad-complexity",
         ],
     )
@@ -418,6 +416,21 @@ class TestEdit:
 
         assert resp.status_code == 422
         assert field in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_422_invalid_priority_rejected_by_schema(
+        self, async_client, db_session, stub_queue
+    ):
+        """priority is enum-typed on the request model — pydantic rejects it."""
+        sprint, requirements = _seed_locked_sprint(db_session)
+        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.DRAFT)
+
+        resp = await async_client.patch(
+            f"/api/test-plans/{plan.id}", json=_edit_body(case={"priority": "urgent"})
+        )
+
+        assert resp.status_code == 422
+        assert "priority" in str(resp.json()["detail"]).lower()
 
     @pytest.mark.asyncio
     async def test_replaces_cases_and_stays_draft(self, async_client, db_session, stub_queue):

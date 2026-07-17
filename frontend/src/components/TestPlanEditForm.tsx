@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { updateTestPlan } from '../services/api'
-import type { TestCaseInput, TestPlanResponse } from '../types'
+import type { TestCaseInput, TestCasePriority, TestPlanResponse } from '../types'
 import './TestPlanEditForm.css'
 
 interface Props {
@@ -167,7 +167,9 @@ export default function TestPlanEditForm({ plan, onSaved, onCancel }: Props) {
               <select
                 id={`plan-${plan.id}-case-${index}-priority`}
                 value={testCase.priority}
-                onChange={(e) => updateCase(index, { priority: e.target.value })}
+                onChange={(e) =>
+                  updateCase(index, { priority: e.target.value as TestCasePriority })
+                }
                 disabled={busy}
               >
                 <option value="high">High</option>
