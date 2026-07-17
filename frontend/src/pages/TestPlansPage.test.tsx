@@ -103,6 +103,18 @@ describe('TestPlansPage', () => {
     })
   })
 
+  it('has back links to sprints and the test environment', async () => {
+    mockFetchSprint.mockResolvedValue(makeSprint())
+    renderPage()
+
+    const sprints = await screen.findByRole('link', { name: /back to sprints/i })
+    expect(sprints).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: /back to test environment/i })).toHaveAttribute(
+      'href',
+      '/sprints/1/test-environment',
+    )
+  })
+
   it('generates plans and renders the returned list', async () => {
     mockFetchSprint.mockResolvedValue(makeSprint())
     mockGenerateTestPlans.mockResolvedValue([makePlan({ status: 'pending', cases: [] })])

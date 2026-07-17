@@ -122,9 +122,14 @@ export default function TestEnvironmentPage() {
 
   return (
     <div className="test-env">
-      <Link to={`/sprints/${sprintId}`} className="back-link">
-        &larr; Back to Requirements
-      </Link>
+      <nav className="back-links">
+        <Link to="/" className="back-link">
+          &larr; Back to Sprints
+        </Link>
+        <Link to={`/sprints/${sprintId}`} className="back-link">
+          &larr; Back to Requirements
+        </Link>
+      </nav>
 
       <header className="test-env-header">
         <h1>Test Environment Access</h1>

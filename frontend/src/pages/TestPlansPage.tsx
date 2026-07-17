@@ -104,9 +104,14 @@ export default function TestPlansPage() {
 
   return (
     <div className="test-plans">
-      <Link to={`/sprints/${sprintId}/test-environment`} className="back-link">
-        &larr; Back to Test Environment
-      </Link>
+      <nav className="back-links">
+        <Link to="/" className="back-link">
+          &larr; Back to Sprints
+        </Link>
+        <Link to={`/sprints/${sprintId}/test-environment`} className="back-link">
+          &larr; Back to Test Environment
+        </Link>
+      </nav>
 
       <header className="test-plans-header">
         <h1>Test Plans</h1>
