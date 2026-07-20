@@ -225,6 +225,7 @@ Ruff (lint + format) for Python; Prettier + ESLint for frontend; general hooks (
 9. **Bulk row updates**: prefer a single set-based `update()` statement over loading rows and mutating them in a loop. The per-row loops in `finish_sprint` and the reconciler sweeps are deliberate exceptions (expected N ≈ 0, per-row logging, Python-side staleness/retry branching) — don't copy that pattern to paths where the row count can grow.
 10. **Config-derived UI decisions**: never duplicate a backend config constant as a frontend literal — expose a computed flag on the response model instead (e.g. `clarification_cap_reached` is a `Requirement` property serialized via `response_model`; the card reads the flag, not `MAX_CLARIFICATION_ROUNDS`).
 11. **Database migrations**: whenever a table model changes (new/altered column, index, constraint), write an accompanying migration and wire it to run at app startup (alongside `init_db()` in the startup path). `create_all` only creates missing tables, so without a migration the change never reaches existing databases. Migrations must be idempotent — startup runs them on every boot.
+12. **README docs stay current**: every feature that changes user-facing behavior, setup steps, commands, config, or the API surface must update the README docs (`README.md`, `backend/README.md`, `frontend/README.md`) alongside CLAUDE.md — not just CLAUDE.md.
 
 ## MCP Tools: code-review-graph
 
