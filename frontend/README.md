@@ -14,13 +14,14 @@ npm run dev        # http://localhost:5173
 
 Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
 
-| Route                           | Page                  | Purpose                                                          |
-| ------------------------------- | --------------------- | ---------------------------------------------------------------- |
-| `/`                             | `SprintListPage`      | All sprints; cards link to detail or test-environment pages      |
-| `/sprints/new`                  | `CreateSprintPage`    | Create a sprint (with inline repo registration + README status)  |
-| `/sprints/:id`                  | `SprintDetailPage`    | Enter requirements, follow analysis via polling, answer/confirm  |
-| `/sprints/:id/test-environment` | `TestEnvironmentPage` | Describe test environment access, answer clarifications, confirm |
-| `/repos`                        | `RepoListPage`        | Registered repos; deactivate unused ones                         |
+| Route                           | Page                  | Purpose                                                                                                             |
+| ------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `/`                             | `SprintListPage`      | All sprints; cards link to detail or test-environment pages                                                         |
+| `/sprints/new`                  | `CreateSprintPage`    | Create a sprint (with inline repo registration + README status)                                                     |
+| `/sprints/:id`                  | `SprintDetailPage`    | Enter requirements manually or upload a PRD to split into requirements; follow analysis via polling, answer/confirm |
+| `/sprints/:id/test-environment` | `TestEnvironmentPage` | Describe test environment access, answer clarifications, confirm                                                    |
+| `/sprints/:id/test-plans`       | `TestPlansPage`       | Generate, review, give feedback on, edit, and approve test plans                                                    |
+| `/repos`                        | `RepoListPage`        | Registered repos; deactivate unused ones                                                                            |
 
 ## Environment Variables
 
