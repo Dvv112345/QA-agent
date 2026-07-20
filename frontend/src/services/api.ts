@@ -128,6 +128,17 @@ export async function submitRequirements(
   return handleResponse<RequirementResponse[]>(response)
 }
 
+export async function uploadPrd(sprintId: number, file: File): Promise<RequirementResponse[]> {
+  const formData = new FormData()
+  formData.append('prd_file', file)
+
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/requirements/from-prd`, {
+    method: 'POST',
+    body: formData,
+  })
+  return handleResponse<RequirementResponse[]>(response)
+}
+
 export async function fetchRequirements(sprintId: number): Promise<RequirementResponse[]> {
   const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/requirements`)
   return handleResponse<RequirementResponse[]>(response)

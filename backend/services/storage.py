@@ -62,3 +62,25 @@ class StorageService:
 
         logger.info("Stored README → %s", readme_path)
         return os.path.abspath(readme_path)
+
+    def store_prd(self, content: bytes, directory: str, filename: str) -> str | None:
+        """Persist an uploaded PRD file to disk if offline mode is active.
+
+        Writes the original bytes verbatim (PDF/DOCX are binary) as
+        ``PRD<original extension>``; a later upload overwrites it, matching
+        the overwrite semantics of the PRD-derived requirements.  Returns
+        the absolute path, or ``None`` when ``STORE_OFFLINE`` is disabled.
+        """
+        if not self._offline:
+            return None
+
+        _, ext = os.path.splitext(filename)
+        sprint_dir = os.path.join(self._base, directory)
+        os.makedirs(sprint_dir, exist_ok=True)
+
+        prd_path = os.path.join(sprint_dir, f"PRD{ext.lower()}")
+        with open(prd_path, "wb") as fh:
+            fh.write(content)
+
+        logger.info("Stored PRD → %s", prd_path)
+        return os.path.abspath(prd_path)

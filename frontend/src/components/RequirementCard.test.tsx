@@ -36,6 +36,7 @@ function makeRequirement(overrides: Partial<RequirementResponse> = {}): Requirem
     name: 'Login',
     description: 'Users can log in.',
     original_description: 'Users can log in.',
+    from_prd: false,
     status: 'ready',
     clarifying_question: null,
     revision_count: 0,

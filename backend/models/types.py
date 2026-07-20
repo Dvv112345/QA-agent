@@ -84,6 +84,7 @@ class RequirementResponse(SQLModel):
     name: str
     description: str
     original_description: str
+    from_prd: bool
     status: str
     clarifying_question: str | None = None
     revision_count: int

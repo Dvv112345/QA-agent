@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import PrdUploadForm from '../components/PrdUploadForm'
 import RequirementCard from '../components/RequirementCard'
 import RequirementForm from '../components/RequirementForm'
 import { fetchRequirements, fetchSprint, finishSprint } from '../services/api'
@@ -108,6 +109,12 @@ export default function SprintDetailPage() {
     setRequirements((prev) => [...prev, ...created])
   }
 
+  // A PRD upload replaces the previous upload's rows server-side — mirror
+  // that locally: drop old from_prd rows, keep manual ones, append the new.
+  const handlePrdUploaded = (created: RequirementResponse[]) => {
+    setRequirements((prev) => [...prev.filter((req) => !req.from_prd), ...created])
+  }
+
   const handleUpdated = (updated: RequirementResponse) => {
     setRequirements((prev) => prev.map((req) => (req.id === updated.id ? updated : req)))
   }
@@ -185,7 +192,14 @@ export default function SprintDetailPage() {
         ))}
 
         {sprint.active && !sprint.requirements_locked && (
-          <RequirementForm sprintId={sprintId} onSubmitted={handleSubmitted} />
+          <>
+            <PrdUploadForm
+              sprintId={sprintId}
+              hasPrdRequirements={requirements.some((req) => req.from_prd)}
+              onUploaded={handlePrdUploaded}
+            />
+            <RequirementForm sprintId={sprintId} onSubmitted={handleSubmitted} />
+          </>
         )}
       </section>
 

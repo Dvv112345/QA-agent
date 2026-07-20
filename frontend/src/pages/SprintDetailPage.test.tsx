@@ -12,6 +12,7 @@ vi.mock('../services/api', async (importOriginal) => {
     finishSprint: vi.fn(),
     fetchRequirements: vi.fn(),
     submitRequirements: vi.fn(),
+    uploadPrd: vi.fn(),
   }
 })
 
@@ -25,12 +26,19 @@ vi.mock('react-router-dom', async (importOriginal) => {
   }
 })
 
-import { fetchRequirements, fetchSprint, finishSprint, submitRequirements } from '../services/api'
+import {
+  fetchRequirements,
+  fetchSprint,
+  finishSprint,
+  submitRequirements,
+  uploadPrd,
+} from '../services/api'
 
 const mockFetchSprint = fetchSprint as ReturnType<typeof vi.fn>
 const mockFinishSprint = finishSprint as ReturnType<typeof vi.fn>
 const mockFetchRequirements = fetchRequirements as ReturnType<typeof vi.fn>
 const mockSubmitRequirements = submitRequirements as ReturnType<typeof vi.fn>
+const mockUploadPrd = uploadPrd as ReturnType<typeof vi.fn>
 
 const fakeSprint: SprintResponse = {
   id: 1,
@@ -72,6 +80,7 @@ function makeRequirement(overrides: Partial<RequirementResponse> = {}): Requirem
     name: 'Login',
     description: 'Users can log in.',
     original_description: 'Users can log in.',
+    from_prd: false,
     status: 'ready',
     clarifying_question: null,
     revision_count: 0,
@@ -176,7 +185,7 @@ describe('SprintDetailPage', () => {
       expect(screen.getByText('1 of 2 analyzed')).toBeInTheDocument()
     })
 
-    it('shows the requirement form on active sprints', async () => {
+    it('shows the requirement form and PRD upload together on active sprints', async () => {
       mockFetchSprint.mockResolvedValue(fakeSprint)
       renderPage()
 
@@ -184,9 +193,10 @@ describe('SprintDetailPage', () => {
         expect(screen.getByText('Sprint 1')).toBeInTheDocument()
       })
       expect(screen.getByText('Add Requirements')).toBeInTheDocument()
+      expect(screen.getByText('Upload a PRD')).toBeInTheDocument()
     })
 
-    it('hides the form and card actions on finished sprints', async () => {
+    it('hides the forms and card actions on finished sprints', async () => {
       mockFetchSprint.mockResolvedValue({ ...fakeSprint, active: false })
       mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'ready' })])
       renderPage()
@@ -195,8 +205,37 @@ describe('SprintDetailPage', () => {
         expect(screen.getByText('Login')).toBeInTheDocument()
       })
       expect(screen.queryByText('Add Requirements')).not.toBeInTheDocument()
+      expect(screen.queryByText('Upload a PRD')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+    })
+
+    it('replaces old PRD rows but keeps manual ones after an upload', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([
+        makeRequirement({ id: 1, name: 'Manual', from_prd: false }),
+        makeRequirement({ id: 2, name: 'Old PRD', from_prd: true }),
+      ])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Old PRD')).toBeInTheDocument()
+      })
+
+      mockUploadPrd.mockResolvedValue([
+        makeRequirement({ id: 3, name: 'New PRD', from_prd: true, status: 'pending' }),
+      ])
+      const file = new File(['# PRD'], 'prd.md', { type: 'text/markdown' })
+      fireEvent.change(screen.getByLabelText('PRD file'), { target: { files: [file] } })
+      fireEvent.click(screen.getByRole('button', { name: 'Upload PRD' }))
+      // an earlier PRD upload exists — the form asks before replacing
+      fireEvent.click(await screen.findByRole('button', { name: 'Replace requirements' }))
+
+      await waitFor(() => {
+        expect(screen.getByText('New PRD')).toBeInTheDocument()
+      })
+      expect(screen.getByText('Manual')).toBeInTheDocument()
+      expect(screen.queryByText('Old PRD')).not.toBeInTheDocument()
     })
 
     it('appends rows submitted through the form', async () => {
@@ -291,6 +330,7 @@ describe('SprintDetailPage', () => {
         expect(screen.getByText('Login')).toBeInTheDocument()
       })
       expect(screen.queryByText('Add Requirements')).not.toBeInTheDocument()
+      expect(screen.queryByText('Upload a PRD')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
     })
   })

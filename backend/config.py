@@ -84,6 +84,14 @@ WORKER_TTL: int = _get_int("WORKER_TTL", 30)
 MAX_CLARIFICATION_ROUNDS: int = _get_int("MAX_CLARIFICATION_ROUNDS", 3)
 MAX_AUTO_RETRIES: int = _get_int("MAX_AUTO_RETRIES", 3)
 
+# ── PRD upload ────────────────────────────────────────────────────────
+# Char cap on the text extracted from an uploaded PRD (over the cap the
+# upload is rejected, never truncated — a silently clipped PRD would
+# silently drop requirements).
+PRD_MAX_CHARS: int = _get_int("PRD_MAX_CHARS", 50000)
+# Max requirements a single PRD split may produce.
+MAX_PRD_REQUIREMENTS: int = _get_int("MAX_PRD_REQUIREMENTS", 50)
+
 # ── Test environment analysis ─────────────────────────────────────────
 MAX_TEST_ENV_REVISION_ROUNDS: int = _get_int("MAX_TEST_ENV_REVISION_ROUNDS", 3)
 

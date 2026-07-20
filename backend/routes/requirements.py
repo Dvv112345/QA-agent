@@ -1,11 +1,13 @@
-"""Requirement routes — batch create, list/poll, and per-requirement state transitions."""
+"""Requirement routes — batch create, PRD upload, list/poll, and per-requirement transitions."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlmodel import Session, delete, select
 
+from backend.config import MAX_PRD_REQUIREMENTS, MAX_UPLOAD_SIZE_MB, PRD_MAX_CHARS
 from backend.database import get_session
 from backend.models.database import Requirement, RequirementStatus, Sprint
 from backend.models.types import (
@@ -14,8 +16,13 @@ from backend.models.types import (
     RequirementEditRequest,
     RequirementResponse,
 )
+from backend.services import llm
+from backend.services.llm import LLMError
 from backend.services.queue import get_queue_service
+from backend.services.storage import StorageService
 from backend.utils.auth import verify_auth
+from backend.utils.prd_utils import PrdExtractionError, extract_prd_text
+from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +126,108 @@ async def create_requirements(
     _enqueue_analysis(session, rows)
 
     logger.info("Created %d requirements for sprint id=%d", len(rows), sprint_id)
+    return rows
+
+
+@router.post(
+    "/sprints/{sprint_id}/requirements/from-prd",
+    response_model=list[RequirementResponse],
+    status_code=201,
+)
+async def create_requirements_from_prd(
+    sprint_id: int,
+    prd_file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+) -> list[Requirement]:
+    """Split an uploaded PRD into requirements, replacing any prior PRD rows.
+
+    Everything that can fail — file validation, text extraction, the LLM
+    split — happens before the delete-and-replace transaction, so a failed
+    upload never touches the existing requirements.  Manually entered rows
+    are never touched either way.
+    """
+    sprint = _get_sprint_or_404(session, sprint_id)
+    _ensure_sprint_active(sprint)
+    _ensure_requirements_unlocked(sprint)
+
+    filename = prd_file.filename or ""
+    # Read one byte past the cap so an oversized body is rejected without
+    # ever materialising more than the cap in memory.
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    content = prd_file.file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail=f"PRD file exceeds the {MAX_UPLOAD_SIZE_MB} MB upload limit.",
+        )
+
+    try:
+        # PDF/DOCX parsing can take seconds — keep it off the event loop.
+        prd_text = await asyncio.to_thread(extract_prd_text, filename, content)
+    except PrdExtractionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if len(prd_text) > PRD_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"PRD text is {len(prd_text)} characters — the limit is "
+                f"{PRD_MAX_CHARS}. Trim the document or split it into parts."
+            ),
+        )
+
+    readme = await resolve_readme(sprint)
+    file_tree = sprint.repo.file_tree if sprint.repo else None
+    try:
+        result = await asyncio.to_thread(llm.split_prd, prd_text, readme, file_tree)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    items = result.requirements
+    if not items:
+        raise HTTPException(
+            status_code=422,
+            detail="No requirements could be found in this document — is it a PRD?",
+        )
+    if len(items) > MAX_PRD_REQUIREMENTS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The PRD produced {len(items)} requirements — the limit is "
+                f"{MAX_PRD_REQUIREMENTS}. Split the document into smaller parts."
+            ),
+        )
+
+    # Replace the previous upload's rows and insert the new split in one
+    # transaction.
+    session.exec(
+        delete(Requirement).where(
+            Requirement.sprint_id == sprint_id,
+            Requirement.from_prd == True,  # noqa: E712
+        )
+    )
+    rows = [
+        Requirement(
+            sprint_id=sprint_id,
+            name=item.name,
+            description=item.description,
+            original_description=item.description,
+            from_prd=True,
+        )
+        for item in items
+    ]
+    session.add_all(rows)
+    session.commit()
+    for row in rows:
+        session.refresh(row)
+
+    _enqueue_analysis(session, rows)
+
+    try:
+        StorageService().store_prd(content, sprint.directory, filename)
+    except Exception as exc:
+        logger.warning("Sprint id=%d: PRD storage failed: %s", sprint_id, exc)
+
+    logger.info("Sprint id=%d: PRD split into %d requirements", sprint_id, len(rows))
     return rows
 
 

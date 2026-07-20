@@ -106,6 +106,7 @@ class Requirement(SQLModel, table=True):
     name: str
     description: str  # current text (possibly LLM-rewritten)
     original_description: str
+    from_prd: bool = Field(default=False)  # PRD-split rows; replaced on re-upload
     status: str = Field(default=RequirementStatus.PENDING)
     clarifying_question: str | None = Field(default=None)
     pending_answer: str | None = Field(default=None)  # user answer awaiting the revise job

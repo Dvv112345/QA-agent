@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException
 
 from backend.config import CORS_ORIGINS, STORAGE_LOCATION, STORE_OFFLINE, VERSION
 from backend.database import init_db
+from backend.migrations import run_migrations
 from backend.models.types import HealthResponse
 from backend.routes.auth import router as auth_router
 from backend.routes.repos import router as repos_router
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     # Database initialisation
     # ------------------------------------------------------------------
     init_db()
+    run_migrations()
 
     # ------------------------------------------------------------------
     # CORS (configurable via CORS_ORIGINS env var)

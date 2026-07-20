@@ -1,6 +1,6 @@
 # QA Agent Backend
 
-FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM — and confirming it locks the sprint's requirement set. Finally, an LLM generates a test plan per requirement on the same worker infrastructure, reading repository files through a bounded tool loop to ground the test cases; each draft plan goes through a capped feedback loop or uncapped direct edit until approved.
+FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM — and confirming it locks the sprint's requirement set. Finally, an LLM generates a test plan per requirement on the same worker infrastructure, reading repository files through a bounded tool loop to ground the test cases; each draft plan goes through a capped feedback loop or uncapped direct edit until approved.
 
 ## Quick Start
 
@@ -46,7 +46,7 @@ On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). T
 | `DATABASE_URL`                                              | `postgresql://postgres:postgres@localhost:5432/qa_agent` | PostgreSQL connection string.                                                                                                   |
 | `ENCRYPTION_KEY`                                            | _(unset)_                                                | Fernet key for encrypting GitHub tokens at rest. Required to register repos with a token.                                       |
 | `APP_PASSWORD`                                              | _(unset)_                                                | Shared password for accessing the QA Agent UI. When unset, authentication is disabled.                                          |
-| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint README files to disk.                                                                         |
+| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint README and uploaded PRD files to disk.                                                        |
 | `STORAGE_LOCATION`                                          | `./uploads`                                              | Directory for sprint files when `STORE_OFFLINE=true`.                                                                           |
 | `CORS_ORIGINS`                                              | `http://localhost:5173`                                  | Comma-separated list of allowed origins.                                                                                        |
 | `GITHUB_API_TIMEOUT`                                        | `15`                                                     | Timeout in seconds for GitHub API requests.                                                                                     |
@@ -59,6 +59,8 @@ On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). T
 | `OPENAI_TIMEOUT`                                            | `60`                                                     | Timeout in seconds for LLM requests.                                                                                            |
 | `MAX_CLARIFICATION_ROUNDS`                                  | `3`                                                      | Clarification Q&A rounds per requirement; past the cap only confirm-as-is or manual edit.                                       |
 | `MAX_AUTO_RETRIES`                                          | `3`                                                      | Automatic retries before a requirement is marked `failed`; manual Restart stays uncapped.                                       |
+| `PRD_MAX_CHARS`                                             | `50000`                                                  | Character cap on text extracted from an uploaded PRD; larger uploads are rejected (422), never truncated.                       |
+| `MAX_PRD_REQUIREMENTS`                                      | `50`                                                     | Max requirements a single PRD split may produce; larger splits are rejected (422).                                              |
 | `MAX_TEST_ENV_REVISION_ROUNDS`                              | `3`                                                      | Answer/revise rounds for the test-environment text; direct edit stays uncapped.                                                 |
 | `MAX_TEST_PLAN_FEEDBACK_ROUNDS`                             | `3`                                                      | Feedback/revise rounds per test plan; direct edit stays uncapped.                                                               |
 | `TEST_PLAN_TOOL_ROUNDS`                                     | `8`                                                      | Max `read_file` LLM rounds per plan generation before the final answer is forced.                                               |
@@ -192,6 +194,22 @@ Requirements belong to a sprint and carry a lifecycle status: `pending → analy
 #### `POST /api/sprints/{sprint_id}/requirements`
 
 Create a batch of requirements (JSON body: `[{ "name": "...", "description": "..." }, …]`). Rows start `pending` and are enqueued for analysis. **Errors:** 404 (sprint), 422 (empty list, blank fields, finished sprint, or requirements locked by a confirmed test environment).
+
+#### `POST /api/sprints/{sprint_id}/requirements/from-prd`
+
+Upload a PRD document and have an LLM split it into requirements — the alternative to entering them manually. The split runs **synchronously inside the request** (offloaded to a thread, bounded by `OPENAI_TIMEOUT`); the resulting rows start `pending` with `from_prd: true` and enter the normal analysis pipeline.
+
+**Request:** `multipart/form-data`
+
+| Field      | Required | Description                                                           |
+| ---------- | -------- | --------------------------------------------------------------------- |
+| `prd_file` | Yes      | `.md` / `.markdown` / `.txt` (UTF-8), `.pdf`, or `.docx` PRD document |
+
+**Response** (201): `list[RequirementResponse]` — the newly created rows.
+
+Re-uploading a PRD **replaces** the previous upload's `from_prd` rows (in the same transaction as the new inserts); manually entered requirements are never touched. Every failure — invalid file, unreadable/empty document, text over `PRD_MAX_CHARS`, zero or more than `MAX_PRD_REQUIREMENTS` extracted requirements, LLM failure — happens before that transaction, so a failed upload never destroys existing requirements. When `STORE_OFFLINE=true` the original file is saved to the sprint directory as `PRD<ext>` (best-effort).
+
+**Errors:** 404 (sprint), 422 (finished sprint, requirements locked, unsupported/corrupt/empty/oversized file, no requirements found, too many requirements), 502 (LLM failure — nothing persisted).
 
 #### `GET /api/sprints/{sprint_id}/requirements`
 
@@ -369,6 +387,7 @@ backend/
   main.py              # App factory, CORS, exception handlers, health check, reconciler lifespan
   config.py            # Environment variable configuration
   database.py          # Engine, session dependency, table initialisation
+  migrations.py        # Idempotent startup migrations (run after init_db)
   worker.py            # RQ worker CLI (python -m backend.worker)
   models/
     database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase
@@ -377,13 +396,13 @@ backend/
     auth.py            # POST /api/auth/verify, GET /api/auth/check
     repos.py           # Repo registration, listing, deactivation, README status
     sprints.py         # Sprint create/list/get/finish
-    requirements.py    # Requirement CRUD + clarification/confirm/restart
+    requirements.py    # Requirement CRUD, PRD upload/split + clarification/confirm/restart
     test_environment.py # Test environment get/submit/answer/confirm (synchronous LLM check)
     test_plans.py      # Test plan generate/list/feedback/edit/approve/restart
   services/
-    storage.py         # Conditional README persistence (STORE_OFFLINE)
+    storage.py         # Conditional README/PRD persistence (STORE_OFFLINE)
     queue.py           # RQ queue service (graceful degradation when Redis is down)
-    llm.py             # OpenAI-SDK client: clarity/test-env checks + test-plan tool loop
+    llm.py             # OpenAI-SDK client: clarity/test-env checks, PRD split + test-plan tool loop
     reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans)
   tasks/
     analyze_requirement.py  # The analysis task executed by the worker
@@ -395,6 +414,7 @@ backend/
     auth.py            # verify_auth cookie dependency
     crypto.py          # Fernet encryption for GitHub tokens
     github_utils.py    # GitHub API client and error hierarchy
+    prd_utils.py       # PRD text extraction (.md/.txt via UTF-8, .pdf via pypdf, .docx via python-docx)
     readme_utils.py    # Best-effort README resolution (stored copy → re-download → none)
     sprint_utils.py    # Unique sprint directory generation
   tests/               # pytest suite (in-memory SQLite, mocked GitHub API, Redis + LLM stubbed)

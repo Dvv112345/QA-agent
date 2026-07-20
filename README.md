@@ -1,6 +1,6 @@
 # QA Agent
 
-Automated Quality Assurance analysis for source code and requirement documents. Register GitHub repositories, create sprints against them, have an LLM check each sprint requirement for QA-clarity through a clarification loop, describe and validate test environment access to lock the requirement set, then generate a reviewable test plan per requirement — the LLM reads repository files to ground test cases in the real code, and each plan goes through a feedback/edit loop until approved.
+Automated Quality Assurance analysis for source code and requirement documents. Register GitHub repositories, create sprints against them, and enter sprint requirements manually or by uploading a PRD document (`.md`, `.txt`, `.pdf`, `.docx`) that an LLM splits into requirements. An LLM checks each requirement for QA-clarity through a clarification loop; then describe and validate test environment access to lock the requirement set, and generate a reviewable test plan per requirement — the LLM reads repository files to ground test cases in the real code, and each plan goes through a feedback/edit loop until approved.
 
 ## Quick Start
 
