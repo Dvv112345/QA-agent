@@ -186,6 +186,55 @@ def revise_requirement(
     return result
 
 
+# ── PRD splitting ─────────────────────────────────────────────────────
+
+
+class PrdRequirementItem(SQLModel):
+    name: str
+    description: str
+
+
+class PrdSplitResult(SQLModel):
+    requirements: list[PrdRequirementItem]
+
+
+_SPLIT_PRD_SYSTEM_PROMPT = (
+    "You are a senior QA engineer turning a product requirements document "
+    "(PRD) into discrete software requirements to be tested. Split the "
+    "document into separate requirements: each gets a short name and a "
+    "self-contained description that makes sense without reading the rest "
+    "of the document, because each requirement is reviewed in isolation "
+    "later. Cover every requirement the document states, but do not invent "
+    "requirements that are not in it, and do not merge unrelated features "
+    "into one requirement. Respond with a JSON object of the shape "
+    '{"requirements": [{"name": string, "description": string}]}. '
+    "Return an empty list if the document contains no software requirements."
+)
+
+
+def split_prd(prd_text: str, readme: str | None, file_tree: str | None) -> PrdSplitResult:
+    """Split an uploaded PRD document into discrete requirements.
+
+    Returns an *empty* result when the model finds no requirements — the
+    caller decides how to report that to the user.  A partially empty item
+    (name without description or vice versa) is malformed output.
+    """
+    parts = _context_sections(readme, file_tree)
+    parts.append(f"PRD document:\n---\n{prd_text}\n---")
+    result = _complete(_SPLIT_PRD_SYSTEM_PROMPT, "\n\n".join(parts), PrdSplitResult)
+
+    cleaned: list[PrdRequirementItem] = []
+    for item in result.requirements:
+        name = item.name.strip()
+        description = item.description.strip()
+        if not name and not description:
+            continue  # drop fully blank entries rather than failing the upload
+        if not name or not description:
+            raise LLMError("LLM returned a requirement with a missing name or description.")
+        cleaned.append(PrdRequirementItem(name=name, description=description))
+    return PrdSplitResult(requirements=cleaned)
+
+
 # ── Test environment access ───────────────────────────────────────────
 
 _TEST_ENV_BAR = (

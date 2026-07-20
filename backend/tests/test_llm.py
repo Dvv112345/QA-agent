@@ -11,6 +11,7 @@ from backend.services import llm
 from backend.services.llm import (
     ClarityResult,
     LLMError,
+    PrdRequirementItem,
     TestEnvironmentResult,
     check_clarity,
     check_test_environment,
@@ -18,6 +19,7 @@ from backend.services.llm import (
     revise_requirement,
     revise_test_environment,
     revise_test_plan,
+    split_prd,
 )
 
 
@@ -155,6 +157,64 @@ class TestReviseRequirement:
         stub_client.content = json.dumps({"clear": True, "clarifying_question": None})
         with pytest.raises(LLMError, match="rewritten description"):
             revise_requirement("Login", "desc", "Q?", "A.", None, None)
+
+
+class TestSplitPrd:
+    def test_parses_requirements(self, stub_client):
+        stub_client.content = json.dumps(
+            {
+                "requirements": [
+                    {"name": "Login", "description": "Users can log in."},
+                    {"name": "Upload", "description": "Users can upload files."},
+                ]
+            }
+        )
+        result = split_prd("PRD text", None, None)
+        assert result.requirements == [
+            PrdRequirementItem(name="Login", description="Users can log in."),
+            PrdRequirementItem(name="Upload", description="Users can upload files."),
+        ]
+
+    def test_strips_whitespace_and_drops_blank_items(self, stub_client):
+        stub_client.content = json.dumps(
+            {
+                "requirements": [
+                    {"name": "  Login  ", "description": "  Users can log in.  "},
+                    {"name": "   ", "description": ""},
+                ]
+            }
+        )
+        result = split_prd("PRD text", None, None)
+        assert result.requirements == [
+            PrdRequirementItem(name="Login", description="Users can log in.")
+        ]
+
+    def test_empty_list_returned_without_raising(self, stub_client):
+        stub_client.content = json.dumps({"requirements": []})
+        assert split_prd("Not a PRD", None, None).requirements == []
+
+    def test_partially_empty_item_raises(self, stub_client):
+        stub_client.content = json.dumps({"requirements": [{"name": "Login", "description": " "}]})
+        with pytest.raises(LLMError, match="missing name or description"):
+            split_prd("PRD text", None, None)
+
+    def test_malformed_json_raises(self, stub_client):
+        stub_client.content = "not json"
+        with pytest.raises(LLMError, match="malformed"):
+            split_prd("PRD text", None, None)
+
+    def test_missing_requirements_key_raises(self, stub_client):
+        stub_client.content = json.dumps({"items": []})
+        with pytest.raises(LLMError, match="malformed"):
+            split_prd("PRD text", None, None)
+
+    def test_prompt_includes_prd_and_context(self, stub_client):
+        stub_client.content = json.dumps({"requirements": []})
+        split_prd("The PRD body", "# My README", "src/app.py")
+        prompt = _user_prompt(stub_client)
+        assert "The PRD body" in prompt
+        assert "# My README" in prompt
+        assert "src/app.py" in prompt
 
 
 _REQS = [("Login", "Users can log in."), ("Search", "Users can search products.")]
