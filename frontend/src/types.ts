@@ -48,6 +48,7 @@ export interface RequirementResponse {
   name: string
   description: string
   original_description: string
+  from_prd: boolean
   status: RequirementStatus
   clarifying_question: string | null
   revision_count: number

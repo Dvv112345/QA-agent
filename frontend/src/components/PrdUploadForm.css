@@ -1,0 +1,49 @@
+.prd-upload-form {
+  margin-top: 1.5rem;
+  padding: 1rem 1.5rem;
+  background: var(--color-surface, #f9fafb);
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+}
+
+.prd-upload-form h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.prd-upload-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: var(--color-text-secondary, #555);
+}
+
+.prd-upload-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.prd-upload-confirm {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.prd-upload-confirm p {
+  margin: 0 0 0.6rem;
+}
+
+.prd-upload-confirm-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.prd-upload-error {
+  color: var(--color-error, #c00);
+  font-size: 0.9rem;
+  margin: 0.5rem 0 0;
+}

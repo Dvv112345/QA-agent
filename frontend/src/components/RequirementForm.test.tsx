@@ -21,6 +21,7 @@ const createdRow: RequirementResponse = {
   name: 'Login',
   description: 'Users can log in.',
   original_description: 'Users can log in.',
+  from_prd: false,
   status: 'pending',
   clarifying_question: null,
   revision_count: 0,

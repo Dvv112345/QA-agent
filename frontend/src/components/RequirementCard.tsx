@@ -98,7 +98,10 @@ export default function RequirementCard({
     <article className={`requirement-card requirement-card-${status}`}>
       <header className="requirement-card-header">
         <h3>{requirement.name}</h3>
-        <span className={`req-badge req-badge-${status}`}>{STATUS_LABELS[status]}</span>
+        <div className="requirement-card-badges">
+          {requirement.from_prd && <span className="req-badge req-badge-prd">From PRD</span>}
+          <span className={`req-badge req-badge-${status}`}>{STATUS_LABELS[status]}</span>
+        </div>
       </header>
 
       {inProgress ? (
