@@ -151,15 +151,19 @@ async def create_requirements_from_prd(
     _ensure_requirements_unlocked(sprint)
 
     filename = prd_file.filename or ""
-    content = prd_file.file.read()
-    if len(content) > MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+    # Read one byte past the cap so an oversized body is rejected without
+    # ever materialising more than the cap in memory.
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    content = prd_file.file.read(max_bytes + 1)
+    if len(content) > max_bytes:
         raise HTTPException(
             status_code=422,
             detail=f"PRD file exceeds the {MAX_UPLOAD_SIZE_MB} MB upload limit.",
         )
 
     try:
-        prd_text = extract_prd_text(filename, content)
+        # PDF/DOCX parsing can take seconds — keep it off the event loop.
+        prd_text = await asyncio.to_thread(extract_prd_text, filename, content)
     except PrdExtractionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if len(prd_text) > PRD_MAX_CHARS:
