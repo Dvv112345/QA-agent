@@ -66,6 +66,28 @@ class TestCreateSprint:
         assert data["active"] is True
 
     @pytest.mark.asyncio
+    async def test_rejects_readme_over_upload_size_cap(self, async_client, httpx_mock, monkeypatch):
+        import backend.routes.sprints as sprints_module
+
+        monkeypatch.setattr(sprints_module, "MAX_UPLOAD_SIZE_MB", 0)
+        repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
+
+        # Metadata refresh during sprint creation
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo",
+            json={"full_name": "owner/test-repo", "description": "Updated desc"},
+        )
+
+        resp = await async_client.post(
+            "/api/sprints",
+            data={"name": "Sprint 2", "repo_id": str(repo_id)},
+            files={"readme_file": ("README.md", b"# Custom README", "text/markdown")},
+        )
+
+        assert resp.status_code == 422
+        assert "upload limit" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_requires_readme_when_github_has_none(self, async_client, httpx_mock):
         repo_id = await _create_repo(async_client, "https://github.com/owner/no-readme", httpx_mock)
 

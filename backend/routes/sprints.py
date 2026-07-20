@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from backend.config import STORAGE_LOCATION
+from backend.config import MAX_UPLOAD_SIZE_MB, STORAGE_LOCATION
 from backend.database import get_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
@@ -53,7 +53,15 @@ def _validate_readme_file(readme_file: UploadFile) -> bytes:
             detail=f"README file must be a .md or .markdown file, got {ext or 'none'}.",
         )
 
-    content = readme_file.file.read()
+    # Read one byte past the cap so an oversized body is rejected without
+    # ever materialising more than the cap in memory.
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    content = readme_file.file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail=f"README file exceeds the {MAX_UPLOAD_SIZE_MB} MB upload limit.",
+        )
 
     # UTF-8 validation
     try:
