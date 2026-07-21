@@ -121,3 +121,5 @@ OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL: str | None = os.environ.get("OPENAI_BASE_URL") or None
 OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
 OPENAI_TIMEOUT: int = _get_int("OPENAI_TIMEOUT", 60)
+# Char cap on the README text included in LLM prompts (READMEs can be arbitrarily long).
+README_MAX_CHARS: int = _get_int("README_MAX_CHARS", 8000)
