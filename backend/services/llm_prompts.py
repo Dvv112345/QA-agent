@@ -73,8 +73,9 @@ SPLIT_PRD_SYSTEM_PROMPT = (
 
 TEST_ENV_BAR = (
     "The description is sufficient if a competent QA engineer could reach and "
-    "exercise every service the confirmed requirements touch without guessing: "
-    "for each such service it must say how to access it (URL, host, or entry "
+    "exercise every service the confirmed requirements touch without guessing. "
+    "This includes access required for seeding data needed by test cases. "
+    "For each such service it must say how to access it (URL, host, or entry "
     "point) and what credentials to use or how to obtain them. It does not "
     "need deployment internals or exhaustive tooling detail. Use the provided "
     "requirements, README, and file tree to resolve ambiguity yourself before "
