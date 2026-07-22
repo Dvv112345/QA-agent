@@ -6,6 +6,8 @@ edited without wading through client/completion plumbing.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from backend.config import README_MAX_CHARS
 
 
@@ -184,4 +186,111 @@ def test_plan_context(
             "write test cases for them):\n" + "\n".join(f"- {sibling}" for sibling in sibling_names)
         )
     parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
+    return parts
+
+
+# ── Test execution ────────────────────────────────────────────────────
+
+ENV_VARS_SYSTEM_PROMPT = (
+    "You are a senior QA engineer extracting environment access details from a "
+    "free-text description into structured data. Identify every distinct access "
+    "detail needed to reach and exercise the test environment — URL, host, "
+    "username, password, API token, or anything else the description implies — "
+    "and give each one a clear, descriptive JSON key in UPPER_SNAKE_CASE. Do not "
+    "invent details the description does not contain. Respond with a JSON "
+    'object of the shape {"variables": {string: string}}.'
+)
+
+TEST_SCRIPT_SYSTEM_PROMPT = (
+    "You are a senior QA engineer writing a single self-contained Playwright "
+    "(Python, sync API) script that automates one test case. The script must be "
+    "runnable via `python script.py`: exit code 0 when every assertion passes, "
+    "a non-zero exit (raise or a failed assertion) otherwise, and it must print "
+    "concise diagnostic information on failure. Use the read_file tool with "
+    "paths from the provided file tree to verify real endpoint paths, params, "
+    "and routes before finalizing — never guess. Read any access detail the "
+    'script needs via os.environ["NAME"], using only names from the provided '
+    "list of available environment variables — never hardcode a literal URL, "
+    "credential, or token. If the test case specifies preconditions, the "
+    "script must establish them itself (via API calls, UI actions, or seeding, "
+    "using whatever access the environment variables provide) rather than "
+    "assuming the environment already satisfies them. If the script's setup or "
+    "steps create, modify, or delete persistent data, it must clean that up at "
+    "the end: wrap the test steps (and any precondition setup) so cleanup "
+    "always runs, pass or fail, using try/finally — a cleanup failure must be "
+    "logged (printed) but must never change the exit code that reflects the "
+    "test steps' own outcome. Respond with a JSON object of the shape "
+    '{"script": string}.'
+)
+
+TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT = (
+    "You are a senior QA engineer debugging a failed test script run. Given "
+    "the script, its captured stdout/stderr/exit code, the test case it "
+    "targets, and the list of available environment variable names, classify "
+    "the failure as script_bug (the script itself is wrong) or app_bug (the "
+    "script is correct and caught a real application defect). Use the "
+    "read_file tool to re-verify an endpoint or parameter if the failure looks "
+    "like a wrong-endpoint guess. Treat a wrong or missing os.environ key as a "
+    "script_bug fixable by referencing the correct name from the provided "
+    "list. Treat a failure caused by an unmet precondition — the script "
+    "assumed it rather than establishing it — as a script_bug too. For "
+    "script_bug, return a full corrected script that keeps the same "
+    "os.environ-only, precondition-seeding, try/finally-cleanup contract as "
+    "generation — do not drop cleanup the original script had, and add it if "
+    "the original script was missing it and that plausibly caused the "
+    'failure. Respond with a JSON object of the shape {"classification": '
+    '"script_bug" or "app_bug", "fixed_script": string or null, '
+    '"explanation": string}.'
+)
+
+
+@dataclass(frozen=True)
+class TestCaseLike:
+    """Plain test-case fields passed to script generation/diagnosis prompts.
+
+    Keeps ``services/llm.py`` free of DB imports beyond ``TestCasePriority``
+    (mirrors how ``generate_test_plan`` takes plain requirement fields
+    rather than a ``Requirement`` row).
+    """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    title: str
+    preconditions: str | None
+    steps: str  # newline-joined, matching TestCase.steps storage
+    expected_result: str
+    case_type: str
+    priority: str
+
+
+def env_vars_context(content: str, readme: str | None, file_tree: str | None) -> list[str]:
+    """User-prompt blocks for env-var extraction — the one operation that
+    sees the raw test-environment access description verbatim."""
+    parts = context_sections(readme, file_tree)
+    parts.append(f"Test environment access description:\n{content}")
+    return parts
+
+
+def test_script_context(
+    name: str,
+    description: str,
+    test_case: TestCaseLike,
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+) -> list[str]:
+    """Shared user-prompt blocks for test-script generation and diagnosis."""
+    parts = context_sections(readme, file_tree)
+    parts.append(
+        "Available environment variables (read via os.environ):\n"
+        + ("\n".join(f"- {v}" for v in env_var_names) if env_var_names else "(none)")
+    )
+    parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
+    case_block = (
+        f"Test case title: {test_case.title}\n"
+        f"Preconditions: {test_case.preconditions or '(none)'}\n"
+        f"Steps:\n{test_case.steps}\n"
+        f"Expected result: {test_case.expected_result}"
+    )
+    parts.append(case_block)
     return parts

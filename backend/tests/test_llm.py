@@ -15,12 +15,16 @@ from backend.services.llm import (
     TestEnvironmentResult,
     check_clarity,
     check_test_environment,
+    diagnose_and_fix_script,
+    generate_env_vars,
     generate_test_plan,
+    generate_test_script,
     revise_requirement,
     revise_test_environment,
     revise_test_plan,
     split_prd,
 )
+from backend.services.llm_prompts import TestCaseLike
 
 
 class _StubClient:
@@ -636,3 +640,281 @@ class TestReviseTestPlan:
 
         with pytest.raises(LLMError):
             self._revise()
+
+
+# ── Test execution (env-var extraction, script gen, self-heal diagnosis) ──
+
+
+class TestGenerateEnvVars:
+    def test_happy_path(self, stub_client):
+        stub_client.content = json.dumps(
+            {"variables": {"BASE_URL": "https://staging.example.com", "PASSWORD": "hunter2"}}
+        )
+        result = generate_env_vars("SSH to staging as qa.", None, None)
+        assert result.variables == {
+            "BASE_URL": "https://staging.example.com",
+            "PASSWORD": "hunter2",
+        }
+
+    def test_empty_variables_raises(self, stub_client):
+        stub_client.content = json.dumps({"variables": {}})
+        with pytest.raises(LLMError):
+            generate_env_vars("SSH to staging.", None, None)
+
+    def test_blank_key_raises(self, stub_client):
+        stub_client.content = json.dumps({"variables": {"  ": "value"}})
+        with pytest.raises(LLMError):
+            generate_env_vars("SSH to staging.", None, None)
+
+    def test_blank_value_raises(self, stub_client):
+        stub_client.content = json.dumps({"variables": {"BASE_URL": "  "}})
+        with pytest.raises(LLMError):
+            generate_env_vars("SSH to staging.", None, None)
+
+    def test_malformed_json_raises(self, stub_client):
+        stub_client.content = "not json at all"
+        with pytest.raises(LLMError, match="malformed"):
+            generate_env_vars("SSH to staging.", None, None)
+
+    def test_prompt_contains_raw_content_verbatim(self, stub_client):
+        stub_client.content = json.dumps({"variables": {"BASE_URL": "x"}})
+        generate_env_vars(
+            "SSH to staging.example.com as qa with key ~/.ssh/qa.",
+            "# My README",
+            "src/app.py",
+        )
+        prompt = _user_prompt(stub_client)
+        assert "SSH to staging.example.com as qa with key ~/.ssh/qa." in prompt
+        assert "# My README" in prompt
+        assert "src/app.py" in prompt
+
+    def test_no_tools_sent(self, stub_client):
+        stub_client.content = json.dumps({"variables": {"BASE_URL": "x"}})
+        generate_env_vars("SSH to staging.", None, None)
+        assert "tools" not in stub_client.requests[-1]
+
+
+_TEST_CASE = TestCaseLike(
+    title="Valid login",
+    preconditions="A registered user exists.",
+    steps="Open the login page\nEnter valid credentials\nSubmit",
+    expected_result="User lands on the dashboard.",
+    case_type="functional",
+    priority="high",
+)
+
+
+def _generate_script(**overrides):
+    kwargs = {
+        "name": "Login",
+        "description": "Users can log in.",
+        "test_case": _TEST_CASE,
+        "env_var_names": ["BASE_URL", "PASSWORD"],
+        "readme": None,
+        "file_tree": None,
+        "read_file": lambda path: "FILE CONTENT",
+        "on_round": lambda: None,
+    }
+    kwargs.update(overrides)
+    return generate_test_script(**kwargs)
+
+
+class TestGenerateTestScript:
+    def test_happy_path_without_tool_calls(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response({"script": "print('hello')"}))
+
+        result = _generate_script()
+
+        assert result.script == "print('hello')"
+        assert len(client.requests) == 1
+        tools = client.requests[0]["tools"]
+        assert [t["function"]["name"] for t in tools] == ["read_file"]
+
+    def test_tool_round_trip(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _final_response({"script": "print('hello')"}),
+        )
+        read_paths: list[str] = []
+
+        def read_file(path: str) -> str:
+            read_paths.append(path)
+            return "FILE CONTENT"
+
+        result = _generate_script(read_file=read_file)
+
+        assert result.script == "print('hello')"
+        assert read_paths == ["src/app.py"]
+        assert len(client.requests) == 2
+
+    def test_round_cap_forces_final_answer(self, monkeypatch):
+        monkeypatch.setattr(llm, "TEST_EXECUTION_TOOL_ROUNDS", 2)
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("a.py"),
+            _tool_call_response("b.py"),
+            _final_response({"script": "print('hello')"}),
+        )
+
+        result = _generate_script()
+
+        assert result.script == "print('hello')"
+        assert len(client.requests) == 3
+        assert client.requests[2]["tool_choice"] == "none"
+
+    def test_read_file_none_skips_tools(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response({"script": "print('hello')"}))
+
+        result = _generate_script(read_file=None)
+
+        assert result.script == "print('hello')"
+        assert "tools" not in client.requests[0]
+
+    def test_blank_script_raises(self, monkeypatch):
+        _sequence_client(monkeypatch, _final_response({"script": "   "}))
+
+        with pytest.raises(LLMError):
+            _generate_script()
+
+    def test_prompt_contains_env_var_names_and_case_fields_but_not_secrets(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response({"script": "print('hello')"}))
+
+        _generate_script(readme="# My README", file_tree="src/app.py")
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "BASE_URL" in prompt
+        assert "PASSWORD" in prompt
+        assert "os.environ" in prompt or "environ" in prompt.lower()
+        assert "Valid login" in prompt
+        assert "User lands on the dashboard." in prompt
+        assert "# My README" in prompt
+        assert "src/app.py" in prompt
+
+
+def _diagnose(**overrides):
+    kwargs = {
+        "name": "Login",
+        "description": "Users can log in.",
+        "test_case": _TEST_CASE,
+        "env_var_names": ["BASE_URL", "PASSWORD"],
+        "readme": None,
+        "file_tree": None,
+        "script": "print('hello')",
+        "stdout": "",
+        "stderr": "AssertionError: expected dashboard",
+        "exit_code": 1,
+        "read_file": lambda path: "FILE CONTENT",
+        "on_round": lambda: None,
+    }
+    kwargs.update(overrides)
+    return diagnose_and_fix_script(**kwargs)
+
+
+class TestDiagnoseAndFixScript:
+    def test_script_bug_returns_fix(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "script_bug",
+                    "fixed_script": "print('fixed')",
+                    "explanation": "Wrong selector used.",
+                }
+            ),
+        )
+
+        result = _diagnose()
+
+        assert result.classification == "script_bug"
+        assert result.fixed_script == "print('fixed')"
+
+    def test_app_bug_has_no_fix(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "app_bug",
+                    "fixed_script": None,
+                    "explanation": "Login genuinely fails for valid credentials.",
+                }
+            ),
+        )
+
+        result = _diagnose()
+
+        assert result.classification == "app_bug"
+        assert result.fixed_script is None
+
+    def test_script_bug_without_fix_raises(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {"classification": "script_bug", "fixed_script": None, "explanation": "Broken."}
+            ),
+        )
+
+        with pytest.raises(LLMError):
+            _diagnose()
+
+    def test_blank_explanation_raises(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {"classification": "app_bug", "fixed_script": None, "explanation": "  "}
+            ),
+        )
+
+        with pytest.raises(LLMError):
+            _diagnose()
+
+    def test_tool_round_trip(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _final_response(
+                {
+                    "classification": "script_bug",
+                    "fixed_script": "print('fixed')",
+                    "explanation": "Wrong endpoint.",
+                }
+            ),
+        )
+
+        result = _diagnose()
+
+        assert result.classification == "script_bug"
+        assert len(client.requests) == 2
+
+    def test_prompt_includes_script_and_output(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _final_response(
+                {"classification": "app_bug", "fixed_script": None, "explanation": "Real bug."}
+            ),
+        )
+
+        _diagnose()
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "print('hello')" in prompt
+        assert "AssertionError: expected dashboard" in prompt
+        assert "Exit code: 1" in prompt
+
+
+class TestScriptPromptsContainSafetyInstructions:
+    """Static assertions — Decision 16's precondition/cleanup contract."""
+
+    def test_generation_prompt_mentions_preconditions_and_cleanup(self):
+        from backend.services.llm_prompts import TEST_SCRIPT_SYSTEM_PROMPT
+
+        assert "precondition" in TEST_SCRIPT_SYSTEM_PROMPT.lower()
+        assert "try/finally" in TEST_SCRIPT_SYSTEM_PROMPT
+        assert "os.environ" in TEST_SCRIPT_SYSTEM_PROMPT
+
+    def test_diagnosis_prompt_mentions_preconditions_and_cleanup(self):
+        from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+        assert "precondition" in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT.lower()
+        assert "try/finally" in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+        assert "os.environ" in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT

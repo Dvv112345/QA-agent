@@ -6,6 +6,7 @@ so there is no queue, retry, or reconciler involvement.
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -23,6 +24,7 @@ from backend.models.types import (
     TestEnvironmentAnswerRequest,
     TestEnvironmentResponse,
     TestEnvironmentSubmitRequest,
+    TestEnvironmentVarsEditRequest,
 )
 from backend.services import llm
 from backend.services.llm import LLMError
@@ -86,6 +88,20 @@ async def _gather_context(sprint: Sprint) -> tuple[list[tuple[str, str]], str | 
     return _confirmed_requirements(sprint), readme, file_tree
 
 
+async def _extract_env_vars_json(
+    sufficient: bool, content: str, readme: str | None, file_tree: str | None
+) -> str | None:
+    """Extract env vars when the description is sufficient; clear to None
+    otherwise, so the row never describes stale, superseded content."""
+    if not sufficient:
+        return None
+    try:
+        vars_result = await asyncio.to_thread(llm.generate_env_vars, content, readme, file_tree)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return json.dumps(vars_result.variables)
+
+
 @router.get(
     "/sprints/{sprint_id}/test-environment",
     response_model=TestEnvironmentResponse,
@@ -135,6 +151,8 @@ async def submit_test_environment(
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    env_vars_json = await _extract_env_vars_json(result.sufficient, content, readme, file_tree)
+
     if test_env is None:
         test_env = TestEnvironmentAccess(
             sprint_id=sprint_id,
@@ -150,6 +168,7 @@ async def submit_test_environment(
     else:
         test_env.status = TestEnvironmentStatus.NEEDS_INFO
         test_env.clarifying_question = result.clarifying_question
+    test_env.env_vars_json = env_vars_json
 
     _touch(test_env)
     session.add(test_env)
@@ -199,6 +218,10 @@ async def answer_test_environment(
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    env_vars_json = await _extract_env_vars_json(
+        result.sufficient, result.rewritten_content, readme, file_tree
+    )
+
     test_env.content = result.rewritten_content
     test_env.revision_count += 1
     if result.sufficient:
@@ -207,12 +230,45 @@ async def answer_test_environment(
     else:
         test_env.status = TestEnvironmentStatus.NEEDS_INFO
         test_env.clarifying_question = result.clarifying_question
+    test_env.env_vars_json = env_vars_json
 
     _touch(test_env)
     session.add(test_env)
     session.commit()
     session.refresh(test_env)
     logger.info("Test environment revised for sprint id=%d → %s", sprint.id, test_env.status)
+    return test_env
+
+
+@router.patch("/test-environment/{te_id}/env-vars", response_model=TestEnvironmentResponse)
+async def edit_test_environment_vars(
+    te_id: int,
+    body: TestEnvironmentVarsEditRequest,
+    session: Session = Depends(get_session),
+) -> TestEnvironmentAccess:
+    """Directly correct the LLM-extracted variables (uncapped, no LLM call)."""
+    test_env = _get_test_env_or_404(session, te_id)
+    sprint = test_env.sprint
+    _ensure_sprint_active(sprint)
+
+    if test_env.status == TestEnvironmentStatus.CONFIRMED:
+        raise HTTPException(
+            status_code=422,
+            detail="Environment variables are locked once the test environment is confirmed.",
+        )
+    if not body.variables:
+        raise HTTPException(status_code=422, detail="At least one variable is required.")
+    for key, value in body.variables.items():
+        if not key.strip() or not value.strip():
+            raise HTTPException(
+                status_code=422, detail="Variable names and values cannot be blank."
+            )
+
+    test_env.env_vars_json = json.dumps(body.variables)
+    session.add(test_env)
+    session.commit()
+    session.refresh(test_env)
+    logger.info("Test environment vars edited for sprint id=%d", sprint.id)
     return test_env
 
 
@@ -243,6 +299,14 @@ async def confirm_test_environment(
                 "Requirements changed since the last check — "
                 "re-check the test environment before confirming."
             ),
+        )
+    if test_env.env_vars_json is None:
+        # Should be unreachable — READY already implies a sufficient check
+        # populated this — but guarded per this codebase's convention of
+        # never trusting a supposedly-impossible state blindly.
+        raise HTTPException(
+            status_code=422,
+            detail="Environment variables have not been extracted yet — resubmit.",
         )
 
     test_env.status = TestEnvironmentStatus.CONFIRMED

@@ -5,6 +5,7 @@ them as module attributes) and README resolution is stubbed out on the route
 module — no network, no Redis.
 """
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -14,7 +15,7 @@ from backend.models.database import (
     TestEnvironmentAccess,
     TestEnvironmentStatus,
 )
-from backend.services.llm import LLMError, TestEnvironmentResult
+from backend.services.llm import EnvVarsResult, LLMError, TestEnvironmentResult
 from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
 from backend.tests.test_sprints import _seed_test_env
 
@@ -22,6 +23,7 @@ SUFFICIENT = TestEnvironmentResult(sufficient=True, clarifying_question=None)
 INSUFFICIENT = TestEnvironmentResult(
     sufficient=False, clarifying_question="What are the credentials?"
 )
+DEFAULT_ENV_VARS = EnvVarsResult(variables={"BASE_URL": "https://staging.example.com"})
 
 EARLIER = datetime(2026, 7, 1, tzinfo=timezone.utc)
 LATER = datetime(2026, 7, 2, tzinfo=timezone.utc)
@@ -40,10 +42,10 @@ def _no_readme(monkeypatch):
 
 @pytest.fixture
 def llm_stub(monkeypatch):
-    """Replace both test-env LLM entry points with a recording stub.
+    """Replace the three test-env LLM entry points with a recording stub.
 
-    ``stub.check_result`` / ``stub.revise_result`` may be a
-    ``TestEnvironmentResult`` or an exception to raise.
+    ``stub.check_result`` / ``stub.revise_result`` / ``stub.env_vars_result``
+    may be their respective result type or an exception to raise.
     """
 
     class _Stub:
@@ -54,8 +56,10 @@ def llm_stub(monkeypatch):
                 clarifying_question=None,
                 rewritten_content="Rewritten access text.",
             )
+            self.env_vars_result = DEFAULT_ENV_VARS
             self.check_calls: list[dict] = []
             self.revise_calls: list[dict] = []
+            self.env_vars_calls: list[dict] = []
 
         @staticmethod
         def _resolve(result):
@@ -89,11 +93,18 @@ def llm_stub(monkeypatch):
             )
             return self._resolve(self.revise_result)
 
+        def generate_env_vars(self, content, readme, file_tree):
+            self.env_vars_calls.append(
+                {"content": content, "readme": readme, "file_tree": file_tree}
+            )
+            return self._resolve(self.env_vars_result)
+
     stub = _Stub()
     import backend.services.llm as llm_module
 
     monkeypatch.setattr(llm_module, "check_test_environment", stub.check_test_environment)
     monkeypatch.setattr(llm_module, "revise_test_environment", stub.revise_test_environment)
+    monkeypatch.setattr(llm_module, "generate_env_vars", stub.generate_env_vars)
     return stub
 
 
@@ -499,6 +510,230 @@ class TestAnswerTestEnvironment:
         assert fresh.clarifying_question == "Which host?"
 
 
+# ── Env-var extraction wiring (submit/answer) ─────────────────────────
+
+
+class TestEnvVarsExtraction:
+    @pytest.mark.asyncio
+    async def test_sufficient_submission_extracts_vars(self, async_client, db_session, llm_stub):
+        sprint = _seed_complete_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment",
+            json={"content": "SSH to staging.example.com as qa."},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["env_vars"] == {"BASE_URL": "https://staging.example.com"}
+        assert len(llm_stub.env_vars_calls) == 1
+        assert llm_stub.env_vars_calls[0]["content"] == "SSH to staging.example.com as qa."
+
+    @pytest.mark.asyncio
+    async def test_insufficient_submission_skips_extraction(
+        self, async_client, db_session, llm_stub
+    ):
+        sprint = _seed_complete_sprint(db_session)
+        llm_stub.check_result = INSUFFICIENT
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": "SSH."}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["env_vars"] is None
+        assert llm_stub.env_vars_calls == []
+
+    @pytest.mark.asyncio
+    async def test_later_insufficient_submission_clears_prior_vars(
+        self, async_client, db_session, llm_stub
+    ):
+        sprint = _seed_complete_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": "SSH to staging."}
+        )
+        assert resp.json()["env_vars"] == {"BASE_URL": "https://staging.example.com"}
+
+        llm_stub.check_result = INSUFFICIENT
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": "Vague text."}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["env_vars"] is None
+
+    @pytest.mark.asyncio
+    async def test_env_vars_llm_error_persists_nothing(self, async_client, db_session, llm_stub):
+        sprint = _seed_complete_sprint(db_session)
+        llm_stub.env_vars_result = LLMError("provider down")
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": "SSH."}
+        )
+
+        assert resp.status_code == 502
+        get_resp = await async_client.get(f"/api/sprints/{sprint.id}/test-environment")
+        assert get_resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_answer_extracts_vars_from_rewritten_content(
+        self, async_client, db_session, llm_stub
+    ):
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(db_session, sprint, clarifying_question="Which host?")
+
+        resp = await async_client.post(
+            f"/api/test-environment/{row.id}/answer",
+            json={"answer": "staging.example.com"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["env_vars"] == {"BASE_URL": "https://staging.example.com"}
+        assert llm_stub.env_vars_calls[0]["content"] == "Rewritten access text."
+
+    @pytest.mark.asyncio
+    async def test_answer_still_insufficient_skips_extraction(
+        self, async_client, db_session, llm_stub
+    ):
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(db_session, sprint, clarifying_question="Which host?")
+        llm_stub.revise_result = TestEnvironmentResult(
+            sufficient=False,
+            clarifying_question="And the port?",
+            rewritten_content="Rewritten.",
+        )
+
+        resp = await async_client.post(
+            f"/api/test-environment/{row.id}/answer", json={"answer": "staging"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["env_vars"] is None
+        assert llm_stub.env_vars_calls == []
+
+
+# ── PATCH /api/test-environment/{id}/env-vars ─────────────────────────
+
+
+class TestEditTestEnvironmentVars:
+    @pytest.mark.asyncio
+    async def test_replaces_vars(self, async_client, db_session):
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps({"BASE_URL": "https://old.example.com"}),
+        )
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars",
+            json={"variables": {"BASE_URL": "https://correct.example.com", "TOKEN": "abc123"}},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["env_vars"] == {"BASE_URL": "https://correct.example.com", "TOKEN": "abc123"}
+        assert data["status"] == "ready"  # untouched
+
+    @pytest.mark.asyncio
+    async def test_does_not_touch_content_or_revision_count(self, async_client, db_session):
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            content="SSH to staging.",
+            revision_count=1,
+            env_vars_json=json.dumps({"BASE_URL": "https://old.example.com"}),
+        )
+        original_updated_at = row.updated_at
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars",
+            json={"variables": {"BASE_URL": "https://new.example.com"}},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["content"] == "SSH to staging."
+        assert data["revision_count"] == 1
+        fresh = _reload(db_session, row.id)
+        assert fresh.updated_at == original_updated_at
+
+    @pytest.mark.asyncio
+    async def test_404_for_missing_row(self, async_client):
+        resp = await async_client.patch(
+            "/api/test-environment/99999/env-vars", json={"variables": {"A": "b"}}
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_422_on_finished_sprint(self, async_client, db_session):
+        sprint = _seed_complete_sprint(db_session, active=False)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps({"BASE_URL": "x"}),
+        )
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": {"A": "b"}}
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_422_once_confirmed(self, async_client, db_session):
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps({"BASE_URL": "x"}),
+        )
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": {"A": "b"}}
+        )
+        assert resp.status_code == 422
+        assert "locked" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_422_on_empty_variables(self, async_client, db_session):
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps({"BASE_URL": "x"}),
+        )
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": {}}
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_422_on_blank_key_or_value(self, async_client, db_session):
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps({"BASE_URL": "x"}),
+        )
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": {"  ": "value"}}
+        )
+        assert resp.status_code == 422
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": {"BASE_URL": "  "}}
+        )
+        assert resp.status_code == 422
+
+
 # ── POST /api/test-environment/{id}/confirm ──────────────────────────
 
 
@@ -506,12 +741,29 @@ class TestConfirmTestEnvironment:
     @pytest.mark.asyncio
     async def test_ready_to_confirmed(self, async_client, db_session, llm_stub):
         sprint = _seed_complete_sprint(db_session)
-        row = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.READY)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps({"BASE_URL": "https://staging.example.com"}),
+        )
 
         resp = await async_client.post(f"/api/test-environment/{row.id}/confirm")
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "confirmed"
+
+    @pytest.mark.asyncio
+    async def test_422_when_env_vars_never_extracted(self, async_client, db_session, llm_stub):
+        # Should be unreachable via normal flow (READY implies a sufficient
+        # check already populated env_vars_json) — defensive guard only.
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.READY)
+
+        resp = await async_client.post(f"/api/test-environment/{row.id}/confirm")
+
+        assert resp.status_code == 422
+        assert "have not been extracted" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_404_for_missing_row(self, async_client):
@@ -598,7 +850,11 @@ class TestConfirmTestEnvironment:
             updated_at=EARLIER,
         )
         row = _seed_test_env(
-            db_session, sprint, status=TestEnvironmentStatus.READY, updated_at=LATER
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            updated_at=LATER,
+            env_vars_json=json.dumps({"BASE_URL": "https://staging.example.com"}),
         )
 
         del_resp = await async_client.delete(f"/api/requirements/{doomed.id}")

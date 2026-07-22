@@ -116,8 +116,13 @@ class TestEnvironmentResponse(SQLModel):
     revision_count: int
     clarification_cap_reached: bool
     requirements_stale: bool
+    env_vars: dict[str, str] | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class TestEnvironmentVarsEditRequest(SQLModel):
+    variables: dict[str, str]
 
 
 # ── Test plan ─────────────────────────────────────────────────────────

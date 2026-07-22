@@ -29,11 +29,13 @@ from backend.config import (
     OPENAI_BASE_URL,
     OPENAI_MODEL,
     OPENAI_TIMEOUT,
+    TEST_EXECUTION_TOOL_ROUNDS,
     TEST_PLAN_TOOL_ROUNDS,
 )
 from backend.models.database import TestCasePriority
 from backend.services.llm_prompts import (
     CHECK_SYSTEM_PROMPT,
+    ENV_VARS_SYSTEM_PROMPT,
     READ_FILE_TOOL,
     REVISE_SYSTEM_PROMPT,
     SPLIT_PRD_SYSTEM_PROMPT,
@@ -41,9 +43,14 @@ from backend.services.llm_prompts import (
     TEST_ENV_REVISE_SYSTEM_PROMPT,
     TEST_PLAN_REVISE_SYSTEM_PROMPT,
     TEST_PLAN_SYSTEM_PROMPT,
+    TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
+    TEST_SCRIPT_SYSTEM_PROMPT,
+    TestCaseLike,
     context_sections,
+    env_vars_context,
     requirements_section,
     test_plan_context,
+    test_script_context,
 )
 
 # On Windows, SSL_CERT_FILE may point to a non-existent file which breaks
@@ -267,9 +274,9 @@ def _validate_test_plan(result: TestPlanResult) -> TestPlanResult:
     return result
 
 
-def _parse_test_plan(content: str | None) -> TestPlanResult:
+def _parse_json(content: str | None, model_cls: type[_ResultT]) -> _ResultT:
     try:
-        return TestPlanResult.model_validate(json.loads(content or ""))
+        return model_cls.model_validate(json.loads(content or ""))
     except (json.JSONDecodeError, ValueError) as exc:
         raise LLMError(f"LLM returned malformed output: {exc}") from exc
 
@@ -277,34 +284,36 @@ def _parse_test_plan(content: str | None) -> TestPlanResult:
 def _complete_with_tools(
     system_prompt: str,
     user_prompt: str,
+    model_cls: type[_ResultT],
     read_file: Callable[[str], str] | None,
     on_round: Callable[[], None],
-) -> TestPlanResult:
-    """Run a bounded read_file tool loop and parse the final JSON plan.
+    tool_rounds: int,
+) -> _ResultT:
+    """Run a bounded read_file tool loop and parse the final JSON result.
 
     Every round sends ``tools`` together with strict JSON mode — verified
     against DeepSeek (2026-07-16): the combination works, and omitting
     ``response_format`` yields unparseable (fenced) final answers.  After
-    ``TEST_PLAN_TOOL_ROUNDS`` tool rounds, one final call is forced with
+    ``tool_rounds`` tool rounds, one final call is forced with
     ``tool_choice="none"``.  ``read_file`` never raises — it returns error
     strings the model can react to.  With ``read_file=None`` (no file tree)
     this degrades to a plain completion.
     """
     if read_file is None:
-        return _complete(system_prompt, user_prompt, TestPlanResult)
+        return _complete(system_prompt, user_prompt, model_cls)
 
     client = _get_client()
     budget_prompt = (
         f"{user_prompt}\n\n"
-        f"You may use up to {TEST_PLAN_TOOL_ROUNDS} rounds of read_file calls "
-        "before you must answer with the JSON plan."
+        f"You may use up to {tool_rounds} rounds of read_file calls "
+        "before you must answer with the required JSON object."
     )
     messages: list = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": budget_prompt},
     ]
 
-    for round_no in range(1, TEST_PLAN_TOOL_ROUNDS + 1):
+    for round_no in range(1, tool_rounds + 1):
         try:
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
@@ -316,11 +325,10 @@ def _complete_with_tools(
             if round_no == 1:
                 # Provider rejects tools — regenerate context-only.
                 logger.warning(
-                    "LLM provider rejected tool calls; falling back to "
-                    "context-only test plan generation: %s",
+                    "LLM provider rejected tool calls; falling back to context-only generation: %s",
                     exc,
                 )
-                return _complete(system_prompt, user_prompt, TestPlanResult)
+                return _complete(system_prompt, user_prompt, model_cls)
             raise LLMError(f"LLM request failed: {exc}") from exc
         except openai.OpenAIError as exc:
             raise LLMError(f"LLM request failed: {exc}") from exc
@@ -329,7 +337,7 @@ def _complete_with_tools(
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
-            return _parse_test_plan(message.content)
+            return _parse_json(message.content, model_cls)
 
         messages.append(message)
         for tool_call in tool_calls:
@@ -345,10 +353,10 @@ def _complete_with_tools(
                     "content": read_file(requested_path),
                 }
             )
-        remaining = TEST_PLAN_TOOL_ROUNDS - round_no
+        remaining = tool_rounds - round_no
         messages[-1]["content"] += (
-            f"\n[read_file budget: {remaining} of {TEST_PLAN_TOOL_ROUNDS} rounds "
-            "remaining — respond with the JSON plan when you have enough context]"
+            f"\n[read_file budget: {remaining} of {tool_rounds} rounds "
+            "remaining — respond with the required JSON object when you have enough context]"
         )
 
     # Round cap hit — force the final answer.
@@ -356,7 +364,8 @@ def _complete_with_tools(
         {
             "role": "user",
             "content": (
-                "Your read_file budget is exhausted. Respond now with only the JSON test plan."
+                "Your read_file budget is exhausted. "
+                "Respond now with only the required JSON object."
             ),
         }
     )
@@ -371,7 +380,7 @@ def _complete_with_tools(
     except openai.OpenAIError as exc:
         raise LLMError(f"LLM request failed: {exc}") from exc
     on_round()
-    return _parse_test_plan(response.choices[0].message.content)
+    return _parse_json(response.choices[0].message.content, model_cls)
 
 
 def generate_test_plan(
@@ -390,7 +399,14 @@ def generate_test_plan(
     with ``read_file=None`` falls back to a plain single completion.
     """
     parts = test_plan_context(name, description, sibling_names, test_env_content, readme, file_tree)
-    result = _complete_with_tools(TEST_PLAN_SYSTEM_PROMPT, "\n\n".join(parts), read_file, on_round)
+    result = _complete_with_tools(
+        TEST_PLAN_SYSTEM_PROMPT,
+        "\n\n".join(parts),
+        TestPlanResult,
+        read_file,
+        on_round,
+        TEST_PLAN_TOOL_ROUNDS,
+    )
     return _validate_test_plan(result)
 
 
@@ -410,6 +426,129 @@ def revise_test_plan(
     parts = test_plan_context(name, description, sibling_names, test_env_content, readme, file_tree)
     parts.append(f"Current test plan (JSON):\n{current_plan_json}\n\nUser's feedback:\n{feedback}")
     result = _complete_with_tools(
-        TEST_PLAN_REVISE_SYSTEM_PROMPT, "\n\n".join(parts), read_file, on_round
+        TEST_PLAN_REVISE_SYSTEM_PROMPT,
+        "\n\n".join(parts),
+        TestPlanResult,
+        read_file,
+        on_round,
+        TEST_PLAN_TOOL_ROUNDS,
     )
     return _validate_test_plan(result)
+
+
+# ── Test execution ────────────────────────────────────────────────────
+
+
+class EnvVarsResult(SQLModel):
+    variables: dict[str, str]
+
+
+class TestScriptResult(SQLModel):
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    script: str
+
+
+class ScriptDiagnosisResult(SQLModel):
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    classification: Literal["script_bug", "app_bug"]
+    fixed_script: str | None = None
+    explanation: str
+
+
+def _validate_env_vars(result: EnvVarsResult) -> EnvVarsResult:
+    """Reject an empty extraction or blank keys/values (unusable either way)."""
+    if not result.variables:
+        raise LLMError("LLM returned no environment variables.")
+    for key, value in result.variables.items():
+        if not key.strip() or not value.strip():
+            raise LLMError("LLM returned an environment variable with a blank name or value.")
+    return result
+
+
+def _validate_test_script(result: TestScriptResult) -> TestScriptResult:
+    """Reject a blank script (unusable either way)."""
+    if not result.script.strip():
+        raise LLMError("LLM returned a blank test script.")
+    return result
+
+
+def _validate_diagnosis(result: ScriptDiagnosisResult) -> ScriptDiagnosisResult:
+    """Reject a blank explanation, or a script_bug verdict with no fix."""
+    if not result.explanation.strip():
+        raise LLMError("LLM returned a diagnosis with no explanation.")
+    if result.classification == "script_bug" and not (result.fixed_script or "").strip():
+        raise LLMError("LLM classified a script_bug but returned no fixed script.")
+    return result
+
+
+def generate_env_vars(content: str, readme: str | None, file_tree: str | None) -> EnvVarsResult:
+    """Extract structured access details from a sufficient access description.
+
+    Plain single completion, like ``check_test_environment`` — no tool loop,
+    since interpreting free text needs no repo access.
+    """
+    parts = env_vars_context(content, readme, file_tree)
+    result = _complete(ENV_VARS_SYSTEM_PROMPT, "\n\n".join(parts), EnvVarsResult)
+    return _validate_env_vars(result)
+
+
+def generate_test_script(
+    name: str,
+    description: str,
+    test_case: TestCaseLike,
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+    read_file: Callable[[str], str] | None,
+    on_round: Callable[[], None],
+) -> TestScriptResult:
+    """Generate a Playwright script for one test case.
+
+    Runs a bounded ``read_file`` tool loop (``TEST_EXECUTION_TOOL_ROUNDS``);
+    with ``read_file=None`` falls back to a plain single completion.
+    """
+    parts = test_script_context(name, description, test_case, env_var_names, readme, file_tree)
+    result = _complete_with_tools(
+        TEST_SCRIPT_SYSTEM_PROMPT,
+        "\n\n".join(parts),
+        TestScriptResult,
+        read_file,
+        on_round,
+        TEST_EXECUTION_TOOL_ROUNDS,
+    )
+    return _validate_test_script(result)
+
+
+def diagnose_and_fix_script(
+    name: str,
+    description: str,
+    test_case: TestCaseLike,
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+    script: str,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    read_file: Callable[[str], str] | None,
+    on_round: Callable[[], None],
+) -> ScriptDiagnosisResult:
+    """Classify a failed run as a script bug or app bug; fix script bugs in the same call."""
+    parts = test_script_context(name, description, test_case, env_var_names, readme, file_tree)
+    parts.append(
+        f"Script that was run:\n---\n{script}\n---\n\n"
+        f"Exit code: {exit_code}\n"
+        f"stdout:\n---\n{stdout}\n---\n\n"
+        f"stderr:\n---\n{stderr}\n---"
+    )
+    result = _complete_with_tools(
+        TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
+        "\n\n".join(parts),
+        ScriptDiagnosisResult,
+        read_file,
+        on_round,
+        TEST_EXECUTION_TOOL_ROUNDS,
+    )
+    return _validate_diagnosis(result)
