@@ -16,6 +16,8 @@ from backend.models.database import (
     Requirement,
     RequirementStatus,
     Sprint,
+    TestExecution,
+    TestExecutionStatus,
     TestPlan,
     TestPlanStatus,
     TestRun,
@@ -270,6 +272,24 @@ async def finish_sprint(
         plan.updated_at = datetime.now(timezone.utc)
         session.add(plan)
 
+    # ── Fail test executions still awaiting a run (same rationale) ────
+    in_progress_executions = session.exec(
+        select(TestExecution)
+        .join(Requirement, TestExecution.requirement_id == Requirement.id)  # type: ignore[arg-type]
+        .where(
+            Requirement.sprint_id == sprint_id,
+            TestExecution.status.in_(  # type: ignore[attr-defined]
+                [TestExecutionStatus.PENDING, TestExecutionStatus.RUNNING]
+            ),
+        )
+    ).all()
+    for execution in in_progress_executions:
+        execution.status = TestExecutionStatus.FAILED
+        execution.error = SPRINT_FINISHED_ERROR
+        execution.last_heartbeat = None
+        execution.updated_at = datetime.now(timezone.utc)
+        session.add(execution)
+
     session.commit()
     session.refresh(sprint)
 
@@ -284,6 +304,12 @@ async def finish_sprint(
             "Sprint id=%d: %d in-progress test plans marked failed on finish",
             sprint_id,
             len(in_progress_plans),
+        )
+    if in_progress_executions:
+        logger.info(
+            "Sprint id=%d: %d in-progress test executions marked failed on finish",
+            sprint_id,
+            len(in_progress_executions),
         )
     logger.info("Sprint finished: id=%d name=%s", sprint.id, sprint.name)
     return sprint

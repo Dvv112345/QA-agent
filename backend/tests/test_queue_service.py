@@ -8,9 +8,10 @@ The autouse ``_isolate_redis`` fixture in conftest.py neutralises
 from types import SimpleNamespace
 
 import backend.services.queue as queue_module
-from backend.config import JOB_TIMEOUT, TEST_PLAN_JOB_TIMEOUT
+from backend.config import JOB_TIMEOUT, TEST_EXECUTION_JOB_TIMEOUT, TEST_PLAN_JOB_TIMEOUT
 from backend.services.queue import (
     ANALYZE_REQUIREMENT_TASK,
+    EXECUTE_TEST_TASK,
     GENERATE_TEST_PLAN_TASK,
     REDIS_SOCKET_TIMEOUT,
     QueueService,
@@ -48,6 +49,10 @@ class TestDegradedService:
     def test_enqueue_test_plan_returns_none(self):
         service = QueueService()
         assert service.enqueue_test_plan(123) is None
+
+    def test_enqueue_test_execution_returns_none(self):
+        service = QueueService()
+        assert service.enqueue_test_execution(123) is None
 
     def test_get_job_returns_none(self):
         service = QueueService()
@@ -113,12 +118,28 @@ class TestEnqueueDispatch:
         assert call["row_id"] == 7
         assert call["job_timeout"] == TEST_PLAN_JOB_TIMEOUT
 
+    def test_enqueue_test_execution_uses_execution_task_and_timeout(self):
+        service = QueueService()
+        queue = _RecordingQueue()
+        service._queue = queue
+
+        job = service.enqueue_test_execution(5)
+
+        assert job.id == "job-5"
+        call = queue.calls[0]
+        assert call["task_path"] == EXECUTE_TEST_TASK
+        assert call["row_id"] == 5
+        assert call["job_timeout"] == TEST_EXECUTION_JOB_TIMEOUT
+
     def test_plan_task_dotted_path_matches_module(self):
         # The worker resolves this string at execution time — a rename of the
         # task module/function must update the constant in lockstep.
         assert GENERATE_TEST_PLAN_TASK == (
             "backend.tasks.generate_test_plan.generate_test_plan_task"
         )
+
+    def test_execution_task_dotted_path_matches_module(self):
+        assert EXECUTE_TEST_TASK == "backend.tasks.execute_test.execute_test_task"
 
 
 class TestSingleton:

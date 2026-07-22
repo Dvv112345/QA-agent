@@ -457,6 +457,46 @@ class TestFinishSprint:
             assert row.status == status
             assert row.error is None
 
+    @pytest.mark.asyncio
+    async def test_marks_in_progress_test_executions_failed(self, async_client, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            RequirementStatus,
+            TestExecution,
+            TestExecutionStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+
+        def _execution(status, **kwargs):
+            requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+            run = _seed_test_run(db_session, sprint)
+            return _seed_test_execution(db_session, run, requirement, status=status, **kwargs)
+
+        pending = _execution(TestExecutionStatus.PENDING)
+        running = _execution(TestExecutionStatus.RUNNING, last_heartbeat=datetime.now(timezone.utc))
+        untouched = {
+            _execution(status).id: status
+            for status in (TestExecutionStatus.COMPLETED, TestExecutionStatus.FAILED)
+        }
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for execution_id in (pending.id, running.id):
+            row = db_session.get(TestExecution, execution_id)
+            assert row.status == TestExecutionStatus.FAILED
+            assert row.error == SPRINT_FINISHED_ERROR
+            assert row.last_heartbeat is None
+        for execution_id, status in untouched.items():
+            row = db_session.get(TestExecution, execution_id)
+            assert row.status == status
+            assert row.error is None
+
 
 # == Repo file-tree capture during sprint creation ====================
 

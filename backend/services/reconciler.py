@@ -47,6 +47,8 @@ from backend.models.database import (
     Requirement,
     RequirementStatus,
     Sprint,
+    TestExecution,
+    TestExecutionStatus,
     TestPlan,
     TestPlanStatus,
 )
@@ -71,7 +73,10 @@ class _SweepSpec:
     pending_status: str
     running_status: str
     failed_status: str
-    clear_field: str  # pending user input, cleared when the row is failed
+    # Pending user input, cleared when the row is failed. None for row
+    # types with no such field (e.g. TestExecution) — the setattr is
+    # skipped rather than clobbering an unrelated column.
+    clear_field: str | None
     enqueue_name: str  # QueueService method used to (re-)enqueue
     stale_error: str  # user-facing error once retries are exhausted
     join_to_sprint: Callable[[SelectOfScalar], SelectOfScalar]
@@ -106,6 +111,22 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
         ),
         join_to_sprint=lambda stmt: stmt.join(
             Requirement, TestPlan.requirement_id == Requirement.id
+        ).join(Sprint, Requirement.sprint_id == Sprint.id),
+    ),
+    _SweepSpec(
+        model=TestExecution,
+        label="Test execution",
+        pending_status=TestExecutionStatus.PENDING,
+        running_status=TestExecutionStatus.RUNNING,
+        failed_status=TestExecutionStatus.FAILED,
+        clear_field=None,
+        enqueue_name="enqueue_test_execution",
+        stale_error=(
+            "Execution worker died repeatedly while processing this test run. "
+            "Use Restart to try again."
+        ),
+        join_to_sprint=lambda stmt: stmt.join(
+            Requirement, TestExecution.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
     ),
 )
@@ -145,7 +166,8 @@ def _sweep_inactive_sprints(session, spec: _SweepSpec, now: datetime) -> None:
         row.status = spec.failed_status
         row.error = SPRINT_FINISHED_ERROR
         row.last_heartbeat = None
-        setattr(row, spec.clear_field, None)
+        if spec.clear_field is not None:
+            setattr(row, spec.clear_field, None)
         row.updated_at = now
         session.add(row)
         logger.info("%s %d: sprint inactive — marked failed", spec.label, row.id)

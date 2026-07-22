@@ -30,6 +30,7 @@ from backend.config import (
     REDIS_HOST,
     REDIS_PASSWORD,
     REDIS_PORT,
+    TEST_EXECUTION_JOB_TIMEOUT,
     TEST_PLAN_JOB_TIMEOUT,
 )
 
@@ -49,6 +50,7 @@ REDIS_SOCKET_TIMEOUT = 5
 # execution time, so jobs still show their real name in ``rq info``.
 ANALYZE_REQUIREMENT_TASK = "backend.tasks.analyze_requirement.analyze_requirement_task"
 GENERATE_TEST_PLAN_TASK = "backend.tasks.generate_test_plan.generate_test_plan_task"
+EXECUTE_TEST_TASK = "backend.tasks.execute_test.execute_test_task"
 
 # ── Module-level singleton ────────────────────────────────────────────────
 _queue_service: QueueService | None = None
@@ -168,6 +170,16 @@ class QueueService:
         """
         return self._enqueue(
             GENERATE_TEST_PLAN_TASK, test_plan_id, TEST_PLAN_JOB_TIMEOUT, "test plan"
+        )
+
+    def enqueue_test_execution(self, test_execution_id: int) -> rq.job.Job | None:
+        """Enqueue a test-execution job and return the RQ Job handle.
+
+        Execution jobs get the largest timeout — many cases, each with up
+        to (1 + MAX_SCRIPT_FIX_ROUNDS) generate/execute/diagnose cycles.
+        """
+        return self._enqueue(
+            EXECUTE_TEST_TASK, test_execution_id, TEST_EXECUTION_JOB_TIMEOUT, "test execution"
         )
 
     def get_job(self, job_id: str) -> rq.job.Job | None:
