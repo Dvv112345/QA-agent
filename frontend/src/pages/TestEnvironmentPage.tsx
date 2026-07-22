@@ -7,6 +7,7 @@ import {
   fetchTestEnvironment,
   finishSprint,
   submitTestEnvironment,
+  updateTestEnvironmentVars,
 } from '../services/api'
 import type { SprintResponse, TestEnvironmentResponse, TestEnvironmentStatus } from '../types'
 import './TestEnvironmentPage.css'
@@ -32,6 +33,10 @@ export default function TestEnvironmentPage() {
   const [draft, setDraft] = useState('')
   const [answer, setAnswer] = useState('')
   const [showOriginal, setShowOriginal] = useState(false)
+  const [envVarsEditing, setEnvVarsEditing] = useState(false)
+  const [envVarsDraft, setEnvVarsDraft] = useState<{ key: string; value: string }[]>([])
+  const [envVarsBusy, setEnvVarsBusy] = useState(false)
+  const [envVarsError, setEnvVarsError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -66,6 +71,7 @@ export default function TestEnvironmentPage() {
         setTestEnv(updated)
         setEditing(false)
         setDraft('')
+        setEnvVarsEditing(false)
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
@@ -81,9 +87,40 @@ export default function TestEnvironmentPage() {
       .then((updated) => {
         setTestEnv(updated)
         setAnswer('')
+        setEnvVarsEditing(false)
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
+  }
+
+  const startEditingVars = () => {
+    if (!testEnv?.env_vars) return
+    setEnvVarsDraft(Object.entries(testEnv.env_vars).map(([key, value]) => ({ key, value })))
+    setEnvVarsEditing(true)
+    setEnvVarsError(null)
+  }
+
+  const handleSaveVars = () => {
+    if (!testEnv) return
+    const variables: Record<string, string> = {}
+    for (const row of envVarsDraft) {
+      const key = row.key.trim()
+      const value = row.value.trim()
+      if (key && value) variables[key] = value
+    }
+    if (Object.keys(variables).length === 0) {
+      setEnvVarsError('At least one variable is required.')
+      return
+    }
+    setEnvVarsBusy(true)
+    setEnvVarsError(null)
+    updateTestEnvironmentVars(testEnv.id, variables)
+      .then((updated) => {
+        setTestEnv(updated)
+        setEnvVarsEditing(false)
+      })
+      .catch((err: Error) => setEnvVarsError(err.message))
+      .finally(() => setEnvVarsBusy(false))
   }
 
   const handleConfirm = () => {
@@ -256,6 +293,99 @@ export default function TestEnvironmentPage() {
             </div>
           )}
         </>
+      )}
+
+      {testEnv?.env_vars && (
+        <div className="test-env-vars">
+          <h2>Detected environment variables</h2>
+          {envVarsEditing ? (
+            <>
+              {envVarsDraft.map((row, index) => (
+                <div key={index} className="test-env-vars-row">
+                  <input
+                    type="text"
+                    value={row.key}
+                    placeholder="NAME"
+                    aria-label={`Variable ${index + 1} name`}
+                    onChange={(e) =>
+                      setEnvVarsDraft((prev) =>
+                        prev.map((r, i) => (i === index ? { ...r, key: e.target.value } : r)),
+                      )
+                    }
+                    disabled={envVarsBusy}
+                  />
+                  <input
+                    type="text"
+                    value={row.value}
+                    placeholder="value"
+                    aria-label={`Variable ${index + 1} value`}
+                    onChange={(e) =>
+                      setEnvVarsDraft((prev) =>
+                        prev.map((r, i) => (i === index ? { ...r, value: e.target.value } : r)),
+                      )
+                    }
+                    disabled={envVarsBusy}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-danger btn-small"
+                    onClick={() => setEnvVarsDraft((prev) => prev.filter((_, i) => i !== index))}
+                    disabled={envVarsBusy || envVarsDraft.length === 1}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <div className="test-env-vars-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEnvVarsDraft((prev) => [...prev, { key: '', value: '' }])}
+                  disabled={envVarsBusy}
+                >
+                  Add variable
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveVars}
+                  disabled={envVarsBusy}
+                >
+                  {envVarsBusy ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEnvVarsEditing(false)}
+                  disabled={envVarsBusy}
+                >
+                  Cancel
+                </button>
+              </div>
+              {envVarsError && <p className="test-env-error">{envVarsError}</p>}
+            </>
+          ) : (
+            <>
+              <ul className="test-env-vars-list">
+                {Object.entries(testEnv.env_vars).map(([key, value]) => (
+                  <li key={key}>
+                    <code>{key}</code>: {value}
+                  </li>
+                ))}
+              </ul>
+              {testEnv.status !== 'confirmed' && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={startEditingVars}
+                  disabled={busy}
+                >
+                  Edit variables
+                </button>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {testEnv?.status === 'confirmed' && (

@@ -1,0 +1,103 @@
+.test-run-detail {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.back-links {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.test-run-detail-message {
+  text-align: center;
+  padding: 2rem;
+  color: var(--color-text-secondary, #666);
+}
+
+.test-run-detail-error {
+  color: var(--color-error, #c00);
+}
+
+.test-run-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.test-run-detail-header h1 {
+  margin: 0;
+}
+
+.test-run-detail-meta {
+  color: var(--color-text-secondary, #888);
+  font-size: 0.9rem;
+  margin: 0 0 2rem;
+}
+
+.run-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.run-badge-pending,
+.run-badge-running {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.run-badge-completed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.run-badge-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.test-execution-section {
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.test-execution-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.test-execution-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.test-execution-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.test-execution-error {
+  color: #991b1b;
+  font-size: 0.9rem;
+}
+
+.case-execution-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.btn-small {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+}

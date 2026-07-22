@@ -36,6 +36,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     requirements_locked: true,
     has_test_plans: false,
     test_plans_complete: false,
+    has_test_runs: false,
     ...overrides,
   }
 }
@@ -178,6 +179,30 @@ describe('TestPlansPage', () => {
 
     expect(await screen.findByText('2 of 2 plans drafted · 2 approved')).toBeInTheDocument()
     expect(screen.getByText('All test plans approved.')).toBeInTheDocument()
+  })
+
+  it('hides the Continue to Test Runs link while any plan is unapproved', async () => {
+    mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+    mockFetchTestPlans.mockResolvedValue([
+      makePlan({ status: 'draft' }),
+      makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'approved' }),
+    ])
+    renderPage()
+
+    await screen.findByText('2 of 2 plans drafted · 1 approved')
+    expect(screen.queryByRole('link', { name: 'Continue to Test Runs' })).not.toBeInTheDocument()
+  })
+
+  it('shows the Continue to Test Runs link once every plan is approved', async () => {
+    mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+    mockFetchTestPlans.mockResolvedValue([
+      makePlan({ status: 'approved' }),
+      makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'approved' }),
+    ])
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: 'Continue to Test Runs' })
+    expect(link).toHaveAttribute('href', '/sprints/1/test-runs')
   })
 
   it('finishes the sprint from the footer', async () => {

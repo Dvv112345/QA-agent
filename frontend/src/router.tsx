@@ -5,6 +5,8 @@ import SprintDetailPage from './pages/SprintDetailPage'
 import SprintListPage from './pages/SprintListPage'
 import TestEnvironmentPage from './pages/TestEnvironmentPage'
 import TestPlansPage from './pages/TestPlansPage'
+import TestRunDetailPage from './pages/TestRunDetailPage'
+import TestRunsPage from './pages/TestRunsPage'
 import RootLayout from './RootLayout'
 
 export const routes = [
@@ -16,6 +18,8 @@ export const routes = [
       { path: '/sprints/:id', element: <SprintDetailPage /> },
       { path: '/sprints/:id/test-environment', element: <TestEnvironmentPage /> },
       { path: '/sprints/:id/test-plans', element: <TestPlansPage /> },
+      { path: '/sprints/:id/test-runs', element: <TestRunsPage /> },
+      { path: '/sprints/:id/test-runs/:runId', element: <TestRunDetailPage /> },
       { path: '/repos', element: <RepoListPage /> },
     ],
   },

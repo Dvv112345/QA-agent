@@ -39,6 +39,7 @@ const fakeSprint: SprintResponse = {
   requirements_locked: false,
   has_test_plans: false,
   test_plans_complete: false,
+  has_test_runs: false,
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────

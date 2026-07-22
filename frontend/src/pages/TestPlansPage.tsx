@@ -139,7 +139,16 @@ export default function TestPlansPage() {
             {draftedCount} of {plans.length} plans drafted &middot; {approvedCount} approved
           </p>
 
-          {allApproved && <p className="test-plans-complete">All test plans approved.</p>}
+          {allApproved && (
+            <>
+              <p className="test-plans-complete">All test plans approved.</p>
+              <div className="test-plans-continue">
+                <Link to={`/sprints/${sprintId}/test-runs`} className="btn btn-primary">
+                  Continue to Test Runs
+                </Link>
+              </div>
+            </>
+          )}
 
           {plans.map((plan) => (
             <TestPlanCard

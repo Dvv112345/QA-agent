@@ -6,8 +6,11 @@ import type {
   RequirementResponse,
   SprintResponse,
   TestEnvironmentResponse,
+  TestExecutionResponse,
   TestPlanEditRequest,
   TestPlanResponse,
+  TestRunDetailResponse,
+  TestRunResponse,
 } from '../types'
 
 const API_BASE = import.meta.env.VITE_API_BASE
@@ -227,6 +230,18 @@ export async function confirmTestEnvironment(id: number): Promise<TestEnvironmen
   return handleResponse<TestEnvironmentResponse>(response)
 }
 
+export async function updateTestEnvironmentVars(
+  id: number,
+  variables: Record<string, string>,
+): Promise<TestEnvironmentResponse> {
+  const response = await fetch(`${API_BASE}/api/test-environment/${id}/env-vars`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ variables }),
+  })
+  return handleResponse<TestEnvironmentResponse>(response)
+}
+
 // ── Test plans ───────────────────────────────────────────────────────
 
 export async function generateTestPlans(sprintId: number): Promise<TestPlanResponse[]> {
@@ -277,6 +292,41 @@ export async function restartTestPlan(id: number): Promise<TestPlanResponse> {
     method: 'POST',
   })
   return handleResponse<TestPlanResponse>(response)
+}
+
+// ── Test execution ───────────────────────────────────────────────────
+
+export async function createTestRun(
+  sprintId: number,
+  requirementIds: number[],
+): Promise<TestRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requirement_ids: requirementIds }),
+  })
+  return handleResponse<TestRunDetailResponse>(response)
+}
+
+export async function fetchTestRuns(sprintId: number): Promise<TestRunResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-runs`)
+  return handleResponse<TestRunResponse[]>(response)
+}
+
+export async function fetchTestRun(runId: number): Promise<TestRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/test-runs/${runId}`)
+  return handleResponse<TestRunDetailResponse>(response)
+}
+
+export async function restartTestExecution(executionId: number): Promise<TestExecutionResponse> {
+  const response = await fetch(`${API_BASE}/api/test-executions/${executionId}/restart`, {
+    method: 'POST',
+  })
+  return handleResponse<TestExecutionResponse>(response)
+}
+
+export function scriptDownloadUrl(caseExecutionId: number): string {
+  return `${API_BASE}/api/test-case-executions/${caseExecutionId}/script`
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

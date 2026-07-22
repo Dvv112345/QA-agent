@@ -1,0 +1,73 @@
+import { useState } from 'react'
+import { scriptDownloadUrl } from '../services/api'
+import type { TestCaseExecutionResponse } from '../types'
+import './TestCaseExecutionRow.css'
+
+const STATUS_LABELS: Record<string, string> = {
+  pending: 'Queued',
+  running: 'Running',
+  passed: 'Passed',
+  failed: 'Application bug found',
+  error: 'Could not determine — script may still be broken',
+}
+
+interface Props {
+  caseExecution: TestCaseExecutionResponse
+}
+
+export default function TestCaseExecutionRow({ caseExecution }: Props) {
+  const [expanded, setExpanded] = useState(false)
+  const { status } = caseExecution
+  // script_snapshot is only guaranteed set once a case has finalized —
+  // showing the download link earlier (pending/running) would 404.
+  const finalized = status === 'passed' || status === 'failed' || status === 'error'
+  const hasOutput = Boolean(caseExecution.output || caseExecution.error)
+
+  return (
+    <li className={`case-execution-row case-execution-row-${status}`}>
+      <div className="case-execution-header">
+        <span className="case-execution-title">{caseExecution.test_case.title}</span>
+        <div className="case-execution-badges">
+          {status === 'running' && <span className="case-execution-spinner" aria-hidden="true" />}
+          <span className={`case-badge case-badge-${status}`}>
+            {STATUS_LABELS[status] ?? status}
+          </span>
+        </div>
+      </div>
+
+      {caseExecution.attempts > 0 && (
+        <p className="case-execution-attempts">
+          {caseExecution.attempts} attempt{caseExecution.attempts === 1 ? '' : 's'}
+        </p>
+      )}
+
+      {hasOutput && (
+        <div className="case-execution-output">
+          <button className="btn-link" onClick={() => setExpanded((prev) => !prev)} type="button">
+            {expanded ? 'Hide output' : 'Show output'}
+          </button>
+          {expanded && (
+            <>
+              {caseExecution.error && (
+                <pre className="case-execution-error">{caseExecution.error}</pre>
+              )}
+              {caseExecution.output && (
+                <pre className="case-execution-stdout">{caseExecution.output}</pre>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {finalized && (
+        <a
+          className="btn-link case-execution-download"
+          href={scriptDownloadUrl(caseExecution.id)}
+          download
+        >
+          Download script
+        </a>
+      )}
+    </li>
+  )
+}

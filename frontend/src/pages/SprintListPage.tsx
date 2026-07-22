@@ -66,11 +66,13 @@ export default function SprintListPage() {
             <div key={sprint.id} className="sprint-card">
               <Link
                 to={
-                  sprint.active && sprint.has_test_plans
-                    ? `/sprints/${sprint.id}/test-plans`
-                    : sprint.active && sprint.has_test_environment_submission
-                      ? `/sprints/${sprint.id}/test-environment`
-                      : `/sprints/${sprint.id}`
+                  sprint.active && sprint.has_test_runs
+                    ? `/sprints/${sprint.id}/test-runs`
+                    : sprint.active && sprint.has_test_plans
+                      ? `/sprints/${sprint.id}/test-plans`
+                      : sprint.active && sprint.has_test_environment_submission
+                        ? `/sprints/${sprint.id}/test-environment`
+                        : `/sprints/${sprint.id}`
                 }
                 className="sprint-card-main"
               >

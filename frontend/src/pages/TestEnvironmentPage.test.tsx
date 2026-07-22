@@ -13,6 +13,7 @@ vi.mock('../services/api', async (importOriginal) => {
     submitTestEnvironment: vi.fn(),
     answerTestEnvironment: vi.fn(),
     confirmTestEnvironment: vi.fn(),
+    updateTestEnvironmentVars: vi.fn(),
     finishSprint: vi.fn(),
   }
 })
@@ -24,6 +25,7 @@ import {
   fetchTestEnvironment,
   finishSprint,
   submitTestEnvironment,
+  updateTestEnvironmentVars,
 } from '../services/api'
 
 const mockFetchSprint = fetchSprint as ReturnType<typeof vi.fn>
@@ -31,6 +33,7 @@ const mockFetchTestEnvironment = fetchTestEnvironment as ReturnType<typeof vi.fn
 const mockSubmitTestEnvironment = submitTestEnvironment as ReturnType<typeof vi.fn>
 const mockAnswerTestEnvironment = answerTestEnvironment as ReturnType<typeof vi.fn>
 const mockConfirmTestEnvironment = confirmTestEnvironment as ReturnType<typeof vi.fn>
+const mockUpdateTestEnvironmentVars = updateTestEnvironmentVars as ReturnType<typeof vi.fn>
 const mockFinishSprint = finishSprint as ReturnType<typeof vi.fn>
 
 function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
@@ -47,6 +50,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     requirements_locked: false,
     has_test_plans: false,
     test_plans_complete: false,
+    has_test_runs: false,
     ...overrides,
   }
 }
@@ -62,6 +66,7 @@ function makeTestEnv(overrides: Partial<TestEnvironmentResponse> = {}): TestEnvi
     revision_count: 0,
     clarification_cap_reached: false,
     requirements_stale: false,
+    env_vars: null,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -337,5 +342,118 @@ describe('TestEnvironmentPage', () => {
 
     await screen.findByText('SSH to staging as qa.')
     expect(screen.queryByRole('link', { name: 'Continue to Test Plans' })).not.toBeInTheDocument()
+  })
+
+  describe('environment variables', () => {
+    it('renders nothing when env_vars is null', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_environment_submission: true }))
+      mockFetchTestEnvironment.mockResolvedValue(
+        makeTestEnv({ status: 'ready', clarifying_question: null, env_vars: null }),
+      )
+      renderPage()
+
+      await screen.findByText('SSH to staging as qa.')
+      expect(screen.queryByText('Detected environment variables')).not.toBeInTheDocument()
+    })
+
+    it('renders rows when env_vars is present', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_environment_submission: true }))
+      mockFetchTestEnvironment.mockResolvedValue(
+        makeTestEnv({
+          status: 'ready',
+          clarifying_question: null,
+          env_vars: { BASE_URL: 'https://staging.example.com', PASSWORD: 'hunter2' },
+        }),
+      )
+      renderPage()
+
+      await screen.findByText('Detected environment variables')
+      expect(screen.getByText('BASE_URL')).toBeInTheDocument()
+      expect(screen.getByText(/https:\/\/staging\.example\.com/)).toBeInTheDocument()
+      expect(screen.getByText('PASSWORD')).toBeInTheDocument()
+    })
+
+    it('edits, saves, and merges the response pre-confirm', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_environment_submission: true }))
+      mockFetchTestEnvironment.mockResolvedValue(
+        makeTestEnv({
+          status: 'ready',
+          clarifying_question: null,
+          env_vars: { BASE_URL: 'https://old.example.com' },
+        }),
+      )
+      mockUpdateTestEnvironmentVars.mockResolvedValue(
+        makeTestEnv({
+          status: 'ready',
+          clarifying_question: null,
+          env_vars: { BASE_URL: 'https://correct.example.com' },
+        }),
+      )
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit variables' }))
+      const valueInput = screen.getByLabelText('Variable 1 value')
+      fireEvent.change(valueInput, { target: { value: 'https://correct.example.com' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+      await waitFor(() => {
+        expect(mockUpdateTestEnvironmentVars).toHaveBeenCalledWith(5, {
+          BASE_URL: 'https://correct.example.com',
+        })
+      })
+      expect(await screen.findByText(/https:\/\/correct\.example\.com/)).toBeInTheDocument()
+    })
+
+    it('adds and removes rows while editing', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_environment_submission: true }))
+      mockFetchTestEnvironment.mockResolvedValue(
+        makeTestEnv({
+          status: 'ready',
+          clarifying_question: null,
+          env_vars: { BASE_URL: 'https://staging.example.com' },
+        }),
+      )
+      mockUpdateTestEnvironmentVars.mockResolvedValue(
+        makeTestEnv({
+          status: 'ready',
+          clarifying_question: null,
+          env_vars: { BASE_URL: 'https://staging.example.com', TOKEN: 'abc123' },
+        }),
+      )
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit variables' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Add variable' }))
+      fireEvent.change(screen.getByLabelText('Variable 2 name'), { target: { value: 'TOKEN' } })
+      fireEvent.change(screen.getByLabelText('Variable 2 value'), {
+        target: { value: 'abc123' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+      await waitFor(() => {
+        expect(mockUpdateTestEnvironmentVars).toHaveBeenCalledWith(5, {
+          BASE_URL: 'https://staging.example.com',
+          TOKEN: 'abc123',
+        })
+      })
+    })
+
+    it('is read-only once confirmed', async () => {
+      mockFetchSprint.mockResolvedValue(
+        makeSprint({ has_test_environment_submission: true, requirements_locked: true }),
+      )
+      mockFetchTestEnvironment.mockResolvedValue(
+        makeTestEnv({
+          status: 'confirmed',
+          clarifying_question: null,
+          env_vars: { BASE_URL: 'https://staging.example.com' },
+        }),
+      )
+      renderPage()
+
+      await screen.findByText('Detected environment variables')
+      expect(screen.getByText('BASE_URL')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Edit variables' })).not.toBeInTheDocument()
+    })
   })
 })

@@ -38,6 +38,7 @@ const fakeSprint: SprintResponse = {
   requirements_locked: false,
   has_test_plans: false,
   test_plans_complete: false,
+  has_test_runs: false,
 }
 
 function renderPage() {
@@ -159,6 +160,45 @@ describe('SprintListPage', () => {
           active: false,
           has_test_environment_submission: true,
           has_test_plans: true,
+        },
+      ])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+      })
+      expect(screen.getByRole('link', { name: /sprint 1/i })).toHaveAttribute('href', '/sprints/1')
+    })
+
+    it('prefers the test-runs page when the sprint has runs', async () => {
+      mockFetchSprints.mockResolvedValue([
+        {
+          ...fakeSprint,
+          active: true,
+          has_test_environment_submission: true,
+          has_test_plans: true,
+          has_test_runs: true,
+        },
+      ])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+      })
+      expect(screen.getByRole('link', { name: /sprint 1/i })).toHaveAttribute(
+        'href',
+        '/sprints/1/test-runs',
+      )
+    })
+
+    it('ignores has_test_runs on finished sprints', async () => {
+      mockFetchSprints.mockResolvedValue([
+        {
+          ...fakeSprint,
+          active: false,
+          has_test_environment_submission: true,
+          has_test_plans: true,
+          has_test_runs: true,
         },
       ])
       renderPage()
