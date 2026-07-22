@@ -1,6 +1,6 @@
 # QA Agent
 
-Automated Quality Assurance analysis for source code and requirement documents. Register GitHub repositories, create sprints against them, and enter sprint requirements manually or by uploading a PRD document (`.md`, `.txt`, `.pdf`, `.docx`) that an LLM splits into requirements. An LLM checks each requirement for QA-clarity through a clarification loop; then describe and validate test environment access to lock the requirement set, and generate a reviewable test plan per requirement — the LLM reads repository files to ground test cases in the real code, and each plan goes through a feedback/edit loop until approved.
+Automated Quality Assurance analysis for source code and requirement documents. Register GitHub repositories, create sprints against them, and enter sprint requirements manually or by uploading a PRD document (`.md`, `.txt`, `.pdf`, `.docx`) that an LLM splits into requirements. An LLM checks each requirement for QA-clarity through a clarification loop; then describe and validate test environment access to lock the requirement set — the LLM also extracts the access details into editable environment variables — and generate a reviewable test plan per requirement — the LLM reads repository files to ground test cases in the real code, and each plan goes through a feedback/edit loop until approved. Finally, run the approved test plans: the LLM writes (or reuses) a Playwright script per test case, executes it against the confirmed environment, and self-heals script bugs automatically, reporting genuine application bugs as failures.
 
 ## Quick Start
 
@@ -9,8 +9,9 @@ Automated Quality Assurance analysis for source code and requirement documents. 
 - Python 3.10+
 - Node.js 22+
 - PostgreSQL with a `qa_agent` database (`createdb qa_agent`)
-- Redis (optional — required for requirement analysis and test-plan generation)
-- An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis, the test-environment check, and test-plan generation)
+- Redis (optional — required for requirement analysis, test-plan generation, and test execution)
+- An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis, the test-environment check, test-plan generation, and test execution)
+- For test execution: `playwright install chromium` on the worker host (one-time, after `pip install -e ".[dev]"`)
 
 ### Backend
 
@@ -37,7 +38,7 @@ npm install
 npm run dev
 ```
 
-### Worker (requires Redis)
+### Worker (requires Redis; `playwright install chromium` for test execution)
 
 ```bash
 # Start Redis, then in a separate terminal:

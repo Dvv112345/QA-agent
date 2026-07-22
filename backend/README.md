@@ -1,6 +1,6 @@
 # QA Agent Backend
 
-FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM — and confirming it locks the sprint's requirement set. Finally, an LLM generates a test plan per requirement on the same worker infrastructure, reading repository files through a bounded tool loop to ground the test cases; each draft plan goes through a capped feedback loop or uncapped direct edit until approved.
+FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM, which also extracts the access details into structured, editable environment variables — and confirming it locks the sprint's requirement set. Next, an LLM generates a test plan per requirement on the same worker infrastructure, reading repository files through a bounded tool loop to ground the test cases; each draft plan goes through a capped feedback loop or uncapped direct edit until approved. Finally, running the approved plans generates (or reuses) a Playwright script per test case, executes it in a subprocess against the confirmed environment, and self-heals script bugs via an LLM diagnosis loop — stopping and reporting a `failed` case as soon as a failure looks like a genuine application bug.
 
 ## Quick Start
 
@@ -21,9 +21,9 @@ python -m backend.main
 
 The API is served at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`. Tables are created automatically on startup.
 
-### Background worker (requirement analysis + test-plan generation)
+### Background worker (requirement analysis + test-plan generation + test execution)
 
-Requirement clarity analysis and test-plan generation run on RQ workers backed by Redis (both task types share the same queue and workers). The API works without them — rows just stay `pending` until a worker picks them up (a reconciler in the API process re-enqueues the backlog automatically when Redis recovers).
+Requirement clarity analysis, test-plan generation, and test execution run on RQ workers backed by Redis (all three task types share the same queue and workers). The API works without them — rows just stay `pending` until a worker picks them up (a reconciler in the API process re-enqueues the backlog automatically when Redis recovers).
 
 ```bash
 # Terminal 2 — start a worker (repo root; reads the same backend/.env)
@@ -35,7 +35,7 @@ python -m backend.worker
 python -m backend.scripts.clear_queue
 ```
 
-On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). The worker also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved.
+On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). The worker also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved. Test execution additionally needs the Playwright browser binary on the worker host — run `playwright install chromium` once (the `playwright` pip package alone doesn't include it).
 
 ## Environment Variables
 
@@ -66,6 +66,10 @@ On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). T
 | `TEST_PLAN_TOOL_ROUNDS`                                     | `8`                                                      | Max `read_file` LLM rounds per plan generation before the final answer is forced.                                               |
 | `TEST_PLAN_FILE_MAX_CHARS`                                  | `20000`                                                  | Per-file character cap for repo files fetched by the tool loop.                                                                 |
 | `TEST_PLAN_JOB_TIMEOUT`                                     | `900`                                                    | RQ job timeout for plan jobs — sized for a worst-case tool loop, unlike `JOB_TIMEOUT`.                                          |
+| `MAX_SCRIPT_FIX_ROUNDS`                                     | `3`                                                      | Additional self-heal attempts per test case before a stubborn `script_bug` verdict gives up (case ends `error`, not `failed`).  |
+| `TEST_EXECUTION_TOOL_ROUNDS`                                | `5`                                                      | Max `read_file` LLM rounds per test-script generation/diagnosis call.                                                           |
+| `SCRIPT_EXECUTION_TIMEOUT`                                  | `60`                                                     | Wall-clock timeout in seconds for one test-script subprocess run.                                                               |
+| `TEST_EXECUTION_JOB_TIMEOUT`                                | `3600`                                                   | RQ job timeout for test-execution jobs — sized for every case in a plan, each with multiple generate/execute/diagnose cycles.   |
 | `RECONCILER_INTERVAL`                                       | `30`                                                     | Seconds between reconciler ticks (re-enqueues lost/backlogged jobs).                                                            |
 | `HEARTBEAT_STALE_SECONDS`                                   | `180`                                                    | Age after which an `analyzing` heartbeat counts as a crashed worker; keep above `OPENAI_TIMEOUT`.                               |
 | `PENDING_JOB_STALE_SECONDS`                                 | `30`                                                     | Age after which a `pending` row's started RQ job counts as a crashed worker.                                                    |
@@ -165,11 +169,12 @@ Create a sprint linked to a repo. Refreshes repo metadata from GitHub and captur
   "has_test_environment_submission": false,
   "requirements_locked": false,
   "has_test_plans": false,
-  "test_plans_complete": false
+  "test_plans_complete": false,
+  "has_test_runs": false
 }
 ```
 
-The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `requirements_locked` (the test environment is confirmed, freezing the requirement set), `has_test_plans` (≥1 requirement has a test-plan row), and `test_plans_complete` (every requirement has an `approved` plan).
+The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `requirements_locked` (the test environment is confirmed, freezing the requirement set), `has_test_plans` (≥1 requirement has a test-plan row), `test_plans_complete` (every requirement has an `approved` plan), and `has_test_runs` (≥1 test run has been submitted).
 
 **Errors:** 404 (repo not found), 422 (empty name, deactivated repo, invalid README, or no README available), 502 (GitHub API failure).
 
@@ -183,7 +188,7 @@ Get a single sprint with its repo info. 404 if not found.
 
 #### `PATCH /api/sprints/{sprint_id}`
 
-Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements and `pending`/`generating` test plans are marked `failed` — nothing runs on a finished sprint.
+Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements, `pending`/`generating` test plans, and `pending`/`running` test executions are marked `failed` — nothing runs on a finished sprint.
 
 **Errors:** 404 (not found), 422 (already finished or `active` not `false`).
 
@@ -239,6 +244,8 @@ Remove a requirement (204). Allowed in **every** status, including `confirmed` a
 
 The second sprint stage. Once every requirement is `confirmed` (and at least one exists), the user describes how the test environment is accessed in free text; the LLM judges sufficiency **synchronously inside the request** (offloaded to a thread, bounded by `OPENAI_TIMEOUT`) — no queue or worker involved. One row per sprint. Lifecycle: `needs_info ⇄ ready → confirmed`.
 
+Whenever a check comes back sufficient, a second synchronous LLM call extracts the access details (URL, credentials, …) into a structured `{"NAME": "value"}` map (`env_vars` in the response) — cleared back to `null` if a later resubmission comes back insufficient. The extracted variables are directly editable (uncapped, no LLM call) any time before confirming.
+
 > **Plaintext by design:** the description may contain test credentials. It is stored unencrypted and sent to the LLM provider — prefer vault references over raw secrets.
 
 #### `GET /api/sprints/{sprint_id}/test-environment`
@@ -262,6 +269,7 @@ Create or update the access description (`{ "content": "..." }`) and run a fresh
   "revision_count": 0,
   "clarification_cap_reached": false,
   "requirements_stale": false,
+  "env_vars": { "BASE_URL": "https://staging.example.com" },
   "created_at": "2026-07-13T12:00:00Z",
   "updated_at": "2026-07-13T12:00:00Z"
 }
@@ -275,11 +283,17 @@ Answer the clarifying question (`{ "answer": "..." }`); the LLM rewrites the des
 
 **Errors:** 404, 422 (not `needs_info`, cap reached, empty answer, finished sprint, requirements incomplete), 502 (LLM failure).
 
+#### `PATCH /api/test-environment/{te_id}/env-vars`
+
+Directly correct the LLM-extracted variables — no LLM call, uncapped, doesn't touch `content`/`status`/`revision_count`. Body: `{ "variables": { "NAME": "value", … } }`.
+
+**Errors:** 404, 422 (finished sprint, already confirmed, empty `variables`, or a blank name/value).
+
 #### `POST /api/test-environment/{te_id}/confirm`
 
 Finalize the access description. Terminal — and it **locks the sprint's requirement set** (requirement create/delete return 422 afterwards).
 
-**Errors:** 404, 422 (not `ready`, finished sprint, requirements incomplete, or `requirements_stale` — a confirmed requirement changed since the last check; re-POST the current content to re-check first).
+**Errors:** 404, 422 (not `ready`, finished sprint, requirements incomplete, `requirements_stale` — a confirmed requirement changed since the last check; re-POST the current content to re-check first — or environment variables not yet extracted, which should be unreachable).
 
 ### Test Plans
 
@@ -343,6 +357,38 @@ Restart a `failed` plan (clears the error and retry counter; keeps pending feedb
 
 **Errors:** 404, 422 (not `failed`, finished sprint).
 
+### Test Execution
+
+The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), or `error` (self-heal exhausted, still looks like a script bug).
+
+> **Unsandboxed execution:** generated test scripts run as a plain subprocess with no sandboxing beyond a wall-clock timeout (`SCRIPT_EXECUTION_TIMEOUT`) — an accepted risk, not an oversight.
+
+#### `POST /api/sprints/{sprint_id}/test-runs`
+
+Create a run covering the selected requirements. Body: `{ "requirement_ids": [1, 2, …] }`. Creates one `TestRun` plus one `TestExecution` (and one `TestCaseExecution` per plan case, in position order) per requirement, enqueued best-effort.
+
+**Response** (201): `TestRunDetailResponse` — `{ "id", "sprint_id", "created_at", "status", "executions": [...] }`, where each execution is `{ "id", "requirement_id", "requirement_name", "status", "error", "cases": [...], "created_at", "updated_at" }` and each case is `{ "id", "test_case", "status", "attempts", "output", "error", "updated_at" }`.
+
+**Errors:** 404 (sprint), 422 (finished sprint, empty selection, a selected id isn't a confirmed requirement of this sprint, a selected requirement's plan isn't `approved`, or a selected requirement already has a run in progress — offending requirements are named in `detail`).
+
+#### `GET /api/sprints/{sprint_id}/test-runs`
+
+List a sprint's runs, newest first. Each row includes rolled-up `status`, `requirement_names`, and case counts (`total_cases`, `passed_cases`, `failed_cases`, `error_cases`). 404 on unknown sprint.
+
+#### `GET /api/test-runs/{run_id}`
+
+Fetch one run's full detail (same shape as the create response). 404 if not found.
+
+#### `GET /api/test-case-executions/{id}/script`
+
+Download the exact script that produced this case's result as a `.py` file attachment — credential-free by construction (scripts only ever read `os.environ["NAME"]`). 404 if the row or its script doesn't exist yet.
+
+#### `POST /api/test-executions/{execution_id}/restart`
+
+Restart a `failed` execution (uncapped). Case-level resumability is automatic — the task skips already-finalized cases and resumes from the first non-finalized one.
+
+**Errors:** 404, 422 (not `failed`, finished sprint).
+
 ### Authentication
 
 #### `POST /api/auth/verify`
@@ -390,23 +436,27 @@ backend/
   migrations.py        # Idempotent startup migrations (run after init_db)
   worker.py            # RQ worker CLI (python -m backend.worker)
   models/
-    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase
+    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase, TestRun, TestExecution, TestCaseExecution
     types.py           # Request/response types
   routes/
     auth.py            # POST /api/auth/verify, GET /api/auth/check
     repos.py           # Repo registration, listing, deactivation, README status
     sprints.py         # Sprint create/list/get/finish
     requirements.py    # Requirement CRUD, PRD upload/split + clarification/confirm/restart
-    test_environment.py # Test environment get/submit/answer/confirm (synchronous LLM check)
+    test_environment.py # Test environment get/submit/answer/confirm (synchronous LLM check) + env-var extraction/edit
     test_plans.py      # Test plan generate/list/feedback/edit/approve/restart
+    test_execution.py  # Test run create/list/detail, script download, restart
   services/
     storage.py         # Conditional README/PRD persistence (STORE_OFFLINE)
     queue.py           # RQ queue service (graceful degradation when Redis is down)
-    llm.py             # OpenAI-SDK client: clarity/test-env checks, PRD split + test-plan tool loop
-    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans)
+    llm.py             # OpenAI-SDK client: clarity/test-env checks, env-var extraction, PRD split, test-plan + test-script tool loops
+    llm_prompts.py      # System prompts, prompt-assembly helpers, TestCaseLike, read_file tool schema
+    script_runner.py    # Subprocess execution of generated test scripts (no sandboxing beyond a timeout)
+    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions)
   tasks/
     analyze_requirement.py  # The analysis task executed by the worker
     generate_test_plan.py   # The plan-generation task (bounded read_file tool loop)
+    execute_test.py         # The test-execution task (per-case self-heal loop)
   scripts/
     clear_queue.py     # Queue maintenance CLI (python -m backend.scripts.clear_queue)
     reset_db.py        # Drop + recreate all tables (python -m backend.scripts.reset_db)
@@ -424,6 +474,7 @@ backend/
 
 - Python 3.10+
 - PostgreSQL
-- Redis (for requirement analysis and test-plan generation; optional otherwise)
-- An LLM API key (`OPENAI_API_KEY` — for requirement analysis, the test-environment check, and test-plan generation)
+- Redis (for requirement analysis, test-plan generation, and test execution; optional otherwise)
+- An LLM API key (`OPENAI_API_KEY` — for requirement analysis, the test-environment check, test-plan generation, and test execution)
+- For test execution: `playwright install chromium` on the worker host (one-time)
 - Dependencies declared in `pyproject.toml` (install with `pip install -e ".[dev]"` from the repo root)

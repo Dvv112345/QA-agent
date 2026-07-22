@@ -21,6 +21,8 @@ Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
 | `/sprints/:id`                  | `SprintDetailPage`    | Enter requirements manually or upload a PRD to split into requirements; follow analysis via polling, answer/confirm |
 | `/sprints/:id/test-environment` | `TestEnvironmentPage` | Describe test environment access, answer clarifications, confirm                                                    |
 | `/sprints/:id/test-plans`       | `TestPlansPage`       | Generate, review, give feedback on, edit, and approve test plans                                                    |
+| `/sprints/:id/test-runs`        | `TestRunsPage`        | List test runs; start a new run against approved plans                                                              |
+| `/sprints/:id/test-runs/:runId` | `TestRunDetailPage`   | Per-requirement, per-case execution results; download scripts; restart failed executions                            |
 | `/repos`                        | `RepoListPage`        | Registered repos; deactivate unused ones                                                                            |
 
 ## Environment Variables
