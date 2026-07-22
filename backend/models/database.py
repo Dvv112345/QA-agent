@@ -1,5 +1,6 @@
 """Definition of database models"""
 
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
@@ -47,6 +48,7 @@ class Sprint(SQLModel, table=True):
     test_environment: Optional["TestEnvironmentAccess"] = Relationship(
         back_populates="sprint", sa_relationship_kwargs={"uselist": False}
     )
+    test_runs: list["TestRun"] = Relationship(back_populates="sprint")
 
     @property
     def requirements_complete(self) -> bool:
@@ -80,6 +82,11 @@ class Sprint(SQLModel, table=True):
             r.test_plan is not None and r.test_plan.status == TestPlanStatus.APPROVED
             for r in self.requirements
         )
+
+    @property
+    def has_test_runs(self) -> bool:
+        """Whether at least one test run has been submitted for this sprint."""
+        return any(self.test_runs)
 
 
 class RequirementStatus(str, Enum):
@@ -126,6 +133,7 @@ class Requirement(SQLModel, table=True):
     test_plan: Optional["TestPlan"] = Relationship(
         back_populates="requirement", sa_relationship_kwargs={"uselist": False}
     )
+    test_executions: list["TestExecution"] = Relationship(back_populates="requirement")
 
     @property
     def clarification_cap_reached(self) -> bool:
@@ -159,6 +167,11 @@ class TestEnvironmentAccess(SQLModel, table=True):
     status: str = Field(default=TestEnvironmentStatus.NEEDS_INFO)
     clarifying_question: str | None = Field(default=None)
     revision_count: int = Field(default=0)
+    # JSON-serialized {"NAME": "value", ...} — extracted from `content` once
+    # the sufficiency check judges it sufficient; cleared to None if a later
+    # resubmission comes back insufficient (never left describing stale
+    # content). The only artifact in this feature holding literal secrets.
+    env_vars_json: str | None = Field(default=None)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -172,6 +185,11 @@ class TestEnvironmentAccess(SQLModel, table=True):
     def clarification_cap_reached(self) -> bool:
         """Whether the answer/revise rounds are exhausted (direct edit only)."""
         return self.revision_count >= MAX_TEST_ENV_REVISION_ROUNDS
+
+    @property
+    def env_vars(self) -> dict[str, str] | None:
+        """Decoded env_vars_json — the single accessor for the extracted variables."""
+        return json.loads(self.env_vars_json) if self.env_vars_json else None
 
     @property
     def requirements_stale(self) -> bool:
@@ -279,5 +297,140 @@ class TestCase(SQLModel, table=True):
     expected_result: str
     case_type: str
     priority: str  # TestCasePriority value
+    # Cached Playwright script, reused across runs. Overwritten whenever a
+    # run ends PASSED or FAILED (app bug) — never on ERROR (self-heal
+    # exhausted, still looks broken; a future run should regenerate fresh).
+    script: str | None = Field(default=None)
 
     test_plan: Optional["TestPlan"] = Relationship(back_populates="cases")
+
+
+class TestExecutionStatus(str, Enum):
+    """Lifecycle status of one requirement's test-case run within a TestRun."""
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TestCaseExecutionStatus(str, Enum):
+    """Outcome of a single test case within a TestExecution."""
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    PENDING = "pending"
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+    ERROR = "error"
+
+
+class TestRun(SQLModel, table=True):
+    """One submission ("Run new test") covering one or more requirements.
+
+    Carries no worker-job machinery of its own — status and requirement
+    names are derived from its executions on every read, the same spirit
+    as Sprint's computed flags (Convention #10), applied one level down.
+    """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Sprint | None = Relationship(back_populates="test_runs")
+    executions: list["TestExecution"] = Relationship(
+        back_populates="test_run",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "TestExecution.id"},
+    )
+
+    @property
+    def status(self) -> str:
+        """Rolled-up status: running while any execution is in progress, else
+        failed if any execution failed, else completed."""
+        if any(
+            e.status in (TestExecutionStatus.PENDING, TestExecutionStatus.RUNNING)
+            for e in self.executions
+        ):
+            return TestExecutionStatus.RUNNING
+        if any(e.status == TestExecutionStatus.FAILED for e in self.executions):
+            return TestExecutionStatus.FAILED
+        return TestExecutionStatus.COMPLETED
+
+    @property
+    def requirement_names(self) -> list[str]:
+        """Names of the requirements covered by this run, in execution order."""
+        return [e.requirement_name for e in self.executions]
+
+
+class TestExecution(SQLModel, table=True):
+    """The row an RQ job operates on: one requirement's cases within a run.
+
+    Same machinery columns as ``Requirement``/``TestPlan``
+    (status/retry_count/job_id/last_heartbeat/error) — no
+    ``pending_feedback``-equivalent field, since resumability is derived
+    entirely from its ``TestCaseExecution`` rows' own statuses.
+    """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    id: int | None = Field(default=None, primary_key=True)
+    test_run_id: int = Field(foreign_key="testrun.id", index=True)
+    requirement_id: int = Field(foreign_key="requirement.id", index=True)
+    status: str = Field(default=TestExecutionStatus.PENDING)
+    retry_count: int = Field(default=0)  # automatic re-enqueues (reconciler/task)
+    job_id: str | None = Field(default=None)  # RQ job id — reconciler dedup guard
+    last_heartbeat: datetime | None = Field(default=None)  # worker liveness while running
+    error: str | None = Field(default=None)  # user-facing summary when failed
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    test_run: Optional["TestRun"] = Relationship(back_populates="executions")
+    requirement: Optional["Requirement"] = Relationship(back_populates="test_executions")
+    cases: list["TestCaseExecution"] = Relationship(
+        back_populates="test_execution",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "TestCaseExecution.id",
+        },
+    )
+
+    @property
+    def requirement_name(self) -> str:
+        """Name of the requirement this execution covers (serialized for cards)."""
+        return self.requirement.name if self.requirement is not None else ""
+
+
+class TestCaseExecution(SQLModel, table=True):
+    """Result of running one test case within a TestExecution.
+
+    Stores only the final attempt (script/output/attempts) — intermediate
+    failed self-heal attempts aren't user-facing.
+    """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+    id: int | None = Field(default=None, primary_key=True)
+    test_execution_id: int = Field(foreign_key="testexecution.id", index=True)
+    test_case_id: int = Field(foreign_key="testcase.id", index=True)
+    status: str = Field(default=TestCaseExecutionStatus.PENDING)
+    attempts: int = Field(default=0)
+    output: str | None = Field(default=None)
+    error: str | None = Field(default=None)
+    script_snapshot: str | None = Field(default=None)  # credential-free, downloadable as-is
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    test_execution: Optional["TestExecution"] = Relationship(back_populates="cases")
+    test_case: Optional["TestCase"] = Relationship()

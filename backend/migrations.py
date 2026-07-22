@@ -32,7 +32,37 @@ def _add_requirement_from_prd(engine: Engine) -> None:
     logger.info("Migration applied: requirement.from_prd column added")
 
 
-_MIGRATIONS = [_add_requirement_from_prd]
+def _add_testcase_script(engine: Engine) -> None:
+    """Add ``testcase.script`` (cached generated test script) when missing."""
+    inspector = inspect(engine)
+    if "testcase" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("testcase")}
+    if "script" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE testcase ADD COLUMN script TEXT"))
+    logger.info("Migration applied: testcase.script column added")
+
+
+def _add_test_environment_access_env_vars_json(engine: Engine) -> None:
+    """Add ``testenvironmentaccess.env_vars_json`` (extracted access vars) when missing."""
+    inspector = inspect(engine)
+    if "testenvironmentaccess" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("testenvironmentaccess")}
+    if "env_vars_json" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE testenvironmentaccess ADD COLUMN env_vars_json TEXT"))
+    logger.info("Migration applied: testenvironmentaccess.env_vars_json column added")
+
+
+_MIGRATIONS = [
+    _add_requirement_from_prd,
+    _add_testcase_script,
+    _add_test_environment_access_env_vars_json,
+]
 
 
 def run_migrations(engine: Engine | None = None) -> None:

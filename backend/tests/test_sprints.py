@@ -897,3 +897,155 @@ class TestSprintTestPlanFlags:
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_plans"] is True
             assert row["test_plans_complete"] is True
+
+
+# == Test execution models + Sprint flag ================================
+
+
+def _seed_test_run(db_session, sprint, **kwargs):
+    from backend.models.database import TestRun
+
+    run = TestRun(sprint_id=sprint.id, **kwargs)
+    db_session.add(run)
+    db_session.commit()
+    db_session.refresh(run)
+    return run
+
+
+def _seed_test_execution(db_session, test_run, requirement, status=None, **kwargs):
+    from backend.models.database import TestExecution, TestExecutionStatus
+
+    execution = TestExecution(
+        test_run_id=test_run.id,
+        requirement_id=requirement.id,
+        status=status or TestExecutionStatus.PENDING,
+        **kwargs,
+    )
+    db_session.add(execution)
+    db_session.commit()
+    db_session.refresh(execution)
+    return execution
+
+
+def _seed_test_case_execution(db_session, test_execution, test_case, status=None, **kwargs):
+    from backend.models.database import TestCaseExecution, TestCaseExecutionStatus
+
+    case_execution = TestCaseExecution(
+        test_execution_id=test_execution.id,
+        test_case_id=test_case.id,
+        status=status or TestCaseExecutionStatus.PENDING,
+        **kwargs,
+    )
+    db_session.add(case_execution)
+    db_session.commit()
+    db_session.refresh(case_execution)
+    return case_execution
+
+
+class TestTestRunModelProperties:
+    """Unit tests for TestRun.status rollup and requirement_names."""
+
+    def test_status_completed_with_no_executions(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        run = _seed_test_run(db_session, sprint)
+
+        assert run.status == "completed"
+        assert run.requirement_names == []
+
+    @pytest.mark.parametrize(
+        ("statuses", "expected"),
+        [
+            (["completed", "completed"], "completed"),
+            (["completed", "failed"], "failed"),
+            (["pending", "completed"], "running"),
+            (["running", "failed"], "running"),
+            (["failed", "pending"], "running"),
+        ],
+    )
+    def test_status_rollup(self, db_session, statuses, expected):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        run = _seed_test_run(db_session, sprint)
+        for i, status in enumerate(statuses):
+            requirement = _seed_requirement(db_session, sprint, name=f"Req {i}")
+            _seed_test_execution(db_session, run, requirement, status=status)
+
+        db_session.refresh(run)
+        assert run.status == expected
+
+    def test_requirement_names_ordering(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        run = _seed_test_run(db_session, sprint)
+        first = _seed_requirement(db_session, sprint, name="Login")
+        second = _seed_requirement(db_session, sprint, name="Search")
+        _seed_test_execution(db_session, run, first)
+        _seed_test_execution(db_session, run, second)
+
+        db_session.refresh(run)
+        assert run.requirement_names == ["Login", "Search"]
+
+    def test_deleting_run_cascades_to_executions_and_cases(self, db_session):
+        from sqlmodel import select
+
+        from backend.models.database import TestCaseExecution, TestExecution, TestRun
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint)
+        plan = _seed_test_plan(db_session, requirement)
+        case = _seed_test_case(db_session, plan)
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(db_session, run, requirement)
+        _seed_test_case_execution(db_session, execution, case)
+
+        db_session.delete(run)
+        db_session.commit()
+
+        assert db_session.get(TestRun, run.id) is None
+        assert db_session.exec(select(TestExecution)).all() == []
+        assert db_session.exec(select(TestCaseExecution)).all() == []
+
+
+class TestSprintTestRunFlag:
+    """`has_test_runs` — model value and serialization."""
+
+    def test_false_with_no_runs(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        assert sprint.has_test_runs is False
+
+    def test_true_with_one_run(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_test_run(db_session, sprint)
+
+        db_session.refresh(sprint)
+        assert sprint.has_test_runs is True
+
+    @pytest.mark.asyncio
+    async def test_flag_serialized_on_list_and_detail(self, async_client, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            assert resp.status_code == 200
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_test_runs"] is False
+
+        _seed_test_run(db_session, sprint)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_test_runs"] is True

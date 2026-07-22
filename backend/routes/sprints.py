@@ -18,6 +18,7 @@ from backend.models.database import (
     Sprint,
     TestPlan,
     TestPlanStatus,
+    TestRun,
 )
 from backend.models.types import (
     SprintResponse,
@@ -185,6 +186,7 @@ async def list_sprints(
             .options(
                 selectinload(Sprint.requirements).selectinload(Requirement.test_plan),
                 selectinload(Sprint.test_environment),
+                selectinload(Sprint.test_runs).selectinload(TestRun.executions),
             )
             .order_by(Sprint.active.desc(), Sprint.created_at.desc())  # noqa: E712
             .offset(offset)

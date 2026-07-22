@@ -116,6 +116,20 @@ HEARTBEAT_STALE_SECONDS: int = _get_int("HEARTBEAT_STALE_SECONDS", 180)
 # shorter than HEARTBEAT_STALE_SECONDS (which tolerates a slow LLM call).
 PENDING_JOB_STALE_SECONDS: int = _get_int("PENDING_JOB_STALE_SECONDS", 30)
 
+# ── Test execution ────────────────────────────────────────────────────
+# Additional LLM-authored fix attempts per test case before a stubborn
+# script-bug verdict is given up on (marked "error", not "failed").
+MAX_SCRIPT_FIX_ROUNDS: int = _get_int("MAX_SCRIPT_FIX_ROUNDS", 3)
+# Max read_file tool rounds per test-script generation/diagnosis call
+# before a forced final answer. Smaller than TEST_PLAN_TOOL_ROUNDS — a
+# script targets one concrete test case, not a whole plan.
+TEST_EXECUTION_TOOL_ROUNDS: int = _get_int("TEST_EXECUTION_TOOL_ROUNDS", 5)
+# Wall-clock timeout (seconds) for a single test-script subprocess run.
+SCRIPT_EXECUTION_TIMEOUT: int = _get_int("SCRIPT_EXECUTION_TIMEOUT", 60)
+# RQ job_timeout for test-execution jobs. Must cover many cases, each with
+# up to (1 + MAX_SCRIPT_FIX_ROUNDS) generate/execute/diagnose cycles.
+TEST_EXECUTION_JOB_TIMEOUT: int = _get_int("TEST_EXECUTION_JOB_TIMEOUT", 3600)
+
 # ── LLM (OpenAI-compatible; DeepSeek by default) ─────────────────────
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL: str | None = os.environ.get("OPENAI_BASE_URL") or None

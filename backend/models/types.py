@@ -56,6 +56,7 @@ class SprintResponse(SQLModel):
     requirements_locked: bool = False
     has_test_plans: bool = False
     test_plans_complete: bool = False
+    has_test_runs: bool = False
 
 
 class SprintUpdateRequest(SQLModel):
@@ -166,3 +167,51 @@ class TestPlanEditRequest(SQLModel):
     complexity: str
     summary: str
     cases: list[TestCaseInput]
+
+
+# ── Test execution ────────────────────────────────────────────────────
+
+
+class TestCaseExecutionResponse(SQLModel):
+    id: int
+    test_case: TestCaseResponse
+    status: str
+    attempts: int
+    output: str | None = None
+    error: str | None = None
+    updated_at: datetime
+
+
+class TestExecutionResponse(SQLModel):
+    id: int
+    requirement_id: int
+    requirement_name: str
+    status: str
+    error: str | None = None
+    cases: list[TestCaseExecutionResponse] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class TestRunResponse(SQLModel):
+    id: int
+    sprint_id: int
+    created_at: datetime
+    status: str
+    requirement_names: list[str]
+    total_cases: int
+    passed_cases: int
+    failed_cases: int
+    error_cases: int
+
+
+class TestRunDetailResponse(SQLModel):
+    id: int
+    sprint_id: int
+    created_at: datetime
+    status: str
+    executions: list[TestExecutionResponse] = []
+
+
+class TestRunCreateRequest(SQLModel):
+    requirement_ids: list[int]
