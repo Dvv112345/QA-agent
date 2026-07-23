@@ -543,6 +543,93 @@ class TestApprove:
         ).status_code == 422
 
 
+# ── POST /api/sprints/{id}/test-plans/approve-all ────────────────────
+
+
+class TestApproveAll:
+    @pytest.mark.asyncio
+    async def test_approves_draft_plans_only(self, async_client, db_session):
+        sprint, requirements = _seed_locked_sprint(
+            db_session, requirement_names=("A", "B", "C", "D")
+        )
+        draft = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.DRAFT)
+        pending = _seed_test_plan(db_session, requirements[1], status=TestPlanStatus.PENDING)
+        approved = _seed_test_plan(db_session, requirements[2], status=TestPlanStatus.APPROVED)
+        failed = _seed_test_plan(db_session, requirements[3], status=TestPlanStatus.FAILED)
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/approve-all")
+
+        assert resp.status_code == 200
+        statuses = {row["id"]: row["status"] for row in resp.json()}
+        assert statuses[draft.id] == "approved"
+        assert statuses[pending.id] == "pending"
+        assert statuses[approved.id] == "approved"
+        assert statuses[failed.id] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_returns_full_list_with_cases(self, async_client, db_session):
+        sprint, requirements = _seed_locked_sprint(db_session, requirement_names=("Login",))
+        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.DRAFT)
+        _seed_test_case(db_session, plan, position=0, title="Valid login")
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/approve-all")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["status"] == "approved"
+        assert [case["title"] for case in data[0]["cases"]] == ["Valid login"]
+
+    @pytest.mark.asyncio
+    async def test_bumps_updated_at(self, async_client, db_session):
+        sprint, requirements = _seed_locked_sprint(db_session, requirement_names=("Login",))
+        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.DRAFT)
+        before = plan.updated_at
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/approve-all")
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["updated_at"] >= before.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_404_unknown_sprint(self, async_client):
+        resp = await async_client.post("/api/sprints/99999/test-plans/approve-all")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_422_finished_sprint(self, async_client, db_session):
+        sprint, requirements = _seed_locked_sprint(db_session, active=False)
+        _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.DRAFT)
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/approve-all")
+
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_noop_when_no_draft_plans(self, async_client, db_session):
+        sprint, requirements = _seed_locked_sprint(db_session, requirement_names=("Login",))
+        _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.PENDING)
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/approve-all")
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_scoped_to_sprint(self, async_client, db_session):
+        sprint, _ = _seed_locked_sprint(db_session, requirement_names=("Login",))
+        other_sprint, other_requirements = _seed_locked_sprint(
+            db_session, requirement_names=("Other",)
+        )
+        other_plan = _seed_test_plan(db_session, other_requirements[0], status=TestPlanStatus.DRAFT)
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/approve-all")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+        assert _reload(db_session, other_plan.id).status == TestPlanStatus.DRAFT
+
+
 # ── POST /api/test-plans/{id}/restart ────────────────────────────────
 
 

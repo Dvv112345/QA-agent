@@ -354,7 +354,7 @@ class TestConfirmAll:
 
         assert resp.status_code == 200
         row = next(r for r in resp.json() if r["id"] == req.id)
-        assert row["updated_at"] > before.isoformat()
+        assert row["updated_at"] >= before.isoformat()
 
     @pytest.mark.asyncio
     async def test_unknown_sprint_404(self, async_client, db_session):

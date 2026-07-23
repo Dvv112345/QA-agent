@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import selectinload
-from sqlmodel import Session, select
+from sqlmodel import Session, select, update
 
 from backend.database import get_session
 from backend.models.database import (
@@ -256,6 +256,43 @@ async def approve_test_plan(
     session.commit()
     session.refresh(plan)
     return plan
+
+
+@router.post(
+    "/sprints/{sprint_id}/test-plans/approve-all",
+    response_model=list[TestPlanResponse],
+)
+async def approve_all_test_plans(
+    sprint_id: int,
+    session: Session = Depends(get_session),
+) -> list[TestPlan]:
+    """Approve every draft plan in the sprint (terminal, same as single approve).
+
+    Ineligible plans (still pending/generating, already approved, failed, …)
+    are left untouched — same idempotent-skip semantics as ``generate_test_plans``.
+    """
+    sprint = _get_sprint_or_404(session, sprint_id)
+    _ensure_sprint_active(sprint)
+
+    plan_ids = list(
+        session.exec(
+            select(TestPlan.id)
+            .join(Requirement, TestPlan.requirement_id == Requirement.id)  # type: ignore[arg-type]
+            .where(
+                Requirement.sprint_id == sprint_id,
+                TestPlan.status == TestPlanStatus.DRAFT,
+            )
+        ).all()
+    )
+    if plan_ids:
+        session.exec(
+            update(TestPlan)
+            .where(TestPlan.id.in_(plan_ids))  # type: ignore[attr-defined]
+            .values(status=TestPlanStatus.APPROVED, updated_at=datetime.now(timezone.utc))
+        )
+        session.commit()
+
+    return _sprint_plans(session, sprint_id)
 
 
 @router.post("/test-plans/{plan_id}/restart", response_model=TestPlanResponse)
