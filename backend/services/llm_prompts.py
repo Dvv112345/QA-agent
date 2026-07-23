@@ -253,7 +253,8 @@ TEST_SCRIPT_SYSTEM_PROMPT = (
     "the end: wrap the test steps (and any precondition setup) so cleanup "
     "always runs, pass or fail, using try/finally — a cleanup failure must be "
     "logged (printed) but must never change the exit code that reflects the "
-    "test steps' own outcome. Respond with a JSON object of the shape "
+    "test steps' own outcome. The script should not create new artifact in the "
+    "directory it runs in. Respond with a JSON object of the shape "
     '{"script": string}.'
 )
 
