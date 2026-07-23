@@ -295,6 +295,104 @@ class TestConfirmRequirement:
         assert resp.status_code == 422
 
 
+# ── POST /api/sprints/{id}/requirements/confirm-all ──────────────────
+
+
+class TestConfirmAll:
+    @pytest.mark.asyncio
+    async def test_confirms_ready_and_needs_clarification_only(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        ready = _seed_requirement(db_session, sprint, status=RequirementStatus.READY, name="A")
+        needs_clarification = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.NEEDS_CLARIFICATION,
+            name="B",
+            clarifying_question="Which users?",
+        )
+        pending = _seed_requirement(db_session, sprint, status=RequirementStatus.PENDING, name="C")
+        analyzing = _seed_requirement(
+            db_session, sprint, status=RequirementStatus.ANALYZING, name="D"
+        )
+        confirmed = _seed_requirement(
+            db_session, sprint, status=RequirementStatus.CONFIRMED, name="E"
+        )
+        failed = _seed_requirement(
+            db_session, sprint, status=RequirementStatus.FAILED, name="F", error="boom"
+        )
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/requirements/confirm-all")
+
+        assert resp.status_code == 200
+        statuses = {row["id"]: row["status"] for row in resp.json()}
+        assert statuses[ready.id] == "confirmed"
+        assert statuses[needs_clarification.id] == "confirmed"
+        assert statuses[pending.id] == "pending"
+        assert statuses[analyzing.id] == "analyzing"
+        assert statuses[confirmed.id] == "confirmed"
+        assert statuses[failed.id] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_returns_full_sprint_list_in_creation_order(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        first = _seed_requirement(db_session, sprint, status=RequirementStatus.READY, name="A")
+        second = _seed_requirement(db_session, sprint, status=RequirementStatus.PENDING, name="B")
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/requirements/confirm-all")
+
+        assert resp.status_code == 200
+        ids = [row["id"] for row in resp.json()]
+        assert ids == [first.id, second.id]
+
+    @pytest.mark.asyncio
+    async def test_bumps_updated_at(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, status=RequirementStatus.READY)
+        before = req.updated_at
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/requirements/confirm-all")
+
+        assert resp.status_code == 200
+        row = next(r for r in resp.json() if r["id"] == req.id)
+        assert row["updated_at"] > before.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_unknown_sprint_404(self, async_client, db_session):
+        resp = await async_client.post("/api/sprints/99999/requirements/confirm-all")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_inactive_sprint_422(self, async_client, db_session):
+        sprint = _seed_sprint(db_session, active=False)
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/requirements/confirm-all")
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_noop_when_nothing_eligible(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.PENDING)
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/requirements/confirm-all")
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_scoped_to_sprint(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        other_sprint = _seed_sprint(db_session)
+        other_req = _seed_requirement(
+            db_session, other_sprint, status=RequirementStatus.READY, name="Other"
+        )
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/requirements/confirm-all")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+        db_session.refresh(other_req)
+        assert other_req.status == RequirementStatus.READY
+
+
 # ── PATCH /api/requirements/{id} ─────────────────────────────────────
 
 

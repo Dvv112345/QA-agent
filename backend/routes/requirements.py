@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, select, update
 
 from backend.config import MAX_PRD_REQUIREMENTS, MAX_UPLOAD_SIZE_MB, PRD_MAX_CHARS
 from backend.database import get_session
@@ -241,6 +241,43 @@ async def list_requirements(
 ) -> list[Requirement]:
     """List a sprint's requirements — this is the polling endpoint (plain DB read)."""
     _get_sprint_or_404(session, sprint_id)
+    return list(
+        session.exec(
+            select(Requirement)
+            .where(Requirement.sprint_id == sprint_id)
+            .order_by(Requirement.created_at, Requirement.id)
+        ).all()
+    )
+
+
+@router.post(
+    "/sprints/{sprint_id}/requirements/confirm-all",
+    response_model=list[RequirementResponse],
+)
+async def confirm_all_requirements(
+    sprint_id: int,
+    session: Session = Depends(get_session),
+) -> list[Requirement]:
+    """Confirm every requirement currently eligible (ready or needs_clarification).
+
+    Ineligible rows (still analyzing, already confirmed, failed, …) are left
+    untouched — same idempotent-skip semantics as ``generate_test_plans``.
+    """
+    sprint = _get_sprint_or_404(session, sprint_id)
+    _ensure_sprint_active(sprint)
+
+    session.exec(
+        update(Requirement)
+        .where(
+            Requirement.sprint_id == sprint_id,
+            Requirement.status.in_(  # type: ignore[attr-defined]
+                [RequirementStatus.NEEDS_CLARIFICATION, RequirementStatus.READY]
+            ),
+        )
+        .values(status=RequirementStatus.CONFIRMED, updated_at=datetime.now(timezone.utc))
+    )
+    session.commit()
+
     return list(
         session.exec(
             select(Requirement)
