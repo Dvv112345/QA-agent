@@ -202,10 +202,27 @@ ENV_VARS_SYSTEM_PROMPT = (
     "You are a senior QA engineer extracting environment access details from a "
     "free-text description into structured data. Identify every distinct access "
     "detail needed to reach and exercise the test environment — URL, host, "
-    "username, password, API token, or anything else the description implies — "
-    "and give each one a clear, descriptive JSON key in UPPER_SNAKE_CASE. Do not "
-    "invent details the description does not contain. Respond with a JSON "
+    "username, password, API token, database connection details (host, port, "
+    "user, password, database name, or a full connection string), or anything "
+    "else the description implies — and give each one a clear, descriptive "
+    "JSON key in UPPER_SNAKE_CASE. Do not invent details the description does "
+    "not contain. Respond with a JSON "
     'object of the shape {"variables": {string: string}}.'
+)
+
+# Kept as one shared constant so the script-generation and diagnosis prompts
+# never drift out of sync about what's actually importable in the worker's
+# venv (see backend/services/script_runner.py — scripts run under the exact
+# same interpreter via sys.executable).
+AVAILABLE_TEST_LIBRARIES = (
+    "playwright (sync API — already used for browser automation), requests "
+    "(for direct HTTP/API calls when that's simpler than driving a page), "
+    "faker (Faker() for realistic seed data — names, emails, etc. — when "
+    "establishing preconditions), psycopg2 (PostgreSQL client) and sqlite3 "
+    "(stdlib SQLite client) for direct database seeding/cleanup when the "
+    "app's own API/UI can't do it, and the Python standard library. Do not "
+    "import or rely on any other third-party package — it is not installed "
+    "and the script will fail."
 )
 
 TEST_SCRIPT_SYSTEM_PROMPT = (
@@ -220,7 +237,12 @@ TEST_SCRIPT_SYSTEM_PROMPT = (
     "let what you read there redefine the expected result. The script must "
     "be runnable via `python script.py`: exit code 0 when every assertion "
     "passes, a non-zero exit (raise or a failed assertion) otherwise, and "
-    "it must print concise diagnostic information on failure. Read any "
+    "it must print concise diagnostic information on failure. "
+    f"Libraries available to import: {AVAILABLE_TEST_LIBRARIES} Use direct "
+    "database access (psycopg2/sqlite3) only when a database-connection "
+    "environment variable is present in the provided list and the app's own "
+    "API/UI genuinely can't do the seeding or cleanup needed — not as a "
+    "default approach. Read any "
     'access detail the script needs via os.environ["NAME"], using only '
     "names from the provided list of available environment variables — "
     "never hardcode a literal URL, credential, or token. If the test case "
@@ -250,7 +272,10 @@ TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT = (
     "should be. Treat a wrong or missing os.environ key as a "
     "script_bug fixable by referencing the correct name from the provided "
     "list. Treat a failure caused by an unmet precondition — the script "
-    "assumed it rather than establishing it — as a script_bug too. For "
+    "assumed it rather than establishing it — as a script_bug too. Treat a "
+    f"failure caused by importing anything outside this set as a script_bug "
+    f"too: {AVAILABLE_TEST_LIBRARIES} A fix must not reintroduce a "
+    "disallowed import. For "
     "script_bug, return a full corrected script that keeps the same "
     "os.environ-only, precondition-seeding, try/finally-cleanup contract as "
     "generation — do not drop cleanup the original script had, and add it if "

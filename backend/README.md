@@ -35,7 +35,9 @@ python -m backend.worker
 python -m backend.scripts.clear_queue
 ```
 
-On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). The worker also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved. Test execution additionally needs the Playwright browser binary on the worker host — run `playwright install chromium` once (the `playwright` pip package alone doesn't include it).
+On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). The worker also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved. Test execution additionally needs the Playwright browser binary on the worker host — run `playwright install chromium` once (the `playwright` pip package alone doesn't include it). If you use conda, always start the worker (`python -m backend.worker`) from an **activated** environment — generated test scripts run via `subprocess.run([sys.executable, ...])`, which guarantees the same interpreter/site-packages regardless of activation state, but inherits the worker's own `os.environ` unchanged, so PATH-dependent behavior is only as correct as however the worker process itself was started.
+
+Generated test scripts may import Playwright, `requests`, `Faker`, `psycopg2` (PostgreSQL), `sqlite3`, and the Python standard library — this set is advertised to the LLM in the script-generation and diagnosis prompts (`llm_prompts.AVAILABLE_TEST_LIBRARIES`) so it doesn't guess at unavailable packages.
 
 ## Environment Variables
 
@@ -359,7 +361,7 @@ Restart a `failed` plan (clears the error and retry counter; keeps pending feedb
 
 ### Test Execution
 
-The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), or `error` (self-heal exhausted, still looks like a script bug).
+The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), or `error` (self-heal exhausted, still looks like a script bug). Generated scripts may use Playwright, `requests`, `Faker`, `psycopg2` (Postgres), `sqlite3`, or the standard library — nothing else, since only those are installed in the worker's own venv that scripts execute under.
 
 > **Unsandboxed execution:** generated test scripts run as a plain subprocess with no sandboxing beyond a wall-clock timeout (`SCRIPT_EXECUTION_TIMEOUT`) — an accepted risk, not an oversight.
 
@@ -478,3 +480,4 @@ backend/
 - An LLM API key (`OPENAI_API_KEY` — for requirement analysis, the test-environment check, test-plan generation, and test execution)
 - For test execution: `playwright install chromium` on the worker host (one-time)
 - Dependencies declared in `pyproject.toml` (install with `pip install -e ".[dev]"` from the repo root)
+- If using conda, start `python -m backend.worker` from an **activated** environment — generated test scripts inherit the worker process's own environment as-is, so an unactivated worker means an unactivated (and potentially broken) script environment too

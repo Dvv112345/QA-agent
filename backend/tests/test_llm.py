@@ -918,3 +918,21 @@ class TestScriptPromptsContainSafetyInstructions:
         assert "precondition" in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT.lower()
         assert "try/finally" in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
         assert "os.environ" in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+
+class TestScriptPromptsAdvertiseAvailableLibraries:
+    """Static assertions — the curated library set must reach both prompts,
+    identically, so generation and diagnosis never drift apart on what's
+    actually importable in the worker's venv."""
+
+    @pytest.mark.parametrize("library", ["requests", "faker", "psycopg2", "sqlite3"])
+    def test_generation_prompt_lists_libraries(self, library):
+        from backend.services.llm_prompts import TEST_SCRIPT_SYSTEM_PROMPT
+
+        assert library in TEST_SCRIPT_SYSTEM_PROMPT
+
+    @pytest.mark.parametrize("library", ["requests", "faker", "psycopg2", "sqlite3"])
+    def test_diagnosis_prompt_lists_libraries(self, library):
+        from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+        assert library in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT

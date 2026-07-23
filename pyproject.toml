@@ -38,6 +38,8 @@ dependencies = [
     "pypdf>=4,<7",
     "python-docx>=1.1,<2",
     "playwright>=1.40,<2",
+    "requests>=2.31,<3",
+    "faker>=24,<26",
 ]
 
 [project.optional-dependencies]
