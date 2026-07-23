@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import TestPlanCard from '../components/TestPlanCard'
-import { fetchSprint, fetchTestPlans, finishSprint, generateTestPlans } from '../services/api'
+import {
+  approveAllTestPlans,
+  fetchSprint,
+  fetchTestPlans,
+  finishSprint,
+  generateTestPlans,
+} from '../services/api'
 import type { SprintResponse, TestPlanResponse } from '../types'
 import './TestPlansPage.css'
 
@@ -23,6 +29,7 @@ export default function TestPlansPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const [finishing, setFinishing] = useState(false)
+  const [approvingAll, setApprovingAll] = useState(false)
 
   const fetchingRef = useRef(false)
 
@@ -49,6 +56,7 @@ export default function TestPlansPage() {
 
   // Poll while any plan is still queued or being generated.
   const shouldPoll = plans.some(isInProgress)
+  const approvableCount = plans.filter((plan) => plan.status === 'draft').length
 
   useEffect(() => {
     if (!shouldPoll) return
@@ -85,6 +93,16 @@ export default function TestPlansPage() {
       .then(setSprint)
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setFinishing(false))
+  }
+
+  const handleApproveAll = () => {
+    if (!window.confirm(`Approve all ${approvableCount} draft test plan(s)? This is final.`)) return
+    setApprovingAll(true)
+    setActionError(null)
+    approveAllTestPlans(sprintId)
+      .then(setPlans)
+      .catch((err: Error) => setActionError(err.message))
+      .finally(() => setApprovingAll(false))
   }
 
   const handleUpdated = (updated: TestPlanResponse) => {
@@ -138,6 +156,23 @@ export default function TestPlansPage() {
           <p className="test-plans-summary">
             {draftedCount} of {plans.length} plans drafted &middot; {approvedCount} approved
           </p>
+
+          {active && (
+            <div className="test-plans-approve-all">
+              <button
+                className="btn btn-primary"
+                onClick={handleApproveAll}
+                disabled={approvingAll || shouldPoll || approvableCount === 0}
+              >
+                {approvingAll ? 'Approving…' : `Approve all (${approvableCount})`}
+              </button>
+              {shouldPoll && (
+                <p className="test-plans-approve-all-hint">
+                  Waiting for generation to finish&hellip;
+                </p>
+              )}
+            </div>
+          )}
 
           {allApproved && (
             <>

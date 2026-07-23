@@ -63,6 +63,16 @@
   margin: 0 0 1rem;
 }
 
+.test-plans-approve-all {
+  margin: 0 0 1rem;
+}
+
+.test-plans-approve-all-hint {
+  color: var(--color-text-secondary, #888);
+  font-size: 0.85rem;
+  margin: 0.35rem 0 0;
+}
+
 .test-plans-complete {
   background: #dcfce7;
   border: 1px solid #86efac;

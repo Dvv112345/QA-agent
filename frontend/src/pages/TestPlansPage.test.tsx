@@ -12,15 +12,23 @@ vi.mock('../services/api', async (importOriginal) => {
     fetchTestPlans: vi.fn(),
     generateTestPlans: vi.fn(),
     finishSprint: vi.fn(),
+    approveAllTestPlans: vi.fn(),
   }
 })
 
-import { fetchSprint, fetchTestPlans, finishSprint, generateTestPlans } from '../services/api'
+import {
+  approveAllTestPlans,
+  fetchSprint,
+  fetchTestPlans,
+  finishSprint,
+  generateTestPlans,
+} from '../services/api'
 
 const mockFetchSprint = fetchSprint as ReturnType<typeof vi.fn>
 const mockFetchTestPlans = fetchTestPlans as ReturnType<typeof vi.fn>
 const mockGenerateTestPlans = generateTestPlans as ReturnType<typeof vi.fn>
 const mockFinishSprint = finishSprint as ReturnType<typeof vi.fn>
+const mockApproveAllTestPlans = approveAllTestPlans as ReturnType<typeof vi.fn>
 
 function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
   return {
@@ -167,6 +175,80 @@ describe('TestPlansPage', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  describe('approve all test plans', () => {
+    it('is disabled while any plan is still pending or generating', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+      mockFetchTestPlans.mockResolvedValue([
+        makePlan({ status: 'draft' }),
+        makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'pending' }),
+      ])
+      renderPage()
+
+      const button = await screen.findByRole('button', { name: /approve all/i })
+      expect(button).toBeDisabled()
+      expect(screen.getByText('Waiting for generation to finish…')).toBeInTheDocument()
+    })
+
+    it('is disabled once settled but nothing is draft', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+      mockFetchTestPlans.mockResolvedValue([
+        makePlan({ status: 'approved' }),
+        makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'failed' }),
+      ])
+      renderPage()
+
+      const button = await screen.findByRole('button', { name: 'Approve all (0)' })
+      expect(button).toBeDisabled()
+    })
+
+    it('approves all draft plans and replaces the list', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+      mockFetchTestPlans.mockResolvedValue([
+        makePlan({ status: 'draft' }),
+        makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'draft' }),
+      ])
+      renderPage()
+
+      const button = await screen.findByRole('button', { name: 'Approve all (2)' })
+      expect(button).not.toBeDisabled()
+
+      mockApproveAllTestPlans.mockResolvedValue([
+        makePlan({ status: 'approved' }),
+        makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'approved' }),
+      ])
+      fireEvent.click(button)
+
+      await waitFor(() => {
+        expect(mockApproveAllTestPlans).toHaveBeenCalledWith(1)
+      })
+      expect(await screen.findByText('All test plans approved.')).toBeInTheDocument()
+    })
+
+    it('does not call the API when the confirmation dialog is declined', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(false)
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+      mockFetchTestPlans.mockResolvedValue([makePlan({ status: 'draft' })])
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Approve all (1)' }))
+
+      expect(mockApproveAllTestPlans).not.toHaveBeenCalled()
+    })
+
+    it('surfaces errors from a rejected approve-all call', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+      mockFetchTestPlans.mockResolvedValue([makePlan({ status: 'draft' })])
+      mockApproveAllTestPlans.mockRejectedValue(new Error('Approve-all failed'))
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Approve all (1)' }))
+
+      expect(await screen.findByText('Approve-all failed')).toBeInTheDocument()
+    })
   })
 
   it('shows the summary line and completion banner', async () => {
