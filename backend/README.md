@@ -230,6 +230,10 @@ Answer the clarifying question (`{ "answer": "..." }`); the requirement re-enter
 
 Confirm a `needs_clarification` or `ready` requirement. Confirmed requirements are final: every later mutation except delete returns 422.
 
+#### `POST /api/sprints/{sprint_id}/requirements/confirm-all`
+
+Confirm every currently `needs_clarification`/`ready` requirement in the sprint in one request (a single set-based `UPDATE`). Ineligible rows (`pending`, `analyzing`, already `confirmed`, `failed`) are left untouched. **Response** (200): `list[RequirementResponse]` — the sprint's full requirement list. **Errors:** 404 (sprint), 422 (finished sprint).
+
 #### `PATCH /api/requirements/{id}`
 
 Manually edit the description (`{ "description": "..." }`) from `needs_clarification` or `ready`; re-enters analysis.
@@ -352,6 +356,10 @@ Directly edit a `draft` plan — no LLM involved, uncapped, never increments `re
 Approve a `draft` plan. Terminal — no unapprove, no regenerate; feedback/edit return 422 afterwards. When every requirement's plan is approved, `SprintResponse.test_plans_complete` flips to `true`.
 
 **Errors:** 404, 422 (not `draft`, finished sprint).
+
+#### `POST /api/sprints/{sprint_id}/test-plans/approve-all`
+
+Approve every currently `draft` plan in the sprint in one request (a single set-based `UPDATE`, scoped through `Requirement` since `TestPlan` has no direct `sprint_id`). Ineligible plans (`pending`, `generating`, already `approved`, `failed`) are left untouched. **Response** (200): `list[TestPlanResponse]` — the sprint's full plan list. **Errors:** 404 (sprint), 422 (finished sprint).
 
 #### `POST /api/test-plans/{plan_id}/restart`
 
