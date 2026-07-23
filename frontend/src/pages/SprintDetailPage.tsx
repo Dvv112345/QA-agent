@@ -116,7 +116,11 @@ export default function SprintDetailPage() {
   }
 
   const handleConfirmAll = () => {
-    if (!window.confirm(`Confirm all ${confirmableCount} ready requirement(s)? This is final.`))
+    if (
+      !window.confirm(
+        `Confirm all ${confirmableCount} requirement(s)? This includes any still awaiting clarification. This is final.`,
+      )
+    )
       return
     setConfirmingAll(true)
     setConfirmAllError(null)

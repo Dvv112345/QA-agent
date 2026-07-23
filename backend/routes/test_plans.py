@@ -274,23 +274,17 @@ async def approve_all_test_plans(
     sprint = _get_sprint_or_404(session, sprint_id)
     _ensure_sprint_active(sprint)
 
-    plan_ids = list(
-        session.exec(
-            select(TestPlan.id)
-            .join(Requirement, TestPlan.requirement_id == Requirement.id)  # type: ignore[arg-type]
-            .where(
-                Requirement.sprint_id == sprint_id,
-                TestPlan.status == TestPlanStatus.DRAFT,
-            )
-        ).all()
-    )
-    if plan_ids:
-        session.exec(
-            update(TestPlan)
-            .where(TestPlan.id.in_(plan_ids))  # type: ignore[attr-defined]
-            .values(status=TestPlanStatus.APPROVED, updated_at=datetime.now(timezone.utc))
+    session.exec(
+        update(TestPlan)
+        .where(
+            TestPlan.status == TestPlanStatus.DRAFT,
+            TestPlan.requirement_id.in_(  # type: ignore[attr-defined]
+                select(Requirement.id).where(Requirement.sprint_id == sprint_id)
+            ),
         )
-        session.commit()
+        .values(status=TestPlanStatus.APPROVED, updated_at=datetime.now(timezone.utc))
+    )
+    session.commit()
 
     return _sprint_plans(session, sprint_id)
 
