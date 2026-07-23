@@ -163,6 +163,13 @@ export async function confirmRequirement(id: number): Promise<RequirementRespons
   return handleResponse<RequirementResponse>(response)
 }
 
+export async function confirmAllRequirements(sprintId: number): Promise<RequirementResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/requirements/confirm-all`, {
+    method: 'POST',
+  })
+  return handleResponse<RequirementResponse[]>(response)
+}
+
 export async function updateRequirement(
   id: number,
   description: string,
@@ -285,6 +292,13 @@ export async function approveTestPlan(id: number): Promise<TestPlanResponse> {
     method: 'POST',
   })
   return handleResponse<TestPlanResponse>(response)
+}
+
+export async function approveAllTestPlans(sprintId: number): Promise<TestPlanResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-plans/approve-all`, {
+    method: 'POST',
+  })
+  return handleResponse<TestPlanResponse[]>(response)
 }
 
 export async function restartTestPlan(id: number): Promise<TestPlanResponse> {

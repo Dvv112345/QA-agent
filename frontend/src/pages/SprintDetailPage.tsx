@@ -3,7 +3,12 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import PrdUploadForm from '../components/PrdUploadForm'
 import RequirementCard from '../components/RequirementCard'
 import RequirementForm from '../components/RequirementForm'
-import { fetchRequirements, fetchSprint, finishSprint } from '../services/api'
+import {
+  confirmAllRequirements,
+  fetchRequirements,
+  fetchSprint,
+  finishSprint,
+} from '../services/api'
 import type { RequirementResponse, SprintResponse } from '../types'
 import './SprintDetailPage.css'
 
@@ -27,6 +32,8 @@ export default function SprintDetailPage() {
   const [requirementsError, setRequirementsError] = useState<string | null>(null)
   const [continuing, setContinuing] = useState(false)
   const [continueError, setContinueError] = useState<string | null>(null)
+  const [confirmingAll, setConfirmingAll] = useState(false)
+  const [confirmAllError, setConfirmAllError] = useState<string | null>(null)
 
   const fetchingRef = useRef(false)
 
@@ -59,6 +66,9 @@ export default function SprintDetailPage() {
 
   // Poll while any requirement is still queued or being analyzed.
   const shouldPoll = requirements.some(isInProgress)
+  const confirmableCount = requirements.filter(
+    (req) => req.status === 'ready' || req.status === 'needs_clarification',
+  ).length
 
   useEffect(() => {
     if (!shouldPoll) return
@@ -103,6 +113,17 @@ export default function SprintDetailPage() {
       })
       .catch((err: Error) => setContinueError(err.message))
       .finally(() => setContinuing(false))
+  }
+
+  const handleConfirmAll = () => {
+    if (!window.confirm(`Confirm all ${confirmableCount} ready requirement(s)? This is final.`))
+      return
+    setConfirmingAll(true)
+    setConfirmAllError(null)
+    confirmAllRequirements(sprintId)
+      .then(setRequirements)
+      .catch((err: Error) => setConfirmAllError(err.message))
+      .finally(() => setConfirmingAll(false))
   }
 
   const handleSubmitted = (created: RequirementResponse[]) => {
@@ -178,6 +199,24 @@ export default function SprintDetailPage() {
           <p className="requirements-summary">
             {analyzedCount} of {requirements.length} analyzed
           </p>
+        )}
+
+        {sprint.active && requirements.length > 0 && (
+          <div className="requirements-confirm-all">
+            <button
+              className="btn btn-primary"
+              onClick={handleConfirmAll}
+              disabled={confirmingAll || shouldPoll || confirmableCount === 0}
+            >
+              {confirmingAll ? 'Confirming…' : `Confirm all (${confirmableCount})`}
+            </button>
+            {shouldPoll && (
+              <p className="requirements-confirm-all-hint">
+                Waiting for analysis to finish&hellip;
+              </p>
+            )}
+            {confirmAllError && <p className="sprint-detail-error">{confirmAllError}</p>}
+          </div>
         )}
 
         {requirements.map((requirement) => (

@@ -13,6 +13,7 @@ vi.mock('../services/api', async (importOriginal) => {
     fetchRequirements: vi.fn(),
     submitRequirements: vi.fn(),
     uploadPrd: vi.fn(),
+    confirmAllRequirements: vi.fn(),
   }
 })
 
@@ -27,6 +28,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 import {
+  confirmAllRequirements,
   fetchRequirements,
   fetchSprint,
   finishSprint,
@@ -39,6 +41,7 @@ const mockFinishSprint = finishSprint as ReturnType<typeof vi.fn>
 const mockFetchRequirements = fetchRequirements as ReturnType<typeof vi.fn>
 const mockSubmitRequirements = submitRequirements as ReturnType<typeof vi.fn>
 const mockUploadPrd = uploadPrd as ReturnType<typeof vi.fn>
+const mockConfirmAllRequirements = confirmAllRequirements as ReturnType<typeof vi.fn>
 
 const fakeSprint: SprintResponse = {
   id: 1,
@@ -262,6 +265,101 @@ describe('SprintDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Search')).toBeInTheDocument()
       })
+    })
+  })
+
+  describe('confirm all requirements', () => {
+    it('is absent when the sprint has no requirements', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('button', { name: /confirm all/i })).not.toBeInTheDocument()
+    })
+
+    it('is absent on finished sprints', async () => {
+      mockFetchSprint.mockResolvedValue({ ...fakeSprint, active: false })
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'ready' })])
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Login')).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('button', { name: /confirm all/i })).not.toBeInTheDocument()
+    })
+
+    it('is disabled while any requirement is still pending or analyzing', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([
+        makeRequirement({ id: 1, status: 'ready' }),
+        makeRequirement({ id: 2, name: 'Logout', status: 'analyzing' }),
+      ])
+      renderPage()
+
+      const button = await screen.findByRole('button', { name: /confirm all/i })
+      expect(button).toBeDisabled()
+      expect(screen.getByText('Waiting for analysis to finish…')).toBeInTheDocument()
+    })
+
+    it('is disabled once settled but nothing is eligible', async () => {
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([
+        makeRequirement({ id: 1, status: 'confirmed' }),
+        makeRequirement({ id: 2, name: 'Logout', status: 'failed' }),
+      ])
+      renderPage()
+
+      const button = await screen.findByRole('button', { name: 'Confirm all (0)' })
+      expect(button).toBeDisabled()
+    })
+
+    it('confirms all eligible requirements and replaces the list', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([
+        makeRequirement({ id: 1, status: 'ready' }),
+        makeRequirement({ id: 2, name: 'Logout', status: 'needs_clarification' }),
+      ])
+      renderPage()
+
+      const button = await screen.findByRole('button', { name: 'Confirm all (2)' })
+      expect(button).not.toBeDisabled()
+
+      mockConfirmAllRequirements.mockResolvedValue([
+        makeRequirement({ id: 1, status: 'confirmed' }),
+        makeRequirement({ id: 2, name: 'Logout', status: 'confirmed' }),
+      ])
+      fireEvent.click(button)
+
+      await waitFor(() => {
+        expect(mockConfirmAllRequirements).toHaveBeenCalledWith(1)
+      })
+      expect(await screen.findByRole('button', { name: 'Confirm all (0)' })).toBeDisabled()
+    })
+
+    it('does not call the API when the confirmation dialog is declined', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(false)
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ id: 1, status: 'ready' })])
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm all (1)' }))
+
+      expect(mockConfirmAllRequirements).not.toHaveBeenCalled()
+    })
+
+    it('surfaces errors from a rejected confirm-all call', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      mockFetchSprint.mockResolvedValue(fakeSprint)
+      mockFetchRequirements.mockResolvedValue([makeRequirement({ id: 1, status: 'ready' })])
+      mockConfirmAllRequirements.mockRejectedValue(new Error('Confirm-all failed'))
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm all (1)' }))
+
+      expect(await screen.findByText('Confirm-all failed')).toBeInTheDocument()
     })
   })
 

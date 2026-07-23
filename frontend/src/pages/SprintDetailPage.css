@@ -85,6 +85,16 @@
   margin: 0 0 0.75rem;
 }
 
+.requirements-confirm-all {
+  margin-bottom: 1rem;
+}
+
+.requirements-confirm-all-hint {
+  color: var(--color-text-secondary, #888);
+  font-size: 0.85rem;
+  margin: 0.35rem 0 0;
+}
+
 .sprint-detail-continue {
   margin-bottom: 1.5rem;
 }
