@@ -97,6 +97,9 @@ export default function TestRunDetailPage() {
   return (
     <div className="test-run-detail">
       <nav className="back-links">
+        <Link to="/" className="back-link">
+          &larr; Back to Sprints
+        </Link>
         <Link to={`/sprints/${sprintId}/test-runs`} className="back-link">
           &larr; Back to Test Runs
         </Link>

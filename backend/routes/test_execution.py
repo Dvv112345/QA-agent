@@ -209,7 +209,10 @@ async def list_test_runs(
         select(TestRun)
         .where(TestRun.sprint_id == sprint_id)
         .order_by(TestRun.created_at.desc(), TestRun.id.desc())
-        .options(selectinload(TestRun.executions).selectinload(TestExecution.cases))
+        .options(
+            selectinload(TestRun.executions).selectinload(TestExecution.requirement),
+            selectinload(TestRun.executions).selectinload(TestExecution.cases),
+        )
     ).all()
     return [_run_response(run) for run in runs]
 
