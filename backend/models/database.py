@@ -39,6 +39,7 @@ class Sprint(SQLModel, table=True):
     repo_id: int = Field(foreign_key="repo.id")
     active: bool = Field(default=True)
     directory: str = Field(unique=True)
+    readme_user_provided: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )

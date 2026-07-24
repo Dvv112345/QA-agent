@@ -58,10 +58,28 @@ def _add_test_environment_access_env_vars_json(engine: Engine) -> None:
     logger.info("Migration applied: testenvironmentaccess.env_vars_json column added")
 
 
+def _add_sprint_readme_user_provided(engine: Engine) -> None:
+    """Add ``sprint.readme_user_provided`` (README source flag) when missing."""
+    inspector = inspect(engine)
+    if "sprint" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("sprint")}
+    if "readme_user_provided" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE sprint ADD COLUMN readme_user_provided BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        )
+    logger.info("Migration applied: sprint.readme_user_provided column added")
+
+
 _MIGRATIONS = [
     _add_requirement_from_prd,
     _add_testcase_script,
     _add_test_environment_access_env_vars_json,
+    _add_sprint_readme_user_provided,
 ]
 
 
