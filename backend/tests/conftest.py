@@ -100,11 +100,14 @@ def sample_md_bytes(sample_md_path: Path) -> bytes:
 
 
 @pytest.fixture
-async def async_client(monkeypatch, db_session):
+async def async_client(monkeypatch, db_session, tmp_path):
     """Async HTTP client wired to the FastAPI app via ASGI transport."""
     monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
     monkeypatch.setenv("STORE_OFFLINE", "false")
-    monkeypatch.delenv("STORAGE_LOCATION", raising=False)
+    # Sprint creation always makes a real directory (generate_sprint_directory
+    # is unconditional, independent of STORE_OFFLINE) — point it at tmp_path
+    # so pytest cleans it up instead of leaking UUID dirs into the repo root.
+    monkeypatch.setenv("STORAGE_LOCATION", str(tmp_path))
     monkeypatch.delenv("APP_PASSWORD", raising=False)
 
     import backend.config
@@ -114,6 +117,24 @@ async def async_client(monkeypatch, db_session):
     importlib.reload(backend.main)
 
     monkeypatch.setattr(backend.main, "_check_redis_health", lambda: "mocked")
+
+    # backend.routes.sprints and backend.services.storage each imported
+    # STORE_OFFLINE/STORAGE_LOCATION by value at module import time (same
+    # pattern as backend.utils.readme_utils, patched ad hoc elsewhere) —
+    # reloading backend.config above never reaches those already-bound
+    # names. Left unpatched, they keep whatever the real backend/.env had
+    # at first import (often STORE_OFFLINE=true for local dev), so every
+    # sprint-creating test silently writes a real README.md/PRD file under
+    # the repo's own ./uploads/<uuid>/ instead of a throwaway temp dir.
+    # generate_sprint_directory() also runs unconditionally regardless of
+    # STORE_OFFLINE, so its directory needs the same treatment. Patch all
+    # three names directly so every test writes inside tmp_path instead.
+    import backend.routes.sprints as sprints_routes
+    import backend.services.storage as storage_module
+
+    monkeypatch.setattr(sprints_routes, "STORAGE_LOCATION", str(tmp_path))
+    monkeypatch.setattr(storage_module, "STORE_OFFLINE", False)
+    monkeypatch.setattr(storage_module, "STORAGE_LOCATION", str(tmp_path))
 
     from backend.database import get_session
 
