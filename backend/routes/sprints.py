@@ -127,10 +127,12 @@ async def create_sprint(
     # ── Resolve README ────────────────────────────────────────────────
     # Priority: user upload > GitHub download > error
     readme_bytes: bytes | None = None
+    readme_user_provided = False
 
     if readme_file is not None and readme_file.filename:
         # User provided a file — validate and use it (overrides GitHub)
         readme_bytes = _validate_readme_file(readme_file)
+        readme_user_provided = True
         logger.info("Sprint '%s': using user-provided README", name)
     else:
         # No user file — download from GitHub (single API call)
@@ -162,6 +164,7 @@ async def create_sprint(
         repo_id=repo_id,
         active=True,
         directory=directory,
+        readme_user_provided=readme_user_provided,
     )
     session.add(sprint)
     session.commit()

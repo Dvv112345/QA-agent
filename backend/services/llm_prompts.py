@@ -65,7 +65,8 @@ SPLIT_PRD_SYSTEM_PROMPT = (
     "of the document, because each requirement is reviewed in isolation "
     "later. Cover every requirement the document states, but do not invent "
     "requirements that are not in it, and do not merge unrelated features "
-    "into one requirement. Respond with a JSON object of the shape "
+    "into one requirement. Do not divide a single requirement into multiple"
+    "smaller requirements. Respond with a JSON object of the shape "
     '{"requirements": [{"name": string, "description": string}]}. '
     "Return an empty list if the document contains no software requirements."
 )

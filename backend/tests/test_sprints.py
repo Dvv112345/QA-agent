@@ -13,7 +13,7 @@ class TestCreateSprint:
     """Tests for ``POST /api/sprints``."""
 
     @pytest.mark.asyncio
-    async def test_creates_sprint_with_github_readme(self, async_client, httpx_mock):
+    async def test_creates_sprint_with_github_readme(self, async_client, httpx_mock, db_session):
         readme_content = "# Test README"
         encoded = base64.b64encode(readme_content.encode()).decode()
 
@@ -44,8 +44,13 @@ class TestCreateSprint:
         assert data["repo"] is not None
         assert data["repo"]["name"] == "owner/test-repo"
 
+        from backend.models.database import Sprint
+
+        db_sprint = db_session.get(Sprint, data["id"])
+        assert db_sprint.readme_user_provided is False
+
     @pytest.mark.asyncio
-    async def test_creates_sprint_with_user_readme(self, async_client, httpx_mock):
+    async def test_creates_sprint_with_user_readme(self, async_client, httpx_mock, db_session):
         repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
 
         # Metadata refresh during sprint creation
@@ -64,6 +69,11 @@ class TestCreateSprint:
         data = resp.json()
         assert data["name"] == "Sprint 2"
         assert data["active"] is True
+
+        from backend.models.database import Sprint
+
+        db_sprint = db_session.get(Sprint, data["id"])
+        assert db_sprint.readme_user_provided is True
 
     @pytest.mark.asyncio
     async def test_rejects_readme_over_upload_size_cap(self, async_client, httpx_mock, monkeypatch):

@@ -146,7 +146,7 @@ Check whether the GitHub repo has a README. Returns `{ "has_readme": true }`.
 
 #### `POST /api/sprints`
 
-Create a sprint linked to a repo. Refreshes repo metadata from GitHub and captures a filtered, size-capped file-tree listing (best-effort — failures never block creation), then resolves the README: a user-uploaded file wins; otherwise the README is downloaded from GitHub; if the repo has no README and none is uploaded, the request fails. README and file tree become LLM prompt context for later analysis.
+Create a sprint linked to a repo. Refreshes repo metadata from GitHub and captures a filtered, size-capped file-tree listing (best-effort — failures never block creation), then resolves the README: a user-uploaded file wins; otherwise the README is downloaded from GitHub; if the repo has no README and none is uploaded, the request fails. README and file tree become LLM prompt context for later analysis. Whether the README came from an upload is recorded on `Sprint.readme_user_provided` — later stages (test execution) use it to decide whether a README refresh from GitHub is safe (see [Test Execution](#test-execution)).
 
 **Request:** `multipart/form-data`
 
@@ -375,7 +375,7 @@ The fourth and final sprint stage, available once every requirement's plan is `a
 
 #### `POST /api/sprints/{sprint_id}/test-runs`
 
-Create a run covering the selected requirements. Body: `{ "requirement_ids": [1, 2, …] }`. Creates one `TestRun` plus one `TestExecution` (and one `TestCaseExecution` per plan case, in position order) per requirement, enqueued best-effort.
+Create a run covering the selected requirements. Body: `{ "requirement_ids": [1, 2, …] }`. First best-effort refreshes the sprint's README/file-tree context from GitHub exactly once for the whole run — so scripts are generated/self-healed against current repo state rather than the (possibly stale) sprint-creation-time snapshot — skipping the README refresh when the sprint's README was user-uploaded (`Sprint.readme_user_provided`; a user-supplied README is authoritative) and never blocking run creation on a GitHub failure. Then creates one `TestRun` plus one `TestExecution` (and one `TestCaseExecution` per plan case, in position order) per requirement, enqueued best-effort.
 
 **Response** (201): `TestRunDetailResponse` — `{ "id", "sprint_id", "created_at", "status", "executions": [...] }`, where each execution is `{ "id", "requirement_id", "requirement_name", "status", "error", "cases": [...], "created_at", "updated_at" }` and each case is `{ "id", "test_case", "status", "attempts", "output", "error", "updated_at" }`.
 
@@ -475,7 +475,7 @@ backend/
     crypto.py          # Fernet encryption for GitHub tokens
     github_utils.py    # GitHub API client and error hierarchy
     prd_utils.py       # PRD text extraction (.md/.txt via UTF-8, .pdf via pypdf, .docx via python-docx)
-    readme_utils.py    # Best-effort README resolution (stored copy → re-download → none)
+    readme_utils.py    # Best-effort README resolution (stored copy → re-download → none) + forced README/file-tree refresh
     sprint_utils.py    # Unique sprint directory generation
   tests/               # pytest suite (in-memory SQLite, mocked GitHub API, Redis + LLM stubbed)
 ```

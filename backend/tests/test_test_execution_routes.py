@@ -49,6 +49,60 @@ def stub_queue(monkeypatch):
     return stub
 
 
+class _RefreshStub:
+    """Records calls to the README/file-tree refresh functions.
+
+    Defaults to a no-op success (returns ``None``, does nothing to
+    ``sprint.repo``) so unrelated tests don't hit the network. Set
+    ``.raise_on_readme`` / ``.raise_on_file_tree`` to exercise the
+    best-effort failure path.
+    """
+
+    def __init__(self):
+        self.readme_calls: list[dict] = []
+        self.file_tree_calls: list = []
+        self.raise_on_readme = False
+        self.raise_on_file_tree = False
+
+    async def resolve_readme(self, sprint, **kwargs):
+        self.readme_calls.append({"sprint_id": sprint.id, **kwargs})
+        if self.raise_on_readme:
+            raise RuntimeError("boom")
+        return "# Fresh README"
+
+    async def refresh_file_tree(self, sprint):
+        self.file_tree_calls.append(sprint.id)
+        if self.raise_on_file_tree:
+            raise RuntimeError("boom")
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_refresh(monkeypatch):
+    """Keep README/file-tree refresh deterministic: no network calls unless
+    a test opts in via the ``refresh_stub`` fixture."""
+    import backend.routes.test_execution as test_execution_module
+
+    async def _noop_resolve_readme(*args, **kwargs):
+        return None
+
+    async def _noop_refresh_file_tree(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(test_execution_module, "resolve_readme", _noop_resolve_readme)
+    monkeypatch.setattr(test_execution_module, "refresh_file_tree", _noop_refresh_file_tree)
+
+
+@pytest.fixture
+def refresh_stub(monkeypatch):
+    stub = _RefreshStub()
+    import backend.routes.test_execution as test_execution_module
+
+    monkeypatch.setattr(test_execution_module, "resolve_readme", stub.resolve_readme)
+    monkeypatch.setattr(test_execution_module, "refresh_file_tree", stub.refresh_file_tree)
+    return stub
+
+
 def _seed_runnable_requirement(db_session, sprint, name="Login", case_count=2):
     """A confirmed requirement with an approved plan and cases, ready to run."""
     requirement = _seed_requirement(
@@ -223,6 +277,56 @@ class TestCreateTestRun:
         row = _reload_execution(db_session, execution_id)
         assert row.status == TestExecutionStatus.PENDING
         assert row.job_id is None
+
+    @pytest.mark.asyncio
+    async def test_refreshes_readme_and_file_tree_once_for_multiple_requirements(
+        self, async_client, db_session, stub_queue, refresh_stub
+    ):
+        sprint = _seed_sprint(db_session, readme_user_provided=False)
+        login = _seed_runnable_requirement(db_session, sprint, name="Login", case_count=1)
+        search = _seed_runnable_requirement(db_session, sprint, name="Search", case_count=1)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [login.id, search.id]},
+        )
+
+        assert resp.status_code == 201
+        assert len(refresh_stub.readme_calls) == 1
+        assert refresh_stub.readme_calls[0]["force_refresh"] is True
+        assert len(refresh_stub.file_tree_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_readme_refresh_when_user_provided(
+        self, async_client, db_session, stub_queue, refresh_stub
+    ):
+        sprint = _seed_sprint(db_session, readme_user_provided=True)
+        requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id]},
+        )
+
+        assert resp.status_code == 201
+        assert refresh_stub.readme_calls == []
+        assert len(refresh_stub.file_tree_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_does_not_block_run_creation(
+        self, async_client, db_session, stub_queue, refresh_stub
+    ):
+        refresh_stub.raise_on_readme = True
+        sprint = _seed_sprint(db_session, readme_user_provided=False)
+        requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id]},
+        )
+
+        assert resp.status_code == 201
+        assert len(resp.json()["executions"]) == 1
 
 
 # ── GET /api/sprints/{id}/test-runs ───────────────────────────────────

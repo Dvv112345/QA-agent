@@ -18,6 +18,10 @@ def _test_environment_access_columns(engine) -> set[str]:
     return {column["name"] for column in inspect(engine).get_columns("testenvironmentaccess")}
 
 
+def _sprint_columns(engine) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns("sprint")}
+
+
 def test_noop_on_fresh_schema(db_session):
     """A schema built by create_all already has every column — twice is safe."""
     engine = db_session.get_bind()
@@ -26,6 +30,7 @@ def test_noop_on_fresh_schema(db_session):
     assert "from_prd" in _requirement_columns(engine)
     assert "script" in _testcase_columns(engine)
     assert "env_vars_json" in _test_environment_access_columns(engine)
+    assert "readme_user_provided" in _sprint_columns(engine)
 
 
 def test_adds_missing_testcase_script_column():
@@ -68,6 +73,20 @@ def test_adds_missing_from_prd_column():
     assert "from_prd" in _requirement_columns(engine)
     run_migrations(engine)  # idempotent on the migrated schema too
     assert "from_prd" in _requirement_columns(engine)
+
+
+def test_adds_missing_readme_user_provided_column():
+    """An existing database predating the column gets it added exactly once."""
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE sprint DROP COLUMN readme_user_provided"))
+    assert "readme_user_provided" not in _sprint_columns(engine)
+
+    run_migrations(engine)
+    assert "readme_user_provided" in _sprint_columns(engine)
+    run_migrations(engine)  # idempotent on the migrated schema too
+    assert "readme_user_provided" in _sprint_columns(engine)
 
 
 def test_skips_database_without_requirement_table():

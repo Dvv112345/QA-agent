@@ -27,6 +27,7 @@ from backend.models.types import (
 )
 from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
+from backend.utils.readme_utils import refresh_file_tree, resolve_readme
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,21 @@ async def create_test_run(
             status_code=422,
             detail=f"These requirements already have a run in progress: {', '.join(in_progress)}.",
         )
+
+    # ── Refresh README/file tree once for the whole run (best-effort) ──
+    # Every TestExecution below is a separate RQ job/process, so this is
+    # the one synchronous choke point they all share — refresh here rather
+    # than per execution or per case. A user-uploaded README is
+    # authoritative and is never overwritten by a GitHub download.
+    try:
+        if not sprint.readme_user_provided:
+            await resolve_readme(sprint, force_refresh=True)
+        await refresh_file_tree(sprint)
+        if sprint.repo is not None:
+            session.add(sprint.repo)
+            session.commit()
+    except Exception as exc:
+        logger.warning("Sprint id=%d: README/file tree refresh failed: %s", sprint_id, exc)
 
     run = TestRun(sprint_id=sprint_id)
     executions: list[TestExecution] = []

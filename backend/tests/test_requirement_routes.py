@@ -13,7 +13,7 @@ from backend.models.database import Repo, Requirement, RequirementStatus, Sprint
 # without a running worker.
 
 
-def _seed_sprint(db_session, active: bool = True) -> Sprint:
+def _seed_sprint(db_session, active: bool = True, readme_user_provided: bool = False) -> Sprint:
     repo = Repo(github_link="https://github.com/owner/repo", name="owner/repo")
     db_session.add(repo)
     db_session.commit()
@@ -22,6 +22,7 @@ def _seed_sprint(db_session, active: bool = True) -> Sprint:
         repo_id=repo.id,
         active=active,
         directory=f"dir-{uuid.uuid4().hex[:12]}",
+        readme_user_provided=readme_user_provided,
     )
     db_session.add(sprint)
     db_session.commit()
