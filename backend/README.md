@@ -21,9 +21,9 @@ python -m backend.main
 
 The API is served at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`. Tables are created automatically on startup.
 
-### Background worker (requirement analysis + test-plan generation + test execution)
+### Background worker (requirement analysis + test-plan generation + test execution + exploratory testing)
 
-Requirement clarity analysis, test-plan generation, and test execution run on RQ workers backed by Redis (all three task types share the same queue and workers). The API works without them — rows just stay `pending` until a worker picks them up (a reconciler in the API process re-enqueues the backlog automatically when Redis recovers).
+Requirement clarity analysis, test-plan generation, test execution, and exploratory testing run on RQ workers backed by Redis (all four task types share the same queue and workers). The API works without them — rows just stay `pending` until a worker picks them up (a reconciler in the API process re-enqueues the backlog automatically when Redis recovers).
 
 ```bash
 # Terminal 2 — start a worker (repo root; reads the same backend/.env)
@@ -35,7 +35,7 @@ python -m backend.worker
 python -m backend.scripts.clear_queue
 ```
 
-On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). The worker also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved. Test execution additionally needs the Playwright browser binary on the worker host — run `playwright install chromium` once (the `playwright` pip package alone doesn't include it). If you use conda, always start the worker (`python -m backend.worker`) from an **activated** environment — generated test scripts run via `subprocess.run([sys.executable, ...])`, which guarantees the same interpreter/site-packages regardless of activation state, but inherits the worker's own `os.environ` unchanged, so PATH-dependent behavior is only as correct as however the worker process itself was started.
+On Windows the worker automatically uses RQ's `SimpleWorker` (no `os.fork()`). The worker also needs an LLM key: set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` / `OPENAI_MODEL` for any OpenAI-compatible provider; the defaults target DeepSeek). The same key powers the test-environment sufficiency check, which runs synchronously inside the API request — no worker involved. Test execution and exploratory testing additionally need the Playwright browser binary on the worker host — run `playwright install chromium` once (the `playwright` pip package alone doesn't include it). Exploratory testing drives that browser directly from the worker process (not a subprocess), so it must run headless unless you set `EXPLORATORY_HEADLESS=false` to watch it. If you use conda, always start the worker (`python -m backend.worker`) from an **activated** environment — generated test scripts run via `subprocess.run([sys.executable, ...])`, which guarantees the same interpreter/site-packages regardless of activation state, but inherits the worker's own `os.environ` unchanged, so PATH-dependent behavior is only as correct as however the worker process itself was started.
 
 Generated test scripts may import Playwright, `requests`, `Faker`, `psycopg2` (PostgreSQL), `sqlite3`, and the Python standard library — this set is advertised to the LLM in the script-generation and diagnosis prompts (`llm_prompts.AVAILABLE_TEST_LIBRARIES`) so it doesn't guess at unavailable packages.
 
@@ -190,7 +190,7 @@ Get a single sprint with its repo info. 404 if not found.
 
 #### `PATCH /api/sprints/{sprint_id}`
 
-Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements, `pending`/`generating` test plans, and `pending`/`running` test executions are marked `failed` — nothing runs on a finished sprint.
+Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements, `pending`/`generating` test plans, `pending`/`running` test executions, and `pending`/`running` exploratory runs are marked `failed` — nothing runs on a finished sprint.
 
 **Errors:** 404 (not found), 422 (already finished or `active` not `false`).
 
@@ -399,6 +399,73 @@ Restart a `failed` execution (uncapped). Case-level resumability is automatic �
 
 **Errors:** 404, 422 (not `failed`, finished sprint).
 
+### Exploratory Testing
+
+The fifth sprint stage, sharing the test-runs page with scripted runs and the same gate (`test_plans_complete`). Instead of executing predefined cases, an LLM drives a real Playwright browser against the running application to look for what the test plan didn't anticipate.
+
+Two frameworks shape it. **SBTM** (Session-Based Test Management) organizes exploration into time-boxed _sessions_, each governed by a single _charter_ and producing a reviewable _session sheet_. **SFDIPOT** (Structure, Function, Data, Interfaces, Platform, Operations, Time) is the heuristic used to generate charters that attack a requirement from genuinely different angles.
+
+A run covers **exactly one requirement** — unlike a scripted run, which can batch several. Exploration is expensive and meant to be read, not glanced at. Within a run, charters execute **sequentially** in a single RQ job: charters for one requirement touch the same feature by construction, so running them concurrently would collide on the same records and manufacture false findings.
+
+Lifecycle per run: `pending → running → completed` (terminal), plus `failed` (restartable). Per session: `pending → running → completed`, plus `error` when the session machinery itself broke. A session that finds twenty bugs is still `completed` — findings drive their own counts, not the status.
+
+Findings are typed, following SBTM's distinction:
+
+- **bug** — the product behaves differently from what the requirement says
+- **issue** — something obstructed the testing itself (missing credentials, an unreachable page)
+
+Each carries reproduction steps, expected vs actual, and a screenshot captured at the moment it was recorded.
+
+> **Credentials never reach the transcript.** The agent types secrets via a `fill_secret(ref, env_var_name)` tool whose value is resolved inside the executor, so no literal password or token enters the LLM conversation or the stored action log.
+
+> **Navigation is origin-locked** to the application URLs nominated during charter generation, and re-checked after each navigation settles so a redirect chain can't escape. Everything else — restraint around destructive actions — is prompt-level guidance only, and exploration runs unsandboxed against your test environment.
+
+> **Screenshots follow `STORE_OFFLINE`.** With it disabled, findings simply carry no screenshot; that's the documented behaviour of the setting, not a failure.
+
+#### `POST /api/sprints/{sprint_id}/exploratory-charters/generate`
+
+Draft charters for one requirement. Body: `{ "requirement_id": 1 }`. Runs a single **synchronous** LLM call — the model is shown the requirement, its approved test cases (as "already covered"), the README, the file tree, and the _names_ of the environment variables. It returns charters tagged with the SFDIPOT dimensions that apply and nominates which variables hold application URLs the browser may reach. **Nothing is persisted.**
+
+**Response** (200): `{ "requirement_id", "requirement_name", "charters": [{ "charter", "sfdipot_areas" }], "base_url_env_vars", "charter_count", "projected_minutes" }`. `projected_minutes` is a heuristic derived from the charter count and `EXPLORATORY_MAX_ACTIONS` — the model is never asked to estimate duration.
+
+**Errors:** 404 (sprint), 422 (finished sprint, requirement not confirmed, plan not `approved`, test environment not `confirmed`), 502 (LLM failure, or a nominated variable that doesn't exist or doesn't hold an `http(s)` URL).
+
+#### `POST /api/sprints/{sprint_id}/exploratory-runs`
+
+Start a run over the reviewed charters. Body: `{ "requirement_id", "charters": [{ "charter", "sfdipot_areas" }], "base_url_env_vars" }`. The charters and URL variables come back possibly edited, so **everything is re-validated from scratch** — nothing the generate call returned is trusted. Best-effort refreshes README/file tree once, then creates one `ExploratoryRun` plus one `ExploratorySession` per charter and enqueues a single job.
+
+**Response** (201): `ExploratoryRunDetailResponse` — `{ "id", "sprint_id", "requirement_id", "requirement_name", "status", "summary", "error", "base_url_env_vars", "sessions": [...], "bug_count", "issue_count", "high_severity_count", "created_at", "updated_at" }`.
+
+**Errors:** 404 (sprint), 422 (finished sprint, requirement not confirmed, plan not `approved`, environment not `confirmed`, no charters, a blank charter, more than `EXPLORATORY_MAX_CHARTERS`, an unknown SFDIPOT area, a URL variable that doesn't exist or isn't an `http(s)` URL, or the requirement already has a run in progress).
+
+#### `GET /api/sprints/{sprint_id}/exploratory-runs`
+
+List a sprint's exploratory runs, newest first, with `requirement_name`, `status`, `summary`, and finding counts. 404 on unknown sprint.
+
+#### `GET /api/exploratory-runs/{run_id}`
+
+Fetch one run's detail, including its session list. 404 if not found.
+
+#### `GET /api/exploratory-sessions/{session_id}`
+
+Fetch one charter's full SBTM session sheet: charter, SFDIPOT areas, actions used, stop reason, test notes, findings, and the complete action log. 404 if not found.
+
+#### `GET /api/exploratory-findings/{finding_id}/screenshot`
+
+Serve the PNG captured when the finding was recorded. 404 when the finding has none (the normal case with `STORE_OFFLINE` disabled) or the file is gone.
+
+#### `POST /api/exploratory-runs/{run_id}/restart`
+
+Restart a `failed` run (uncapped). Charter-level resumability is automatic: already-`completed` sessions are skipped and the in-flight charter restarts from scratch, since a half-explored browser died with the worker. Findings already recorded are kept — they were real observations regardless.
+
+**Errors:** 404, 422 (not `failed`, finished sprint).
+
+#### `POST /api/exploratory-runs/{run_id}/summarize`
+
+Regenerate the per-requirement summary. The summary is written best-effort at the end of a run, so one transient provider failure can leave it null; this retries it synchronously. Works whether or not a summary already exists.
+
+**Errors:** 404, 422 (run isn't `completed`), 502 (LLM failure — any existing summary is left untouched).
+
 ### Authentication
 
 #### `POST /api/auth/verify`
@@ -484,8 +551,8 @@ backend/
 
 - Python 3.10+
 - PostgreSQL
-- Redis (for requirement analysis, test-plan generation, and test execution; optional otherwise)
-- An LLM API key (`OPENAI_API_KEY` — for requirement analysis, the test-environment check, test-plan generation, and test execution)
-- For test execution: `playwright install chromium` on the worker host (one-time)
+- Redis (for requirement analysis, test-plan generation, test execution, and exploratory testing; optional otherwise)
+- An LLM API key (`OPENAI_API_KEY` — for requirement analysis, the test-environment check, test-plan generation, test execution, and exploratory testing)
+- For test execution and exploratory testing: `playwright install chromium` on the worker host (one-time)
 - Dependencies declared in `pyproject.toml` (install with `pip install -e ".[dev]"` from the repo root)
 - If using conda, start `python -m backend.worker` from an **activated** environment — generated test scripts inherit the worker process's own environment as-is, so an unactivated worker means an unactivated (and potentially broken) script environment too
