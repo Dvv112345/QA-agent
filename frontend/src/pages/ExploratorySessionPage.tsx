@@ -15,6 +15,7 @@ const STATUS_LABELS: Record<string, string> = {
 const STOP_REASON_LABELS: Record<string, string> = {
   charter_complete: 'Charter explored',
   action_cap: 'Time box exhausted',
+  model_stopped: 'Ended without calling finish_session',
   error: 'Stopped by an error',
 }
 

@@ -1217,24 +1217,73 @@ class TestRunExplorationLoop:
         # The forced final call must disable tools.
         assert client.requests[-1]["tool_choice"] == "none"
 
-    def test_model_answering_instead_of_acting_ends_session(self, monkeypatch):
-        """Every round is sent in JSON mode, so the answer is a JSON object."""
-        _scripted(monkeypatch, [_answering('{"notes": "I have finished exploring."}')])
+    def test_acting_rounds_do_not_use_json_mode(self, monkeypatch):
+        """JSON mode tells the model to emit content; acting rounds want a tool call.
+
+        Regression test for sessions ending at zero actions because the model
+        answered with {"tool": "snapshot", "params": {}} as message content
+        instead of calling the tool.
+        """
+        client = _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="x"))])
+        _run_loop({})
+        assert "response_format" not in client.requests[0]
+
+    def test_a_tool_free_response_is_nudged_not_fatal(self, monkeypatch):
+        """One content-only reply must not cost the whole charter."""
+        client = _scripted(
+            monkeypatch,
+            [
+                # Exactly what DeepSeek returned in the wild.
+                _answering('{"tool": "snapshot", "params": {}}'),
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "finish_session", notes="Explored it.")),
+            ],
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"})
+
+        assert result.actions_used == 1  # recovered and actually explored
+        assert result.notes == "Explored it."
+        nudges = [
+            m
+            for m in client.requests[-1]["messages"]
+            if isinstance(m, dict)
+            and m.get("role") == "user"
+            and "did not call a tool" in m["content"]
+        ]
+        assert len(nudges) == 1
+
+    def test_two_tool_free_responses_end_the_session(self, monkeypatch):
+        """Twice in a row, take the model at its word."""
+        _scripted(
+            monkeypatch,
+            [_answering('{"notes": "I have finished exploring."}')] * 2,
+        )
         result = _run_loop({})
-        assert result.stop_reason == llm.STOP_CHARTER_COMPLETE
+        assert result.stop_reason == llm.STOP_MODEL_STOPPED
         # Parsed, not stored raw — otherwise the session sheet shows JSON.
         assert result.notes == "I have finished exploring."
 
     def test_answer_that_is_not_the_wrap_up_shape_falls_back_to_raw_text(self, monkeypatch):
         """Never lose what the model said, even off-contract."""
-        _scripted(monkeypatch, [_answering("I have finished exploring.")])
+        _scripted(monkeypatch, [_answering("I have finished exploring.")] * 2)
         result = _run_loop({})
         assert result.notes == "I have finished exploring."
 
     def test_empty_answer_gets_a_placeholder(self, monkeypatch):
-        _scripted(monkeypatch, [_answering("")])
+        _scripted(monkeypatch, [_answering("")] * 2)
         result = _run_loop({})
         assert result.notes == "(model ended the session without notes)"
+
+    def test_wrap_up_call_still_uses_json_mode(self, monkeypatch):
+        """The forced wrap-up genuinely wants a JSON object, and says so."""
+        client = _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c1", "snapshot"))] * 2 + [_answering('{"notes": "n"}')],
+        )
+        _run_loop({"snapshot": lambda **kw: "page"}, max_actions=2)
+        assert client.requests[-1]["response_format"] == {"type": "json_object"}
+        assert client.requests[-1]["tool_choice"] == "none"
 
     def test_unknown_tool_returns_error_string(self, monkeypatch):
         _scripted(

@@ -387,19 +387,24 @@ CHARTER_SYSTEM_PROMPT = (
 )
 
 EXPLORATION_SYSTEM_PROMPT = (
-    "You are a senior exploratory tester driving a real browser against a live "
-    "application, working one SBTM charter. Each turn you call exactly one tool "
-    "and see its result before choosing the next action. Work like a tester, not "
-    "a script: observe, form a hypothesis, probe it, follow what looks odd.\n\n"
-    "WHAT COUNTS AS CORRECT: the requirement and your charter define the expected "
-    "behaviour. Judge what you observe against them — never against what the "
+    "You are a senior QA engineer doing exploratory testing based on "
+    "Session-Based Test Management and have been given a charter to focus on. "
+    "You are using a real browser against a live application. Each turn you call "
+    "exactly one tool and see its result before choosing the next action. Work "
+    "like a tester, not a script: observe, form a hypothesis, probe it, follow "
+    "what looks odd.\n\n"
+    "HOW TO ACT: call tools through the tool interface. Never write a tool call "
+    "as text in your reply — a message that describes an action instead of "
+    "calling it does nothing at all, and wastes part of your budget.\n\n"
+    "WHAT COUNTS AS CORRECT: the requirement defines the expected "
+    "behaviour. Judge what you observe against it — never against what the "
     "application happens to do, and never assume the current behaviour is right "
     "because it is what the application does. You cannot read the source code, "
     "and that is deliberate: your job is to decide whether the product does what "
     "was asked, not what the code intends.\n\n"
     "WHERE YOU ARE: the browser is already open on the application under test. "
-    "You may only type a URL that is on it, but you may follow links that lead "
-    "off it when the charter calls for it — an external sign-in, a payment "
+    "You may only type a URL that is in the allowed list, but you may follow links "
+    "that lead off the website when the charter calls for it — an external sign-in, a payment "
     "provider, a link you were asked to verify. You will be told whenever the "
     "page is off the application; navigate back when you are done, and do not "
     "report defects in someone else's software as bugs in this one.\n\n"
@@ -407,15 +412,25 @@ EXPLORATION_SYSTEM_PROMPT = (
     "needs a ref from a recent snapshot; refs change when the page changes, so "
     "take a fresh snapshot after anything that navigates or re-renders. A stale "
     "ref wastes a significant part of your budget before it fails.\n\n"
-    "CREDENTIALS: never type a password or token literally. Use fill_secret with "
-    "the name of the environment variable — the value is filled in for you and is "
-    "never shown to you.\n\n"
+    "YOUR BUDGET: every tool call spends one action, snapshots included. "
+    "Re-snapshot whenever the page has actually changed, but not out of habit — "
+    "budget spent re-reading a page you have already seen is budget not spent "
+    "exploring the charter.\n\n"
+    "CREDENTIALS: never type a real password or token literally — use "
+    "fill_secret with the name of the environment variable, and the value is "
+    "filled in for you without ever being shown to you. Deliberately wrong or "
+    "made-up values are not secrets: when the charter calls for testing what "
+    "happens on bad input, type those with fill as normal.\n\n"
     "RECORDING WHAT YOU FIND: call record_finding as soon as you observe "
     "something worth reporting, while it is still on screen — a screenshot is "
     "captured at that moment. Classify each as:\n"
-    "- bug: the product behaves differently from what the requirement says\n"
-    "- issue: something obstructed your testing (missing credentials, an "
-    "unreachable page, a broken fixture) — this is not a product defect\n"
+    "- bug: the product itself is wrong — it behaves differently from what the "
+    "requirement says. A feature that fails is a bug even when that feature is "
+    "signing in, and even when its failure blocks the rest of your session.\n"
+    "- issue: the product may be fine, but something outside it obstructed "
+    "your testing — a credential you were never given, a fixture nobody set "
+    "up, an environment that is down.\n"
+    "Ask whose fault it is, not which part of the application it happened in.\n"
     "Every finding needs concrete reproduction steps and a specific expected vs "
     "actual. If you cannot state precisely what you expected and what happened, "
     "you do not have a finding yet — keep exploring instead of reporting a "
@@ -434,7 +449,7 @@ SESSION_WRAPUP_PROMPT = (
     "notes now: what you explored, what you observed, and what you concluded, "
     "including anything you did not get to. Report only what you actually "
     "observed during the session. Respond with a JSON object of the shape "
-    '{"notes": string, "stop_reason": string}.'
+    '{"notes": string}.'
 )
 
 EXPLORATION_SUMMARY_SYSTEM_PROMPT = (
@@ -576,11 +591,23 @@ BROWSER_TOOLS = [
                 "description": "'bug' if the product is wrong; 'issue' if "
                 "something obstructed your testing.",
             },
-            "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+            "severity": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+                # Without a bar the model's severity is arbitrary, and
+                # high_severity_count is the first number a reader anchors on.
+                "description": "'high' if the requirement cannot be met — data "
+                "loss, a blocked primary flow, or a wrong result a user would "
+                "act on. 'medium' if the requirement is still met but "
+                "materially degraded, or there is a workaround. 'low' for "
+                "cosmetic problems and minor annoyances.",
+            },
             "title": {"type": "string", "description": "One-line summary."},
             "steps_to_reproduce": {
                 "type": "string",
-                "description": "Numbered steps, one per line.",
+                # Rendered into an <ol>, which supplies the numbers — asking
+                # for numbered steps here produced "1. 1. Open the page".
+                "description": "One step per line. Do not number them.",
             },
             "expected": {"type": "string", "description": "What should have happened."},
             "actual": {"type": "string", "description": "What actually happened."},

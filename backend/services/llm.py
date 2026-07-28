@@ -579,8 +579,14 @@ class CharterResult(SQLModel):
 
 
 class SessionWrapUpResult(SQLModel):
+    """The model's closing notes.
+
+    Deliberately notes-only: the stop reason is decided here, from which exit
+    the loop actually took, so asking the model for one would pay tokens for
+    an answer that is always discarded.
+    """
+
     notes: str
-    stop_reason: str | None = None
 
 
 class ExplorationSummaryResult(SQLModel):
@@ -605,6 +611,23 @@ class ExplorationLoopResult:
 # Stop reasons recorded on ExploratorySession.stop_reason.
 STOP_CHARTER_COMPLETE = "charter_complete"
 STOP_ACTION_CAP = "action_cap"
+# The model stopped calling tools without calling finish_session. Distinct
+# from STOP_CHARTER_COMPLETE so a session that died on round one is visibly
+# different from one that finished its charter — they were indistinguishable
+# before, which is what let the JSON-mode bug below go unnoticed.
+STOP_MODEL_STOPPED = "model_stopped"
+
+# Consecutive tool-free responses tolerated before the session really ends.
+# One is not a decision: a model that means to act can express the call as
+# prose or as a JSON blob instead of using the tool channel, and ending the
+# session there costs the whole charter. Nudge first, end if it repeats.
+_MAX_IDLE_ROUNDS = 2
+
+_ACT_OR_FINISH_NUDGE = (
+    "That response did not call a tool, so nothing happened. Use the tool "
+    "interface to act — do not describe a tool call in your message text. If "
+    "the charter is fully explored, call finish_session with your notes."
+)
 
 # Placeholder replacing a pruned snapshot tool result. Snapshots are the only
 # large item in the conversation and a ref from many actions ago is stale
@@ -710,10 +733,15 @@ def run_exploration_loop(
     A sibling of ``_complete_with_tools`` rather than a generalization of it:
     the two differ in termination (a terminal ``finish_session`` tool, not
     "stopped calling tools"), in memory management (snapshot pruning, which no
-    other caller needs), and in output (a forced structured wrap-up).  What is
-    shared — the client, JSON parsing, and sending ``tools`` together with
-    ``response_format`` — is reused directly; see ``_complete_with_tools`` for
-    why that combination is required against DeepSeek.
+    other caller needs), and in output (a forced structured wrap-up).
+
+    That difference in termination is why this loop must **not** copy
+    ``_complete_with_tools``'s ``response_format={"type": "json_object"}`` onto
+    its acting rounds, even though both send ``tools``.  There, JSON is the
+    wanted final answer and "stopped calling tools" means "answered"; here it
+    means "session over", so nudging the model toward content output is
+    actively harmful — it ended sessions at zero actions.  JSON mode survives
+    only on the forced wrap-up call at the end.
 
     ``tools`` maps tool name to executor.  Executors must never raise: they
     return error strings the model can react to, the same contract as
@@ -741,14 +769,22 @@ def run_exploration_loop(
     last_signature: str | None = None
     repeat_count = 0
     actions_used = 0
+    idle_rounds = 0
 
     while actions_used < max_actions:
         try:
+            # Deliberately NO response_format here, unlike every other call in
+            # this module. Acting rounds want a *tool call*, and JSON mode
+            # tells the model its output must be a JSON object — the shape of
+            # "emit content". Observed against DeepSeek: the model answered
+            # with {"tool": "snapshot", "params": {}} as message content
+            # instead of calling the tool, which ended sessions at zero
+            # actions. The forced wrap-up below still uses JSON mode, because
+            # there the JSON object genuinely is the wanted output.
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
                 tools=BROWSER_TOOLS,
-                response_format={"type": "json_object"},
             )
         except openai.OpenAIError as exc:
             raise LLMError(f"LLM request failed: {exc}") from exc
@@ -758,22 +794,29 @@ def run_exploration_loop(
         tool_calls = getattr(message, "tool_calls", None)
 
         if not tool_calls:
-            # The model answered instead of acting — it has decided it is done.
-            # Every round is sent with response_format=json_object, so that
-            # answer is a JSON object rather than prose; parse it like the
-            # wrap-up call does, and keep the raw text if it isn't the
-            # expected shape so nothing the model said is ever lost.
+            idle_rounds += 1
+            if idle_rounds < _MAX_IDLE_ROUNDS:
+                # Not necessarily "done" — more often a model that meant to
+                # act but wrote the call out instead of using the tool
+                # channel. Point it back at the tools rather than throwing
+                # away the charter.
+                messages.append(message)
+                messages.append({"role": "user", "content": _ACT_OR_FINISH_NUDGE})
+                continue
+            # Twice in a row: take it at its word. Parse as a wrap-up when it
+            # fits, else keep the raw text so nothing the model said is lost.
             try:
                 notes = _parse_json(message.content, SessionWrapUpResult).notes.strip()
             except LLMError:
                 notes = (message.content or "").strip()
             return ExplorationLoopResult(
                 notes=notes or "(model ended the session without notes)",
-                stop_reason=STOP_CHARTER_COMPLETE,
+                stop_reason=STOP_MODEL_STOPPED,
                 actions_used=actions_used,
                 action_log=action_log,
             )
 
+        idle_rounds = 0
         messages.append(message)
 
         for tool_call in tool_calls:
