@@ -12,6 +12,8 @@ from backend.config import MAX_UPLOAD_SIZE_MB, STORAGE_LOCATION
 from backend.database import get_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
+    ExploratoryRun,
+    ExploratoryRunStatus,
     Repo,
     Requirement,
     RequirementStatus,
@@ -292,6 +294,22 @@ async def finish_sprint(
         execution.last_heartbeat = None
         execution.updated_at = datetime.now(timezone.utc)
         session.add(execution)
+
+    # ── Fail exploratory runs still in progress (same rationale) ──────
+    in_progress_explorations = session.exec(
+        select(ExploratoryRun).where(
+            ExploratoryRun.sprint_id == sprint_id,
+            ExploratoryRun.status.in_(  # type: ignore[attr-defined]
+                [ExploratoryRunStatus.PENDING, ExploratoryRunStatus.RUNNING]
+            ),
+        )
+    ).all()
+    for exploration in in_progress_explorations:
+        exploration.status = ExploratoryRunStatus.FAILED
+        exploration.error = SPRINT_FINISHED_ERROR
+        exploration.last_heartbeat = None
+        exploration.updated_at = datetime.now(timezone.utc)
+        session.add(exploration)
 
     session.commit()
     session.refresh(sprint)

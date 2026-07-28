@@ -24,6 +24,7 @@ import redis
 import rq
 
 from backend.config import (
+    EXPLORATORY_JOB_TIMEOUT,
     JOB_RESULT_TTL,
     JOB_TIMEOUT,
     REDIS_DB,
@@ -51,6 +52,7 @@ REDIS_SOCKET_TIMEOUT = 5
 ANALYZE_REQUIREMENT_TASK = "backend.tasks.analyze_requirement.analyze_requirement_task"
 GENERATE_TEST_PLAN_TASK = "backend.tasks.generate_test_plan.generate_test_plan_task"
 EXECUTE_TEST_TASK = "backend.tasks.execute_test.execute_test_task"
+EXPLORE_REQUIREMENT_TASK = "backend.tasks.explore_requirement.explore_requirement_task"
 
 # ── Module-level singleton ────────────────────────────────────────────────
 _queue_service: QueueService | None = None
@@ -180,6 +182,19 @@ class QueueService:
         """
         return self._enqueue(
             EXECUTE_TEST_TASK, test_execution_id, TEST_EXECUTION_JOB_TIMEOUT, "test execution"
+        )
+
+    def enqueue_exploration(self, exploratory_run_id: int) -> rq.job.Job | None:
+        """Enqueue an exploratory run job and return the RQ Job handle.
+
+        One job covers every charter in the run, serially, so this timeout
+        must span the whole set rather than a single session.
+        """
+        return self._enqueue(
+            EXPLORE_REQUIREMENT_TASK,
+            exploratory_run_id,
+            EXPLORATORY_JOB_TIMEOUT,
+            "exploratory run",
         )
 
     def get_job(self, job_id: str) -> rq.job.Job | None:

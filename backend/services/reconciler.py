@@ -44,6 +44,8 @@ from backend.config import (
 from backend.database import new_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
+    ExploratoryRun,
+    ExploratoryRunStatus,
     Requirement,
     RequirementStatus,
     Sprint,
@@ -128,6 +130,22 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
         join_to_sprint=lambda stmt: stmt.join(
             Requirement, TestExecution.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
+    ),
+    _SweepSpec(
+        model=ExploratoryRun,
+        label="Exploratory run",
+        pending_status=ExploratoryRunStatus.PENDING,
+        running_status=ExploratoryRunStatus.RUNNING,
+        failed_status=ExploratoryRunStatus.FAILED,
+        clear_field=None,
+        enqueue_name="enqueue_exploration",
+        stale_error=(
+            "Exploration worker died repeatedly while processing this run. "
+            "Use Restart to try again."
+        ),
+        # Joins straight to Sprint — unlike plans and executions, an
+        # exploratory run carries its own sprint_id.
+        join_to_sprint=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
     ),
 )
 

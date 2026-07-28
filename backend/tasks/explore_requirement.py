@@ -1,0 +1,377 @@
+"""Exploratory-testing task, executed by the RQ worker.
+
+One job per run (``ExploratoryRun``), which covers exactly one requirement:
+walks that run's approved charters in order, giving each its own live
+browser and LLM tool loop, then writes a best-effort per-requirement
+summary.  Job args are the run id only — everything else is read fresh from
+the database, which makes every enqueue idempotent and reconciler-safe.
+
+Charters run **sequentially**, never in parallel.  Charters for one
+requirement attack the same feature by construction, so concurrent sessions
+would collide on the same records and manufacture false findings ("the
+record I created vanished").  Serial execution also means the run owns every
+session sheet when the summary call happens — no fan-in, no coordination.
+
+Resumability is derived entirely from each ``ExploratorySession``'s own
+status: finalized sessions are skipped on a retry.  An interrupted session
+restarts its charter from scratch — a half-explored browser died with the
+worker and cannot be resumed — while findings it already persisted are kept,
+since they were real observations regardless.
+
+Must not import from ``backend.services.queue`` or ``backend.worker``
+(circular-import rule).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+
+from sqlmodel import Session, select
+
+from backend.config import (
+    EXPLORATORY_MAX_ACTIONS,
+    EXPLORATORY_SNAPSHOT_WINDOW,
+    MAX_AUTO_RETRIES,
+)
+from backend.database import new_session
+from backend.models.database import (
+    SPRINT_FINISHED_ERROR,
+    ExploratoryFinding,
+    ExploratoryRun,
+    ExploratoryRunStatus,
+    ExploratorySession,
+    ExploratorySessionStatus,
+)
+from backend.services import browser_session, llm
+from backend.services.llm_prompts import ExploratorySessionLike, FindingLike
+from backend.services.storage import StorageService
+from backend.utils.readme_utils import resolve_readme
+
+logger = logging.getLogger(__name__)
+
+# Cap for the user-facing error summary stored on a failed row.
+_ERROR_SUMMARY_MAX_CHARS = 300
+
+# Cap for the stored per-session action log — mirrors execute_test.py's
+# _OUTPUT_MAX_CHARS precedent. 25 actions is a few KB, so this only bites
+# on a pathological session.
+_ACTION_LOG_MAX_CHARS = 20000
+
+# Should be unreachable via normal flow — guarded per this codebase's
+# convention of never trusting a supposedly-impossible state blindly.
+_ENV_VARS_MISSING_ERROR = "Test environment access variables have not been established."
+_NO_BASE_URL_ERROR = "No application URL is available for this run."
+
+# Deliberately no "plan still approved" guard, unlike execute_test.py: the
+# approved plan's cases are consumed once, at charter-generation time, as
+# "already covered" context. Nothing mid-run depends on the plan's status.
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _record_failure(session: Session, run_id: int, exc: Exception) -> None:
+    """Count the failure and either re-queue the run or mark it failed.
+
+    Sessions already finalized before the exception stay finalized — the next
+    attempt resumes from the first non-finalized charter.
+    """
+    session.rollback()
+    run = session.get(ExploratoryRun, run_id)
+    if run is None:
+        return
+
+    run.retry_count += 1
+    if run.retry_count >= MAX_AUTO_RETRIES:
+        run.status = ExploratoryRunStatus.FAILED
+        run.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
+    else:
+        # Back to pending — the reconciler re-enqueues it.
+        run.status = ExploratoryRunStatus.PENDING
+    run.last_heartbeat = None
+    run.updated_at = _now()
+    session.add(run)
+    session.commit()
+
+
+def _fail_run(session: Session, run: ExploratoryRun, error: str) -> None:
+    run.status = ExploratoryRunStatus.FAILED
+    run.error = error
+    run.last_heartbeat = None
+    run.updated_at = _now()
+    session.add(run)
+    session.commit()
+
+
+def _build_on_finding(
+    session: Session,
+    exploratory_session: ExploratorySession,
+    directory: str,
+    storage: StorageService,
+    counter: dict[str, int],
+):
+    """Persist a finding as the model records it, with its live screenshot.
+
+    Owns the per-session ``position`` counter.  A screenshot is optional by
+    design: ``store_screenshot`` returns ``None`` whenever ``STORE_OFFLINE``
+    is disabled, and the finding is persisted regardless.
+    """
+
+    def on_finding(record: browser_session.FindingRecord, png: bytes | None) -> None:
+        position = counter["n"]
+        screenshot_path: str | None = None
+        if png is not None:
+            try:
+                screenshot_path = storage.store_screenshot(
+                    png, directory, exploratory_session.id, position
+                )
+            except OSError as exc:
+                # An unwritable disk must not cost us the finding itself.
+                logger.warning("Could not store finding screenshot: %s", exc)
+
+        finding = ExploratoryFinding(
+            exploratory_session_id=exploratory_session.id,
+            position=position,
+            finding_type=record.finding_type,
+            severity=record.severity,
+            title=record.title,
+            steps_to_reproduce=record.steps_to_reproduce,
+            expected=record.expected,
+            actual=record.actual,
+            screenshot_path=screenshot_path,
+        )
+        session.add(finding)
+        session.commit()
+        counter["n"] = position + 1
+
+    return on_finding
+
+
+def _session_sheets(run: ExploratoryRun) -> list[ExploratorySessionLike]:
+    """Plain session-sheet data for the summary prompt (keeps llm.py DB-free)."""
+    return [
+        ExploratorySessionLike(
+            charter=s.charter,
+            sfdipot_areas=s.sfdipot_areas,
+            status=s.status,
+            actions_used=s.actions_used,
+            stop_reason=s.stop_reason,
+            session_notes=s.session_notes,
+            findings=[
+                FindingLike(
+                    finding_type=f.finding_type,
+                    severity=f.severity,
+                    title=f.title,
+                    expected=f.expected,
+                    actual=f.actual,
+                )
+                for f in s.findings
+            ],
+        )
+        for s in run.sessions
+    ]
+
+
+def explore_requirement_task(exploratory_run_id: int) -> None:
+    """Run (or resume) every charter for one requirement, then summarize."""
+    with new_session() as session:
+        run = session.get(ExploratoryRun, exploratory_run_id)
+        if run is None:
+            logger.info("Exploratory run %d no longer exists — skipping", exploratory_run_id)
+            return
+        if run.status not in (ExploratoryRunStatus.PENDING, ExploratoryRunStatus.RUNNING):
+            logger.info(
+                "Exploratory run %d is '%s' — skipping stale job", exploratory_run_id, run.status
+            )
+            return
+
+        requirement = run.requirement
+        sprint = requirement.sprint if requirement is not None else None
+        if sprint is None or not sprint.active:
+            _fail_run(session, run, SPRINT_FINISHED_ERROR)
+            logger.info("Exploratory run %d: sprint inactive — marked failed", exploratory_run_id)
+            return
+
+        test_env = sprint.test_environment
+        env_vars = test_env.env_vars if test_env else None
+        if not env_vars:
+            _fail_run(session, run, _ENV_VARS_MISSING_ERROR)
+            logger.warning("Exploratory run %d: env vars missing — failed", exploratory_run_id)
+            return
+
+        base_urls = [env_vars[name] for name in run.base_url_env_vars if name in env_vars]
+        if not base_urls:
+            _fail_run(session, run, _NO_BASE_URL_ERROR)
+            logger.warning("Exploratory run %d: no usable base URL — failed", exploratory_run_id)
+            return
+
+        run.status = ExploratoryRunStatus.RUNNING
+        run.last_heartbeat = _now()
+        run.updated_at = _now()
+        session.add(run)
+        session.commit()
+
+        try:
+            # Resolve project context BEFORE any browser exists. resolve_readme
+            # runs an asyncio loop, and Playwright's sync API refuses to operate
+            # while one is running in the same thread — this ordering is
+            # load-bearing, not stylistic.
+            readme = asyncio.run(resolve_readme(sprint))
+            file_tree = sprint.repo.file_tree if sprint.repo else None
+            env_var_names = list(env_vars.keys())
+            storage = StorageService()
+
+            def on_round() -> None:
+                # Heartbeat between LLM rounds so a live session is never
+                # swept as a crashed worker.
+                run.last_heartbeat = _now()
+                session.add(run)
+                session.commit()
+
+            on_round()
+
+            sessions = session.exec(
+                select(ExploratorySession)
+                .where(ExploratorySession.exploratory_run_id == exploratory_run_id)
+                .order_by(ExploratorySession.position)
+            ).all()
+
+            for exploratory_session in sessions:
+                if exploratory_session.status in (
+                    ExploratorySessionStatus.COMPLETED,
+                    ExploratorySessionStatus.ERROR,
+                ):
+                    continue  # already finalized — resumability
+
+                with session.no_autoflush:
+                    current_status = session.exec(
+                        select(ExploratoryRun.status).where(ExploratoryRun.id == exploratory_run_id)
+                    ).one_or_none()
+                if current_status != ExploratoryRunStatus.RUNNING:
+                    logger.info(
+                        "Exploratory run %d changed to '%s' mid-run — stopping",
+                        exploratory_run_id,
+                        current_status,
+                    )
+                    session.rollback()
+                    return
+
+                exploratory_session.status = ExploratorySessionStatus.RUNNING
+                exploratory_session.updated_at = _now()
+                session.add(exploratory_session)
+                session.commit()
+
+                _run_one_session(
+                    session=session,
+                    exploratory_session=exploratory_session,
+                    requirement_name=requirement.name,
+                    requirement_description=requirement.description,
+                    base_urls=base_urls,
+                    env_vars=env_vars,
+                    env_var_names=env_var_names,
+                    readme=readme,
+                    file_tree=file_tree,
+                    directory=sprint.directory,
+                    storage=storage,
+                    on_round=on_round,
+                )
+
+            _write_summary(session, run, requirement)
+
+            run.status = ExploratoryRunStatus.COMPLETED
+            run.last_heartbeat = None
+            run.retry_count = 0
+            run.updated_at = _now()
+            session.add(run)
+            session.commit()
+            logger.info("Exploratory run %d completed", exploratory_run_id)
+        except Exception as exc:
+            # Never re-raise: the DB retry counter, not RQ's failed registry,
+            # is the recovery mechanism.
+            logger.exception("Exploratory run %d failed", exploratory_run_id)
+            _record_failure(session, exploratory_run_id, exc)
+
+
+def _run_one_session(
+    *,
+    session: Session,
+    exploratory_session: ExploratorySession,
+    requirement_name: str,
+    requirement_description: str,
+    base_urls: list[str],
+    env_vars: dict[str, str],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+    directory: str,
+    storage: StorageService,
+    on_round,
+) -> None:
+    """Explore one charter. Never raises — a bad charter must not abandon the run."""
+    counter = {"n": 0}
+    try:
+        with browser_session.BrowserSession(
+            base_urls=base_urls,
+            env_vars=env_vars,
+            on_finding=_build_on_finding(session, exploratory_session, directory, storage, counter),
+        ) as browser:
+            result = llm.run_exploration_loop(
+                name=requirement_name,
+                description=requirement_description,
+                charter=exploratory_session.charter,
+                sfdipot_areas=exploratory_session.sfdipot_areas,
+                env_var_names=env_var_names,
+                readme=readme,
+                file_tree=file_tree,
+                tools=browser.tool_registry(),
+                max_actions=EXPLORATORY_MAX_ACTIONS,
+                snapshot_window=EXPLORATORY_SNAPSHOT_WINDOW,
+                on_round=on_round,
+            )
+    except Exception as exc:
+        logger.exception("Exploratory session %d failed", exploratory_session.id)
+        session.rollback()
+        exploratory_session.status = ExploratorySessionStatus.ERROR
+        exploratory_session.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
+        exploratory_session.stop_reason = "error"
+        exploratory_session.updated_at = _now()
+        session.add(exploratory_session)
+        session.commit()
+        return
+
+    exploratory_session.status = ExploratorySessionStatus.COMPLETED
+    exploratory_session.session_notes = result.notes
+    exploratory_session.actions_used = result.actions_used
+    exploratory_session.action_log = "\n".join(result.action_log)[:_ACTION_LOG_MAX_CHARS]
+    exploratory_session.stop_reason = result.stop_reason
+    exploratory_session.updated_at = _now()
+    session.add(exploratory_session)
+    session.commit()
+
+
+def _write_summary(session: Session, run: ExploratoryRun, requirement) -> None:
+    """Best-effort per-requirement summary.
+
+    Runs only on the pass that completes the session loop, so a job that
+    crashed mid-loop simply never reaches it and the retry writes it once at
+    the end.  A failure here logs and leaves ``summary`` null rather than
+    failing the run: the findings and session sheets are the deliverable, and
+    the user can retry the summary from the run page.
+    """
+    session.refresh(run)
+    try:
+        result = llm.summarize_exploration(
+            name=requirement.name,
+            description=requirement.description,
+            sessions=_session_sheets(run),
+        )
+    except llm.LLMError as exc:
+        logger.warning("Exploratory run %d: summary unavailable: %s", run.id, exc)
+        return
+
+    run.summary = result.summary
+    session.add(run)
+    session.commit()

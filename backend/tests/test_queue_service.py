@@ -153,3 +153,27 @@ class TestSingleton:
         reset_queue_service()
         second = get_queue_service()
         assert first is not second
+
+
+class TestEnqueueExploration:
+    """One job covers every charter serially, so it needs its own timeout."""
+
+    def test_uses_exploration_task_and_timeout(self):
+        from backend.config import EXPLORATORY_JOB_TIMEOUT
+        from backend.services.queue import EXPLORE_REQUIREMENT_TASK
+
+        service = QueueService()
+        queue = _RecordingQueue()
+        service._queue = queue
+
+        job = service.enqueue_exploration(42)
+
+        assert job.id == "job-42"
+        call = queue.calls[0]
+        assert call["task_path"] == EXPLORE_REQUIREMENT_TASK
+        assert call["row_id"] == 42
+        assert call["job_timeout"] == EXPLORATORY_JOB_TIMEOUT
+
+    def test_returns_none_when_redis_unavailable(self):
+        service = QueueService()
+        assert service.enqueue_exploration(42) is None

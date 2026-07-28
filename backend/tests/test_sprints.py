@@ -1269,3 +1269,66 @@ class TestSprintExploratoryFlag:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_exploratory_runs"] is True
+
+
+class TestFinishSprintSweepsExploratoryRuns:
+    """Finishing a sprint must not leave an exploration in progress."""
+
+    def _run(self, db_session, sprint, status=None, **kwargs):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement
+
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        if status is not None:
+            kwargs["status"] = status
+        return _seed_exploratory_run(db_session, sprint, requirement, **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_fails_in_progress_runs(self, async_client, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            ExploratoryRun,
+            ExploratoryRunStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        pending = self._run(db_session, sprint)
+        running = self._run(
+            db_session,
+            sprint,
+            status=ExploratoryRunStatus.RUNNING,
+            last_heartbeat=datetime.now(timezone.utc),
+        )
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for run_id in (pending.id, running.id):
+            row = db_session.get(ExploratoryRun, run_id)
+            assert row.status == ExploratoryRunStatus.FAILED
+            assert row.error == SPRINT_FINISHED_ERROR
+            assert row.last_heartbeat is None
+
+    @pytest.mark.asyncio
+    async def test_settled_runs_untouched(self, async_client, db_session):
+        from backend.models.database import ExploratoryRun, ExploratoryRunStatus
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        settled = {
+            self._run(db_session, sprint, status=status).id: status
+            for status in (ExploratoryRunStatus.COMPLETED, ExploratoryRunStatus.FAILED)
+        }
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for run_id, status in settled.items():
+            row = db_session.get(ExploratoryRun, run_id)
+            assert row.status == status
+            assert row.error is None
