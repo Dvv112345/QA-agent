@@ -17,6 +17,7 @@ import json
 import logging
 import ssl
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal, TypeVar
 
 import certifi
@@ -25,6 +26,7 @@ import openai
 from sqlmodel import SQLModel
 
 from backend.config import (
+    EXPLORATORY_MAX_CHARTERS,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
@@ -32,12 +34,17 @@ from backend.config import (
     TEST_EXECUTION_TOOL_ROUNDS,
     TEST_PLAN_TOOL_ROUNDS,
 )
-from backend.models.database import TestCasePriority
+from backend.models.database import SfdipotArea, TestCasePriority
 from backend.services.llm_prompts import (
+    BROWSER_TOOLS,
+    CHARTER_SYSTEM_PROMPT,
     CHECK_SYSTEM_PROMPT,
     ENV_VARS_SYSTEM_PROMPT,
+    EXPLORATION_SUMMARY_SYSTEM_PROMPT,
+    EXPLORATION_SYSTEM_PROMPT,
     READ_FILE_TOOL,
     REVISE_SYSTEM_PROMPT,
+    SESSION_WRAPUP_PROMPT,
     SPLIT_PRD_SYSTEM_PROMPT,
     TEST_ENV_CHECK_SYSTEM_PROMPT,
     TEST_ENV_REVISE_SYSTEM_PROMPT,
@@ -45,9 +52,13 @@ from backend.services.llm_prompts import (
     TEST_PLAN_SYSTEM_PROMPT,
     TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
     TEST_SCRIPT_SYSTEM_PROMPT,
+    ExploratorySessionLike,
     TestCaseLike,
+    charter_context,
     context_sections,
     env_vars_context,
+    exploration_context,
+    exploration_summary_context,
     requirements_section,
     test_plan_context,
     test_script_context,
@@ -552,3 +563,293 @@ def diagnose_and_fix_script(
         TEST_EXECUTION_TOOL_ROUNDS,
     )
     return _validate_diagnosis(result)
+
+
+# ── Exploratory testing ───────────────────────────────────────────────
+
+
+class CharterItem(SQLModel):
+    charter: str
+    sfdipot_areas: list[str] = []
+
+
+class CharterResult(SQLModel):
+    charters: list[CharterItem]
+    base_url_env_vars: list[str] = []
+
+
+class SessionWrapUpResult(SQLModel):
+    notes: str
+    stop_reason: str | None = None
+
+
+class ExplorationSummaryResult(SQLModel):
+    summary: str
+
+
+@dataclass
+class ExplorationLoopResult:
+    """What one exploratory session produced.
+
+    Findings are deliberately absent: they are persisted as they happen, via
+    the ``record_finding`` executor, which is the only way to capture a
+    screenshot while the problem is still on screen.
+    """
+
+    notes: str
+    stop_reason: str
+    actions_used: int
+    action_log: list[str]
+
+
+# Stop reasons recorded on ExploratorySession.stop_reason.
+STOP_CHARTER_COMPLETE = "charter_complete"
+STOP_ACTION_CAP = "action_cap"
+
+# Placeholder replacing a pruned snapshot tool result. Snapshots are the only
+# large item in the conversation and a ref from many actions ago is stale
+# anyway, so older ones are dropped verbatim rather than summarized by a
+# second LLM call (see the brainstorm's Risk 1).
+_PRUNED_SNAPSHOT = "[snapshot replaced to save context — take a fresh one if you need refs]"
+
+# Consecutive identical tool calls before the model gets a nudge instead of
+# another execution.
+_REPEAT_NUDGE_THRESHOLD = 3
+
+
+def _validate_charters(result: CharterResult) -> CharterResult:
+    """Reject charter sets that are empty, over-cap, blank, or mis-tagged."""
+    if not result.charters:
+        raise LLMError("LLM returned no charters.")
+    if len(result.charters) > EXPLORATORY_MAX_CHARTERS:
+        raise LLMError(
+            f"LLM returned {len(result.charters)} charters, "
+            f"above the cap of {EXPLORATORY_MAX_CHARTERS}."
+        )
+    valid_areas = {area.value for area in SfdipotArea}
+    for item in result.charters:
+        if not item.charter.strip():
+            raise LLMError("LLM returned a blank charter.")
+        for area in item.sfdipot_areas:
+            if area not in valid_areas:
+                raise LLMError(f"LLM returned an unknown SFDIPOT area: {area!r}.")
+    if not result.base_url_env_vars:
+        raise LLMError("LLM nominated no environment variable for the application URL.")
+    return result
+
+
+def generate_charters(
+    name: str,
+    description: str,
+    covered_cases: list[TestCaseLike],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+) -> CharterResult:
+    """Draft SBTM charters for one requirement and nominate its app URLs.
+
+    Plain single completion — no tool loop, the same cheap profile as
+    ``generate_env_vars``.  Whether the nominated variable *names* actually
+    exist in the environment map is checked by the caller: this module never
+    sees ``env_vars`` values, only their names.
+    """
+    parts = charter_context(name, description, covered_cases, env_var_names, readme, file_tree)
+    result = _complete(CHARTER_SYSTEM_PROMPT, "\n\n".join(parts), CharterResult)
+    return _validate_charters(result)
+
+
+def summarize_exploration(
+    name: str,
+    description: str,
+    sessions: list[ExploratorySessionLike],
+) -> ExplorationSummaryResult:
+    """Synthesize a run's session sheets into a per-requirement summary.
+
+    Plain single completion.  Callers treat failure as non-fatal — the
+    findings, not this paragraph, are the run's deliverable.
+    """
+    parts = exploration_summary_context(name, description, sessions)
+    result = _complete(
+        EXPLORATION_SUMMARY_SYSTEM_PROMPT, "\n\n".join(parts), ExplorationSummaryResult
+    )
+    if not result.summary.strip():
+        raise LLMError("LLM returned a blank exploration summary.")
+    return result
+
+
+def _prune_snapshots(messages: list, snapshot_indices: list[int], window: int) -> None:
+    """Replace all but the newest *window* snapshot results with a placeholder.
+
+    Mutates ``messages`` in place.  Only ``tool`` results are touched —
+    assistant messages are never pruned, because the model's own commentary
+    between calls is small and is the narrative thread that keeps a long
+    session coherent (it also doubles as the raw material for the wrap-up).
+    """
+    for index in snapshot_indices[:-window] if window > 0 else snapshot_indices:
+        if messages[index]["content"] != _PRUNED_SNAPSHOT:
+            messages[index]["content"] = _PRUNED_SNAPSHOT
+
+
+def run_exploration_loop(
+    name: str,
+    description: str,
+    charter: str,
+    sfdipot_areas: list[str],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+    tools: dict[str, Callable[..., str]],
+    max_actions: int,
+    snapshot_window: int,
+    on_round: Callable[[], None],
+) -> ExplorationLoopResult:
+    """Drive one charter's session as a bounded browser tool loop.
+
+    A sibling of ``_complete_with_tools`` rather than a generalization of it:
+    the two differ in termination (a terminal ``finish_session`` tool, not
+    "stopped calling tools"), in memory management (snapshot pruning, which no
+    other caller needs), and in output (a forced structured wrap-up).  What is
+    shared — the client, JSON parsing, and sending ``tools`` together with
+    ``response_format`` — is reused directly; see ``_complete_with_tools`` for
+    why that combination is required against DeepSeek.
+
+    ``tools`` maps tool name to executor.  Executors must never raise: they
+    return error strings the model can react to, the same contract as
+    ``read_file``.
+    """
+    client = _get_client()
+    parts = exploration_context(
+        name, description, charter, sfdipot_areas, env_var_names, readme, file_tree
+    )
+    user_prompt = (
+        "\n\n".join(parts)
+        + f"\n\nYou have {max_actions} actions for this session. Use them deliberately."
+    )
+    messages: list = [
+        {"role": "system", "content": EXPLORATION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    action_log: list[str] = []
+    snapshot_indices: list[int] = []
+    last_signature: str | None = None
+    repeat_count = 0
+    actions_used = 0
+
+    while actions_used < max_actions:
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                tools=BROWSER_TOOLS,
+                response_format={"type": "json_object"},
+            )
+        except openai.OpenAIError as exc:
+            raise LLMError(f"LLM request failed: {exc}") from exc
+
+        on_round()
+        message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None)
+
+        if not tool_calls:
+            # The model answered instead of acting. Treat its text as the
+            # session notes — it has decided it is done.
+            notes = (message.content or "").strip()
+            return ExplorationLoopResult(
+                notes=notes or "(model ended the session without notes)",
+                stop_reason=STOP_CHARTER_COMPLETE,
+                actions_used=actions_used,
+                action_log=action_log,
+            )
+
+        messages.append(message)
+
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            try:
+                arguments = json.loads(tool_call.function.arguments or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+
+            if tool_name == "finish_session":
+                notes = str(arguments.get("notes", "")).strip()
+                action_log.append("finish_session()")
+                return ExplorationLoopResult(
+                    notes=notes or "(session finished without notes)",
+                    stop_reason=STOP_CHARTER_COMPLETE,
+                    actions_used=actions_used,
+                    action_log=action_log,
+                )
+
+            actions_used += 1
+            signature = f"{tool_name}:{sorted(arguments.items())}"
+            if signature == last_signature:
+                repeat_count += 1
+            else:
+                repeat_count = 0
+                last_signature = signature
+
+            if repeat_count >= _REPEAT_NUDGE_THRESHOLD:
+                # Don't re-execute an action that has already produced the
+                # same result three times — nudge instead, and still charge
+                # it against the budget so a stuck model cannot loop forever.
+                result = (
+                    "You have repeated this exact action several times with the "
+                    "same result. Try something different, or call "
+                    "finish_session if the charter is explored."
+                )
+            else:
+                executor = tools.get(tool_name)
+                if executor is None:
+                    result = f"ERROR: unknown tool {tool_name!r}."
+                else:
+                    result = executor(**arguments)
+
+            action_log.append(f"{tool_name}({_format_args(arguments)}) -> {_summarize(result)}")
+            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+            if tool_name == "snapshot":
+                snapshot_indices.append(len(messages) - 1)
+                _prune_snapshots(messages, snapshot_indices, snapshot_window)
+
+        remaining = max_actions - actions_used
+        messages[-1]["content"] += (
+            f"\n[{remaining} of {max_actions} actions remaining — "
+            "call finish_session when the charter is explored]"
+        )
+
+    # Budget exhausted — force the session notes.
+    messages.append({"role": "user", "content": SESSION_WRAPUP_PROMPT})
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            tools=BROWSER_TOOLS,
+            tool_choice="none",
+            response_format={"type": "json_object"},
+        )
+    except openai.OpenAIError as exc:
+        raise LLMError(f"LLM request failed: {exc}") from exc
+    on_round()
+    wrap_up = _parse_json(response.choices[0].message.content, SessionWrapUpResult)
+    return ExplorationLoopResult(
+        notes=wrap_up.notes,
+        stop_reason=STOP_ACTION_CAP,
+        actions_used=actions_used,
+        action_log=action_log,
+    )
+
+
+def _format_args(arguments: dict) -> str:
+    """Render tool arguments for the action log.
+
+    ``fill_secret`` is logged by variable name only — its value is resolved
+    inside the executor and never reaches this module, which is what keeps
+    the stored log credential-free by construction.
+    """
+    return ", ".join(f"{key}={value!r}" for key, value in arguments.items())
+
+
+def _summarize(result: str, limit: int = 200) -> str:
+    """Condense a tool result for the action log (snapshots are huge)."""
+    collapsed = " ".join(result.split())
+    return collapsed if len(collapsed) <= limit else collapsed[:limit] + "…"
