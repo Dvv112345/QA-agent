@@ -1,0 +1,112 @@
+.exp-run {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.exp-run-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.exp-run-header h1 {
+  margin: 0;
+}
+
+.exp-run-counts {
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.exp-run-summary {
+  background: #f5f7fa;
+  border-radius: 6px;
+  padding: 1rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.exp-run-summary h2 {
+  margin-top: 0;
+  font-size: 1.05rem;
+}
+
+.exp-run-muted {
+  color: #777;
+}
+
+.exp-run-message {
+  padding: 1.5rem;
+  color: #555;
+}
+
+.exp-run-error {
+  color: #b3261e;
+}
+
+.exp-session-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.exp-session-row {
+  border: 1px solid #e0e4ea;
+  border-radius: 6px;
+  margin-bottom: 0.6rem;
+}
+
+.exp-session-link {
+  display: block;
+  padding: 0.8rem 1rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.exp-session-link:hover {
+  background: #f5f7fa;
+}
+
+.exp-session-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.exp-session-charter {
+  font-weight: 500;
+}
+
+.exp-session-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.82rem;
+  color: #666;
+  margin-top: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.session-badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  background: #e0e4ea;
+  color: #333;
+  white-space: nowrap;
+}
+
+.session-badge-completed {
+  background: #d7ecd9;
+}
+
+.session-badge-running {
+  background: #d8e6f7;
+}
+
+.session-badge-error {
+  background: #f7d9d7;
+}

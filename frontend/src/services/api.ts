@@ -1,5 +1,10 @@
 import type {
   AuthCheckResponse,
+  CharterDraft,
+  ExploratoryCharterDraftResponse,
+  ExploratoryRunDetailResponse,
+  ExploratoryRunResponse,
+  ExploratorySessionResponse,
   ReadmeStatusResponse,
   RepoResponse,
   RequirementInput,
@@ -364,4 +369,76 @@ async function handleResponse<T>(response: Response): Promise<T> {
     return undefined as T
   }
   return response.json() as Promise<T>
+}
+
+// ── Exploratory testing ──────────────────────────────────────────────
+
+export async function generateCharters(
+  sprintId: number,
+  requirementId: number,
+): Promise<ExploratoryCharterDraftResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/sprints/${sprintId}/exploratory-charters/generate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirement_id: requirementId }),
+    },
+  )
+  return handleResponse<ExploratoryCharterDraftResponse>(response)
+}
+
+export async function createExploratoryRun(
+  sprintId: number,
+  requirementId: number,
+  charters: CharterDraft[],
+  baseUrlEnvVars: string[],
+): Promise<ExploratoryRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/exploratory-runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requirement_id: requirementId,
+      charters,
+      base_url_env_vars: baseUrlEnvVars,
+    }),
+  })
+  return handleResponse<ExploratoryRunDetailResponse>(response)
+}
+
+export async function fetchExploratoryRuns(sprintId: number): Promise<ExploratoryRunResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/exploratory-runs`)
+  return handleResponse<ExploratoryRunResponse[]>(response)
+}
+
+export async function fetchExploratoryRun(runId: number): Promise<ExploratoryRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/exploratory-runs/${runId}`)
+  return handleResponse<ExploratoryRunDetailResponse>(response)
+}
+
+export async function fetchExploratorySession(
+  sessionId: number,
+): Promise<ExploratorySessionResponse> {
+  const response = await fetch(`${API_BASE}/api/exploratory-sessions/${sessionId}`)
+  return handleResponse<ExploratorySessionResponse>(response)
+}
+
+export async function restartExploratoryRun(runId: number): Promise<ExploratoryRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/exploratory-runs/${runId}/restart`, {
+    method: 'POST',
+  })
+  return handleResponse<ExploratoryRunDetailResponse>(response)
+}
+
+export async function summarizeExploratoryRun(
+  runId: number,
+): Promise<ExploratoryRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/exploratory-runs/${runId}/summarize`, {
+    method: 'POST',
+  })
+  return handleResponse<ExploratoryRunDetailResponse>(response)
+}
+
+export function findingScreenshotUrl(findingId: number): string {
+  return `${API_BASE}/api/exploratory-findings/${findingId}/screenshot`
 }

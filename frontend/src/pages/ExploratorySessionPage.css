@@ -1,0 +1,75 @@
+.exp-session {
+  max-width: 55rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.exp-session-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.exp-session-header h1 {
+  margin: 0;
+}
+
+.exp-session-meta-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 1rem 0 1.5rem;
+  font-size: 0.9rem;
+}
+
+.exp-session-meta-list dt {
+  font-weight: 600;
+  color: #444;
+}
+
+.exp-session-meta-list dd {
+  margin: 0;
+}
+
+.exp-session-charter {
+  font-style: italic;
+}
+
+.exp-session-notes {
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.exp-session-muted {
+  color: #777;
+}
+
+.exp-session-message {
+  padding: 1.5rem;
+  color: #555;
+}
+
+.exp-session-error {
+  color: #b3261e;
+}
+
+.exp-session-log {
+  margin-top: 1.5rem;
+  border-top: 1px solid #e0e4ea;
+  padding-top: 0.75rem;
+}
+
+.exp-session-log summary {
+  cursor: pointer;
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.exp-session-log pre {
+  background: #f5f7fa;
+  border-radius: 4px;
+  padding: 0.75rem;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}

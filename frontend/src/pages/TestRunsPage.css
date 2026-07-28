@@ -114,3 +114,28 @@
   background: #fee2e2;
   color: #991b1b;
 }
+
+.test-runs-section {
+  margin-bottom: 2rem;
+}
+
+.test-runs-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #e0e4ea;
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.test-runs-section-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.run-badge-pending {
+  background: #e8e8e8;
+  color: #444;
+}
