@@ -106,6 +106,35 @@ TEST_PLAN_FILE_MAX_CHARS: int = _get_int("TEST_PLAN_FILE_MAX_CHARS", 20000)
 # which JOB_TIMEOUT (sized for single-call analysis jobs) does not.
 TEST_PLAN_JOB_TIMEOUT: int = _get_int("TEST_PLAN_JOB_TIMEOUT", 900)
 
+# ── Exploratory testing ───────────────────────────────────────────────
+# The SBTM time box, measured in LLM tool rounds rather than wall clock.
+# This is the main lever on a run's duration: charters run serially, so a
+# run takes the sum of its sessions with no parallelism anywhere.
+EXPLORATORY_MAX_ACTIONS: int = _get_int("EXPLORATORY_MAX_ACTIONS", 25)
+# Cap on charters per run (also enforced on user-edited charter lists).
+EXPLORATORY_MAX_CHARTERS: int = _get_int("EXPLORATORY_MAX_CHARTERS", 6)
+# Per-snapshot character cap — an ARIA snapshot of a large SPA is unbounded.
+EXPLORATORY_SNAPSHOT_MAX_CHARS: int = _get_int("EXPLORATORY_SNAPSHOT_MAX_CHARS", 20000)
+# How many recent snapshots stay verbatim in the conversation; older ones are
+# replaced with a one-line placeholder. Snapshots are the only large item in
+# the loop, and a ref from many actions ago is stale anyway.
+EXPLORATORY_SNAPSHOT_WINDOW: int = _get_int("EXPLORATORY_SNAPSHOT_WINDOW", 3)
+# Wall-clock timeout for a single Playwright action. Kept well below
+# Playwright's 30 s default: an exploratory action that takes 30 s is usually
+# itself the finding, and a stale element ref burns this whole budget before
+# erroring.
+EXPLORATORY_ACTION_TIMEOUT: int = _get_int("EXPLORATORY_ACTION_TIMEOUT", 10)
+# Display only — feeds the pre-run duration estimate shown on the confirm
+# button. Bounds nothing at runtime, so being wrong costs an inaccurate label.
+EXPLORATORY_SECONDS_PER_ACTION: int = _get_int("EXPLORATORY_SECONDS_PER_ACTION", 8)
+# Max findings one session may record, guarding against a runaway model.
+EXPLORATORY_MAX_FINDINGS: int = _get_int("EXPLORATORY_MAX_FINDINGS", 20)
+# RQ job_timeout for exploratory runs. Must cover every charter serially:
+# MAX_CHARTERS × MAX_ACTIONS × ACTION_TIMEOUT plus the summary call.
+EXPLORATORY_JOB_TIMEOUT: int = _get_int("EXPLORATORY_JOB_TIMEOUT", 7200)
+# Headed mode is for local debugging — watching the agent explore.
+EXPLORATORY_HEADLESS: bool = _get_bool("EXPLORATORY_HEADLESS", True)
+
 # ── Reconciler ────────────────────────────────────────────────────────
 RECONCILER_INTERVAL: int = _get_int("RECONCILER_INTERVAL", 30)
 # Must exceed OPENAI_TIMEOUT so a slow LLM call is never mistaken for a dead worker.
