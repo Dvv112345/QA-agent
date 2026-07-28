@@ -45,8 +45,8 @@ from backend.models.database import (
     ExploratorySessionStatus,
 )
 from backend.services import browser_session, llm
-from backend.services.llm_prompts import ExploratorySessionLike, FindingLike
 from backend.services.storage import StorageService
+from backend.utils.exploratory_utils import session_sheets
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
@@ -148,31 +148,6 @@ def _build_on_finding(
         counter["n"] = position + 1
 
     return on_finding
-
-
-def _session_sheets(run: ExploratoryRun) -> list[ExploratorySessionLike]:
-    """Plain session-sheet data for the summary prompt (keeps llm.py DB-free)."""
-    return [
-        ExploratorySessionLike(
-            charter=s.charter,
-            sfdipot_areas=s.sfdipot_areas,
-            status=s.status,
-            actions_used=s.actions_used,
-            stop_reason=s.stop_reason,
-            session_notes=s.session_notes,
-            findings=[
-                FindingLike(
-                    finding_type=f.finding_type,
-                    severity=f.severity,
-                    title=f.title,
-                    expected=f.expected,
-                    actual=f.actual,
-                )
-                for f in s.findings
-            ],
-        )
-        for s in run.sessions
-    ]
 
 
 def explore_requirement_task(exploratory_run_id: int) -> None:
@@ -366,7 +341,7 @@ def _write_summary(session: Session, run: ExploratoryRun, requirement) -> None:
         result = llm.summarize_exploration(
             name=requirement.name,
             description=requirement.description,
-            sessions=_session_sheets(run),
+            sessions=session_sheets(run),
         )
     except llm.LLMError as exc:
         logger.warning("Exploratory run %d: summary unavailable: %s", run.id, exc)

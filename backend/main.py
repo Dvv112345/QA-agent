@@ -14,6 +14,7 @@ from backend.database import init_db
 from backend.migrations import run_migrations
 from backend.models.types import HealthResponse
 from backend.routes.auth import router as auth_router
+from backend.routes.exploratory import router as exploratory_router
 from backend.routes.repos import router as repos_router
 from backend.routes.requirements import router as requirements_router
 from backend.routes.sprints import router as sprints_router
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(test_environment_router, prefix="/api")
     app.include_router(test_plans_router, prefix="/api")
     app.include_router(test_execution_router, prefix="/api")
+    app.include_router(exploratory_router, prefix="/api")
 
     # ------------------------------------------------------------------
     # Global exception handler — catches unexpected errors only.
