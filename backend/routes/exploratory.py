@@ -334,6 +334,13 @@ def _projected_minutes(charter_count: int) -> int:
     The LLM has no idea how long a browser action or an LLM round takes, so
     any figure it returned would be invented — and an invented estimate is
     worse than none because it looks authoritative.
+
+    Counts charged actions only, so it is a floor rather than a midpoint:
+    ``record_finding`` is free of the action budget but still costs an LLM
+    round, so a finding-heavy session overruns this. Left deliberately —
+    sessions record a handful of findings at most, and quoting the
+    theoretical worst case (every session hitting the finding cap) would
+    overstate the common case far more than this understates it.
     """
     seconds = charter_count * EXPLORATORY_MAX_ACTIONS * EXPLORATORY_SECONDS_PER_ACTION
     return max(1, round(seconds / 60))

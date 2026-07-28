@@ -995,6 +995,7 @@ def _run_loop(
     rounds=None,
     base_urls=("https://app.test",),
     secret_values=None,
+    max_free_recordings=llm.EXPLORATORY_MAX_FINDINGS,
 ):
     """Invoke the loop with sensible defaults for the fields under test."""
     return llm.run_exploration_loop(
@@ -1011,6 +1012,7 @@ def _run_loop(
         snapshot_window=snapshot_window,
         on_round=(lambda: rounds.append(1)) if rounds is not None else (lambda: None),
         secret_values=secret_values,
+        max_free_recordings=max_free_recordings,
     )
 
 
@@ -1274,6 +1276,96 @@ class TestRunExplorationLoop:
         _scripted(monkeypatch, [_answering("")] * 2)
         result = _run_loop({})
         assert result.notes == "(model ended the session without notes)"
+
+    def test_record_finding_does_not_consume_an_action(self, monkeypatch):
+        """Findings are the deliverable — they must not compete with exploring."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "record_finding", title="Export drops a row")),
+                _acting(_tool_call("c3", "finish_session", notes="done")),
+            ],
+        )
+
+        result = _run_loop(
+            {"snapshot": lambda **kw: "page", "record_finding": lambda **kw: "Recorded."}
+        )
+
+        assert result.actions_used == 1  # the snapshot only
+        assert any("record_finding" in line for line in result.action_log)
+
+    def test_recordings_stop_being_free_past_the_cap(self, monkeypatch):
+        """The termination guarantee: an always-free non-terminal tool never exits.
+
+        ``actions_used < max_actions`` is the loop's only bound, and past the
+        finding cap record_finding returns "limit reached" without changing
+        anything — so if it stayed free a model could call it forever.
+        """
+        # 2 free rounds + 3 charged rounds exhausts max_actions=3, then the
+        # forced wrap-up. Distinct titles, so the repeat-nudge never fires and
+        # cannot be what saves us here.
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call(f"c{i}", "record_finding", title=f"Finding {i}"))
+                for i in range(2 + 3)
+            ]
+            + [_answering('{"notes": "budget gone"}')],
+        )
+
+        result = _run_loop(
+            {"record_finding": lambda **kw: "Recorded."},
+            max_actions=3,
+            max_free_recordings=2,
+        )
+
+        assert result.actions_used == 3
+        assert result.stop_reason == llm.STOP_ACTION_CAP
+
+    def test_total_rounds_are_bounded_by_actions_plus_free_recordings(self, monkeypatch):
+        client = _scripted(
+            monkeypatch,
+            [_acting(_tool_call(f"c{i}", "record_finding", title=f"F{i}")) for i in range(4 + 3)]
+            + [_answering('{"notes": "budget gone"}')],
+        )
+
+        _run_loop(
+            {"record_finding": lambda **kw: "Recorded."},
+            max_actions=4,
+            max_free_recordings=3,
+        )
+
+        # 3 free + 4 charged acting rounds, plus the forced wrap-up call —
+        # the ceiling a free non-terminal tool would otherwise remove.
+        assert len(client.requests) == 4 + 3 + 1
+
+    def test_low_budget_switches_to_record_now(self, monkeypatch):
+        """Past the cap record_finding is unreachable, so warn while it isn't.
+
+        The forced wrap-up runs with tool_choice="none", so a finding still
+        unrecorded when the budget runs out can only land in the notes — where
+        nothing reads it as a finding.
+        """
+        client = _scripted(
+            monkeypatch,
+            [_acting(_tool_call(f"c{i}", "click", ref=f"e{i}")) for i in range(6)]
+            + [_acting(_tool_call("cf", "finish_session", notes="done"))],
+        )
+
+        _run_loop({"click": lambda **kw: "clicked"}, max_actions=8)
+
+        budget_notes = [
+            m["content"].rsplit("\n[", 1)[-1]
+            for m in client.requests[-1]["messages"]
+            if isinstance(m, dict)
+            and m.get("role") == "tool"
+            and "actions remaining" in m["content"]
+        ]
+        # 7 remaining down to 5: ordinary wrap-up advice.
+        assert all("call finish_session" in note for note in budget_notes[:3])
+        # 3 remaining and below: record-or-lose-it.
+        assert all("not yet recorded" in note for note in budget_notes[4:])
 
     def test_wrap_up_call_still_uses_json_mode(self, monkeypatch):
         """The forced wrap-up genuinely wants a JSON object, and says so."""

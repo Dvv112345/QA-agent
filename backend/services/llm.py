@@ -27,6 +27,7 @@ from sqlmodel import SQLModel
 
 from backend.config import (
     EXPLORATORY_MAX_CHARTERS,
+    EXPLORATORY_MAX_FINDINGS,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
@@ -617,6 +618,10 @@ STOP_ACTION_CAP = "action_cap"
 # before, which is what let the JSON-mode bug below go unnoticed.
 STOP_MODEL_STOPPED = "model_stopped"
 
+# Remaining actions at which the budget note switches from "wrap up soon" to
+# "record now or lose it" — see the call site for why the two differ.
+_LOW_BUDGET_ACTIONS = 3
+
 # Consecutive tool-free responses tolerated before the session really ends.
 # One is not a decision: a model that means to act can express the call as
 # prose or as a JSON blob instead of using the tool channel, and ending the
@@ -727,6 +732,7 @@ def run_exploration_loop(
     snapshot_window: int,
     on_round: Callable[[], None],
     secret_values: set[str] | None = None,
+    max_free_recordings: int = EXPLORATORY_MAX_FINDINGS,
 ) -> ExplorationLoopResult:
     """Drive one charter's session as a bounded browser tool loop.
 
@@ -750,6 +756,16 @@ def run_exploration_loop(
     ``secret_values`` is a redaction backstop for the action log: ``fill_secret``
     already keeps credentials out of this module entirely, so this only catches
     a model that typed a literal through plain ``fill``.
+
+    ``record_finding`` is free for the first ``max_free_recordings`` calls:
+    findings are the session's whole deliverable, and charging them against
+    the same budget as exploration makes the model trade away its own output
+    under budget pressure.  It stops being free after that — ``actions_used <
+    max_actions`` is this loop's only bound, so an unconditionally free
+    non-terminal tool would remove the termination guarantee entirely (unlike
+    ``finish_session``, which is free *and* terminal and therefore cannot
+    loop).  Total rounds are thus capped at
+    ``max_actions + max_free_recordings``.
     """
     client = _get_client()
     parts = exploration_context(
@@ -770,6 +786,7 @@ def run_exploration_loop(
     repeat_count = 0
     actions_used = 0
     idle_rounds = 0
+    free_recordings_left = max_free_recordings
 
     while actions_used < max_actions:
         try:
@@ -836,7 +853,15 @@ def run_exploration_loop(
                     action_log=action_log,
                 )
 
-            actions_used += 1
+            # Recording what you found must not compete with exploring for
+            # budget. Free only while it can still succeed: past the cap the
+            # executor just returns "limit reached", and a free call that
+            # changes nothing is how a stuck model loops forever.
+            if tool_name == "record_finding" and free_recordings_left > 0:
+                free_recordings_left -= 1
+            else:
+                actions_used += 1
+
             signature = f"{tool_name}:{sorted(arguments.items())}"
             if signature == last_signature:
                 repeat_count += 1
@@ -869,10 +894,18 @@ def run_exploration_loop(
                 _prune_snapshots(messages, snapshot_indices, snapshot_window)
 
         remaining = max_actions - actions_used
-        messages[-1]["content"] += (
-            f"\n[{remaining} of {max_actions} actions remaining — "
-            "call finish_session when the charter is explored]"
-        )
+        # Near the cap the advice changes: the forced wrap-up runs with
+        # tool_choice="none", so record_finding is genuinely unreachable once
+        # the budget is gone. A finding still unrecorded at that point can only
+        # ever land in the notes, where nothing reads it as a finding.
+        if remaining <= _LOW_BUDGET_ACTIONS:
+            tail = (
+                "record anything you have found but not yet recorded — after "
+                "your last action you can only write notes, not findings"
+            )
+        else:
+            tail = "call finish_session when the charter is explored"
+        messages[-1]["content"] += f"\n[{remaining} of {max_actions} actions remaining — {tail}]"
 
     # Budget exhausted — force the session notes.
     messages.append({"role": "user", "content": SESSION_WRAPUP_PROMPT})

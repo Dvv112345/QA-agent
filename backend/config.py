@@ -112,6 +112,9 @@ TEST_PLAN_JOB_TIMEOUT: int = _get_int("TEST_PLAN_JOB_TIMEOUT", 900)
 # The SBTM time box, measured in LLM tool rounds rather than wall clock.
 # This is the main lever on a run's duration: charters run serially, so a
 # run takes the sum of its sessions with no parallelism anywhere.
+# Not the whole ceiling: record_finding is free for its first
+# EXPLORATORY_MAX_FINDINGS calls, so a session runs at most
+# MAX_ACTIONS + MAX_FINDINGS rounds.
 EXPLORATORY_MAX_ACTIONS: int = _get_int("EXPLORATORY_MAX_ACTIONS", 25)
 # Cap on charters per run (also enforced on user-edited charter lists).
 EXPLORATORY_MAX_CHARTERS: int = _get_int("EXPLORATORY_MAX_CHARTERS", 6)
@@ -130,9 +133,13 @@ EXPLORATORY_ACTION_TIMEOUT: int = _get_int("EXPLORATORY_ACTION_TIMEOUT", 10)
 # button. Bounds nothing at runtime, so being wrong costs an inaccurate label.
 EXPLORATORY_SECONDS_PER_ACTION: int = _get_int("EXPLORATORY_SECONDS_PER_ACTION", 8)
 # Max findings one session may record, guarding against a runaway model.
+# Doubles as the free-recording budget in run_exploration_loop: recording
+# does not spend an action while under this cap, and does once past it —
+# a free non-terminal tool would remove the loop's termination guarantee.
 EXPLORATORY_MAX_FINDINGS: int = _get_int("EXPLORATORY_MAX_FINDINGS", 20)
 # RQ job_timeout for exploratory runs. Must cover every charter serially:
-# MAX_CHARTERS × MAX_ACTIONS × ACTION_TIMEOUT plus the summary call.
+# MAX_CHARTERS × (MAX_ACTIONS + MAX_FINDINGS) × ACTION_TIMEOUT plus the
+# summary call — free recordings are extra rounds, so they count here too.
 EXPLORATORY_JOB_TIMEOUT: int = _get_int("EXPLORATORY_JOB_TIMEOUT", 7200)
 # Headed mode is for local debugging — watching the agent explore.
 EXPLORATORY_HEADLESS: bool = _get_bool("EXPLORATORY_HEADLESS", True)
