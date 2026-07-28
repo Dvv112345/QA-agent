@@ -695,6 +695,7 @@ def run_exploration_loop(
     description: str,
     charter: str,
     sfdipot_areas: list[str],
+    base_urls: list[str],
     env_var_names: list[str],
     readme: str | None,
     file_tree: str | None,
@@ -702,6 +703,7 @@ def run_exploration_loop(
     max_actions: int,
     snapshot_window: int,
     on_round: Callable[[], None],
+    secret_values: set[str] | None = None,
 ) -> ExplorationLoopResult:
     """Drive one charter's session as a bounded browser tool loop.
 
@@ -716,10 +718,14 @@ def run_exploration_loop(
     ``tools`` maps tool name to executor.  Executors must never raise: they
     return error strings the model can react to, the same contract as
     ``read_file``.
+
+    ``secret_values`` is a redaction backstop for the action log: ``fill_secret``
+    already keeps credentials out of this module entirely, so this only catches
+    a model that typed a literal through plain ``fill``.
     """
     client = _get_client()
     parts = exploration_context(
-        name, description, charter, sfdipot_areas, env_var_names, readme, file_tree
+        name, description, charter, sfdipot_areas, base_urls, env_var_names, readme, file_tree
     )
     user_prompt = (
         "\n\n".join(parts)
@@ -752,9 +758,15 @@ def run_exploration_loop(
         tool_calls = getattr(message, "tool_calls", None)
 
         if not tool_calls:
-            # The model answered instead of acting. Treat its text as the
-            # session notes — it has decided it is done.
-            notes = (message.content or "").strip()
+            # The model answered instead of acting — it has decided it is done.
+            # Every round is sent with response_format=json_object, so that
+            # answer is a JSON object rather than prose; parse it like the
+            # wrap-up call does, and keep the raw text if it isn't the
+            # expected shape so nothing the model said is ever lost.
+            try:
+                notes = _parse_json(message.content, SessionWrapUpResult).notes.strip()
+            except LLMError:
+                notes = (message.content or "").strip()
             return ExplorationLoopResult(
                 notes=notes or "(model ended the session without notes)",
                 stop_reason=STOP_CHARTER_COMPLETE,
@@ -805,7 +817,9 @@ def run_exploration_loop(
                 else:
                     result = executor(**arguments)
 
-            action_log.append(f"{tool_name}({_format_args(arguments)}) -> {_summarize(result)}")
+            action_log.append(
+                f"{tool_name}({_format_args(arguments, secret_values)}) -> {_summarize(result)}"
+            )
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
             if tool_name == "snapshot":
                 snapshot_indices.append(len(messages) - 1)
@@ -839,14 +853,25 @@ def run_exploration_loop(
     )
 
 
-def _format_args(arguments: dict) -> str:
+def _format_args(arguments: dict, secret_values: set[str] | None = None) -> str:
     """Render tool arguments for the action log.
 
     ``fill_secret`` is logged by variable name only — its value is resolved
     inside the executor and never reaches this module, which is what keeps
     the stored log credential-free by construction.
+
+    ``secret_values`` is the backstop for the one path that bypasses it: a
+    model that ignores the instruction and types a credential through plain
+    ``fill``.  Matching is **exact**, not substring — the model never sees
+    environment values, so a leak means it reproduced one verbatim, whereas
+    substring matching would mangle ordinary log lines that happen to contain
+    a short value.
     """
-    return ", ".join(f"{key}={value!r}" for key, value in arguments.items())
+    secrets = secret_values or set()
+    return ", ".join(
+        f"{key}={'***' if isinstance(value, str) and value in secrets else repr(value)}"
+        for key, value in arguments.items()
+    )
 
 
 def _summarize(result: str, limit: int = 200) -> str:

@@ -377,7 +377,9 @@ CHARTER_SYSTEM_PROMPT = (
     "the web frontend, plus a separate API host if there is one. Include only "
     "application URLs a browser should visit: exclude database connection "
     "strings, message-queue URLs, and anything else that merely looks "
-    "URL-shaped.\n\n"
+    "URL-shaped. List the browsable web frontend FIRST — each exploratory "
+    "session opens its browser on the first URL in this list, so putting an "
+    "API host first would start the session on a raw JSON endpoint.\n\n"
     "Respond with a JSON object of the shape "
     '{"charters": [{"charter": string, "sfdipot_areas": [string]}], '
     '"base_url_env_vars": [string]}. Each area must be exactly one of: '
@@ -395,6 +397,12 @@ EXPLORATION_SYSTEM_PROMPT = (
     "because it is what the application does. You cannot read the source code, "
     "and that is deliberate: your job is to decide whether the product does what "
     "was asked, not what the code intends.\n\n"
+    "WHERE YOU ARE: the browser is already open on the application under test. "
+    "You may only type a URL that is on it, but you may follow links that lead "
+    "off it when the charter calls for it — an external sign-in, a payment "
+    "provider, a link you were asked to verify. You will be told whenever the "
+    "page is off the application; navigate back when you are done, and do not "
+    "report defects in someone else's software as bugs in this one.\n\n"
     "START by calling snapshot to see the page. Every element you interact with "
     "needs a ref from a recent snapshot; refs change when the page changes, so "
     "take a fresh snapshot after anything that navigates or re-renders. A stale "
@@ -622,6 +630,7 @@ def exploration_context(
     description: str,
     charter: str,
     sfdipot_areas: list[str],
+    base_urls: list[str],
     env_var_names: list[str],
     readme: str | None,
     file_tree: str | None,
@@ -633,6 +642,18 @@ def exploration_context(
         f"Your charter for this session:\n{charter}\n"
         f"SFDIPOT areas: {', '.join(sfdipot_areas) if sfdipot_areas else '(unspecified)'}"
     )
+    # Without this the model has no idea where the application lives — it only
+    # ever sees variable names, never their values.
+    if base_urls:
+        listed = "\n".join(
+            f"- {url}" + ("  (the browser is already open here)" if index == 0 else "")
+            for index, url in enumerate(base_urls)
+        )
+        parts.append(
+            f"Application under test:\n{listed}\n"
+            "Typing a URL outside these origins is refused; following the "
+            "application's own links off them is allowed."
+        )
     parts.append(
         "Environment variable names available to fill_secret:\n"
         + ("\n".join(f"- {v}" for v in env_var_names) if env_var_names else "(none)")

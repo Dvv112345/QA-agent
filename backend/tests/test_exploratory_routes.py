@@ -26,6 +26,7 @@ from backend.tests.test_sprints import (
     _seed_exploratory_run,
     _seed_exploratory_session,
 )
+from backend.tests.test_test_execution_routes import _RefreshStub
 
 ENV_VARS = {"APP_URL": "https://app.test", "API_URL": "https://api.test", "PW": "hunter2"}
 
@@ -70,9 +71,11 @@ def _seed_plan(db_session, requirement, status=None):
     return plan
 
 
-def _ready_sprint(db_session, plan_status=None, env_status=None, env_vars=None):
+def _ready_sprint(
+    db_session, plan_status=None, env_status=None, env_vars=None, readme_user_provided=False
+):
     """A sprint where exploration is allowed: confirmed req + plan + env."""
-    sprint = _seed_sprint(db_session)
+    sprint = _seed_sprint(db_session, readme_user_provided=readme_user_provided)
     requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
     _seed_plan(db_session, requirement, status=plan_status)
     _seed_environment(db_session, sprint, env_vars=env_vars, status=env_status)
@@ -124,6 +127,42 @@ def stub_queue(monkeypatch):
 
     stub = _Stub()
     monkeypatch.setattr(routes, "get_queue_service", lambda: stub)
+    return stub
+
+
+@pytest.fixture(autouse=True)
+def _isolate_refresh(monkeypatch):
+    """Keep README/file-tree refresh deterministic: no network calls unless
+    a test opts in via the ``refresh_stub`` fixture.
+
+    Autouse because both the generate and create routes touch these — without
+    it these tests run against the real resolvers and pass only because the
+    refresh block is best-effort and the seeded sprints have nothing to fetch.
+    """
+    from backend.routes import exploratory as routes
+
+    async def _noop_resolve_readme(*args, **kwargs):
+        return None
+
+    async def _noop_refresh_file_tree(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(routes, "resolve_readme", _noop_resolve_readme)
+    monkeypatch.setattr(routes, "refresh_file_tree", _noop_refresh_file_tree)
+
+
+@pytest.fixture
+def refresh_stub(monkeypatch):
+    """Recording refresh stub, reusing the scripted-run tests' helper.
+
+    Same shape as `create_test_run`'s refresh block, so the stub is shared
+    rather than duplicated; only the monkeypatch target differs.
+    """
+    from backend.routes import exploratory as routes
+
+    stub = _RefreshStub()
+    monkeypatch.setattr(routes, "resolve_readme", stub.resolve_readme)
+    monkeypatch.setattr(routes, "refresh_file_tree", stub.refresh_file_tree)
     return stub
 
 
@@ -325,6 +364,60 @@ class TestCreateRun:
 
         assert resp.status_code == 201
         assert resp.json()["base_url_env_vars"] == ["APP_URL", "API_URL"]
+
+    @pytest.mark.asyncio
+    async def test_refreshes_readme_and_file_tree_once(
+        self, async_client, db_session, stub_queue, refresh_stub
+    ):
+        """Every charter shares one repo snapshot, like create_test_run does."""
+        sprint, requirement = _ready_sprint(db_session, readme_user_provided=False)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json=_charter_payload(
+                requirement.id,
+                charters=[
+                    {"charter": "Explore export", "sfdipot_areas": ["Function"]},
+                    {"charter": "Explore edge data", "sfdipot_areas": ["Data"]},
+                ],
+            ),
+        )
+
+        assert resp.status_code == 201
+        assert len(refresh_stub.readme_calls) == 1
+        assert refresh_stub.readme_calls[0]["force_refresh"] is True
+        assert len(refresh_stub.file_tree_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_readme_refresh_when_user_provided(
+        self, async_client, db_session, stub_queue, refresh_stub
+    ):
+        """A user-uploaded README is authoritative and never overwritten."""
+        sprint, requirement = _ready_sprint(db_session, readme_user_provided=True)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json=_charter_payload(requirement.id),
+        )
+
+        assert resp.status_code == 201
+        assert refresh_stub.readme_calls == []
+        assert len(refresh_stub.file_tree_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_does_not_block_run_creation(
+        self, async_client, db_session, stub_queue, refresh_stub
+    ):
+        refresh_stub.raise_on_readme = True
+        sprint, requirement = _ready_sprint(db_session, readme_user_provided=False)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json=_charter_payload(requirement.id),
+        )
+
+        assert resp.status_code == 201
+        assert len(resp.json()["sessions"]) == 1
 
     @pytest.mark.asyncio
     async def test_422_on_duplicate_in_progress_run(self, async_client, db_session, stub_queue):

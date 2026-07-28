@@ -298,7 +298,13 @@ def _run_one_session(
                 description=requirement_description,
                 charter=exploratory_session.charter,
                 sfdipot_areas=exploratory_session.sfdipot_areas,
+                base_urls=base_urls,
                 env_var_names=env_var_names,
+                # Backstop only — fill_secret already keeps values out of the
+                # conversation. The base URLs are env values too, and are
+                # excluded because redacting them would gut the log while
+                # protecting nothing.
+                secret_values=set(env_vars.values()) - set(base_urls),
                 readme=readme,
                 file_tree=file_tree,
                 tools=browser.tool_registry(),

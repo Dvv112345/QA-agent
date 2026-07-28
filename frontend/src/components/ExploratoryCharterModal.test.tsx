@@ -123,6 +123,15 @@ describe('ExploratoryCharterModal', () => {
     expect(await screen.findByText(/APP_URL/)).toBeInTheDocument()
   })
 
+  it('names the starting URL, since each session opens on the first one', async () => {
+    mockGenerateCharters.mockResolvedValue(makeDraft({ base_url_env_vars: ['APP_URL', 'API_URL'] }))
+    renderModal()
+    fireEvent.click(await screen.findByRole('button', { name: 'Generate charters' }))
+
+    expect(await screen.findByText(/Exploration starts at/)).toBeInTheDocument()
+    expect(screen.getByText(/also reachable: API_URL/)).toBeInTheDocument()
+  })
+
   it('submits edited charter text', async () => {
     mockCreateRun.mockResolvedValue({ id: 99 })
     renderModal()

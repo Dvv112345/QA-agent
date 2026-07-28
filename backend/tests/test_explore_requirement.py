@@ -184,6 +184,22 @@ class TestHappyPath:
         assert browser.base_urls == ["https://app.test"]
         assert browser.env_vars == ENV_VARS
 
+    def test_loop_receives_base_urls(self, db_session, patched):
+        """The model only ever sees variable names, so the URLs must be passed."""
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        explore_requirement_task(run.id)
+
+        assert patched["loop_calls"][0]["base_urls"] == ["https://app.test"]
+
+    def test_loop_receives_secret_values_excluding_base_urls(self, db_session, patched):
+        """Redacting the base URLs would gut the action log while protecting nothing."""
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        explore_requirement_task(run.id)
+
+        assert patched["loop_calls"][0]["secret_values"] == {"hunter2"}
+
     def test_writes_summary(self, db_session, patched):
         _, _, run = _seed_run_with_sessions(db_session)
 

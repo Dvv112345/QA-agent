@@ -988,13 +988,21 @@ def _scripted(monkeypatch, responses):
     return client
 
 
-def _run_loop(tools, max_actions=25, snapshot_window=3, rounds=None):
+def _run_loop(
+    tools,
+    max_actions=25,
+    snapshot_window=3,
+    rounds=None,
+    base_urls=("https://app.test",),
+    secret_values=None,
+):
     """Invoke the loop with sensible defaults for the fields under test."""
     return llm.run_exploration_loop(
         name="Export reports",
         description="Users can export reports as CSV",
         charter="Explore the export flow with unusual data",
         sfdipot_areas=["Data"],
+        base_urls=list(base_urls),
         env_var_names=["APP_URL", "ADMIN_PASSWORD"],
         readme=None,
         file_tree=None,
@@ -1002,6 +1010,7 @@ def _run_loop(tools, max_actions=25, snapshot_window=3, rounds=None):
         max_actions=max_actions,
         snapshot_window=snapshot_window,
         on_round=(lambda: rounds.append(1)) if rounds is not None else (lambda: None),
+        secret_values=secret_values,
     )
 
 
@@ -1171,6 +1180,24 @@ class TestRunExplorationLoop:
         assert result.actions_used == 0
         assert result.stop_reason == llm.STOP_CHARTER_COMPLETE
 
+    def test_base_urls_reach_the_prompt(self, monkeypatch):
+        """Without this the model only sees variable names, never the app's URL."""
+        client = _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="x"))])
+
+        _run_loop({}, base_urls=["https://app.test", "https://api.test"])
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "https://app.test" in prompt
+        assert "https://api.test" in prompt
+        # The first one is where the browser already is — say so, since the
+        # ordering is what BrowserSession.__enter__ acts on.
+        assert "already open" in prompt
+
+    def test_no_base_urls_omits_the_block(self, monkeypatch):
+        client = _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="x"))])
+        _run_loop({}, base_urls=[])
+        assert "Application under test:" not in client.requests[0]["messages"][1]["content"]
+
     def test_action_cap_forces_wrap_up(self, monkeypatch):
         client = _scripted(
             monkeypatch,
@@ -1191,10 +1218,23 @@ class TestRunExplorationLoop:
         assert client.requests[-1]["tool_choice"] == "none"
 
     def test_model_answering_instead_of_acting_ends_session(self, monkeypatch):
-        _scripted(monkeypatch, [_answering("I have finished exploring.")])
+        """Every round is sent in JSON mode, so the answer is a JSON object."""
+        _scripted(monkeypatch, [_answering('{"notes": "I have finished exploring."}')])
         result = _run_loop({})
         assert result.stop_reason == llm.STOP_CHARTER_COMPLETE
-        assert "finished exploring" in result.notes
+        # Parsed, not stored raw — otherwise the session sheet shows JSON.
+        assert result.notes == "I have finished exploring."
+
+    def test_answer_that_is_not_the_wrap_up_shape_falls_back_to_raw_text(self, monkeypatch):
+        """Never lose what the model said, even off-contract."""
+        _scripted(monkeypatch, [_answering("I have finished exploring.")])
+        result = _run_loop({})
+        assert result.notes == "I have finished exploring."
+
+    def test_empty_answer_gets_a_placeholder(self, monkeypatch):
+        _scripted(monkeypatch, [_answering("")])
+        result = _run_loop({})
+        assert result.notes == "(model ended the session without notes)"
 
     def test_unknown_tool_returns_error_string(self, monkeypatch):
         _scripted(
@@ -1236,6 +1276,36 @@ class TestRunExplorationLoop:
         log = "\n".join(result.action_log)
         assert "ADMIN_PASSWORD" in log
         assert "hunter2" not in log
+
+    def test_fill_with_a_secret_literal_is_redacted(self, monkeypatch):
+        """Backstop for a model that ignores fill_secret and types the value."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "fill", ref="e8", value="hunter2")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+
+        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+
+        log = "\n".join(result.action_log)
+        assert "hunter2" not in log
+        assert "***" in log
+
+    def test_non_secret_fill_values_stay_readable(self, monkeypatch):
+        """Exact-match redaction must not mangle ordinary log lines."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "fill", ref="e8", value="hunter2 is my dog")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+
+        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+
+        assert "hunter2 is my dog" in "\n".join(result.action_log)
 
     def test_heartbeats_every_round(self, monkeypatch):
         _scripted(

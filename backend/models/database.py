@@ -592,7 +592,10 @@ class ExploratorySession(SQLModel, table=True):
     status: str = Field(default=ExploratorySessionStatus.PENDING)
     actions_used: int = Field(default=0)
     session_notes: str | None = Field(default=None)  # SBTM test-notes narrative
-    action_log: str | None = Field(default=None)  # full tool-call trace, secrets redacted
+    # Full tool-call trace. Credential-free by construction: fill_secret
+    # resolves values inside the browser executor, and literal matches against
+    # the environment values are redacted as a backstop.
+    action_log: str | None = Field(default=None)
     stop_reason: str | None = Field(default=None)  # charter_complete / action_cap / error
     error: str | None = Field(default=None)
     updated_at: datetime = Field(
@@ -631,8 +634,9 @@ class ExploratoryFinding(SQLModel, table=True):
     steps_to_reproduce: str  # newline-joined, matching TestCase.steps storage
     expected: str
     actual: str
-    # Relative to STORAGE_LOCATION. None whenever STORE_OFFLINE is false —
-    # the normal case for that setting, not an error.
+    # Absolute path — StorageService.store_screenshot returns abspath. None
+    # whenever STORE_OFFLINE is false: the normal case for that setting, not
+    # an error.
     screenshot_path: str | None = Field(default=None)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

@@ -96,6 +96,10 @@ class BrowserSession:
         max_findings: int | None = None,
     ) -> None:
         self._origins = allowed_origins(base_urls)
+        # Kept alongside _origins because order matters and a set has none:
+        # __enter__ opens the session on the first URL, which charter
+        # generation is instructed to make the browsable frontend.
+        self._base_urls = list(base_urls)
         self._env_vars = env_vars
         self._on_finding = on_finding
         self._headless = EXPLORATORY_HEADLESS if headless is None else headless
@@ -119,6 +123,18 @@ class BrowserSession:
         self._page.set_default_timeout(self._action_timeout * 1000)
         self._page.on("console", self._record_console)
         self._page.on("requestfailed", self._record_request_failure)
+
+        # Open on the application rather than about:blank. Without this the
+        # model's first action is spent discovering where the app lives.
+        # Guarded because BrowserSession is constructible directly: an
+        # IndexError here would escape the never-raise contract and kill a
+        # session before any executor ran.
+        if self._base_urls:
+            result = self.navigate(self._base_urls[0])
+            if result.startswith("ERROR:"):
+                # Deliberately not fatal — an unreachable application is
+                # itself a finding the model should get to record.
+                logger.warning("Could not open the application under test: %s", result)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -150,9 +166,42 @@ class BrowserSession:
         often the only signal that a click moved somewhere.
         """
         try:
-            return f"Current URL: {self._page.url}\nPage title: {self._page.title()}\n\n"
+            header = f"Current URL: {self._page.url}\nPage title: {self._page.title()}"
         except PlaywrightError:
             return ""
+        return f"{header}{self._off_origin_notice()}\n\n"
+
+    def _off_origin_notice(self) -> str:
+        """Warn when the page has left the application under test.
+
+        Deliberately a notice, not a block: the application's own links may
+        legitimately lead off-origin (an OAuth hop, a payment provider, an
+        external reference the charter asks us to verify), and following one
+        can be exactly what a charter calls for.  Undoing it would remove real
+        testing capability and could manufacture a "the link is broken"
+        finding about a link that works.
+
+        What must not happen is the model exploring a third-party site
+        *without realising it* and filing findings against software that is
+        not under test — so this rides along on every snapshot header rather
+        than firing once at the moment of the click.
+
+        Typed navigation stays hard-locked in ``navigate``: that is the agent
+        choosing to leave the application. This covers the application taking
+        it somewhere, which is the application's own behaviour.
+        """
+        try:
+            url = self._page.url
+        except PlaywrightError:
+            return ""
+        if self._is_allowed(url):
+            return ""
+        return (
+            f"\nNOTE: this page is outside the application under test "
+            f"({self._origins_text()}). Anything wrong here is someone else's "
+            "software unless the charter says otherwise — navigate back to the "
+            "application when you are done."
+        )
 
     def _is_allowed(self, url: str) -> bool:
         parsed = urlparse(url)
@@ -173,6 +222,13 @@ class BrowserSession:
         return self._page_header() + tree
 
     def navigate(self, url: str = "") -> str:
+        """Go to a URL, hard-locked to the nominated origins.
+
+        Typed navigation is refused off-origin because it is the agent
+        choosing to leave the application under test.  Link-driven navigation
+        is *not* refused — see ``_off_origin_notice`` for why the two are
+        treated differently.
+        """
         if not self._is_allowed(url):
             return (
                 f"ERROR: navigation to {url!r} is not allowed. This session may "
@@ -200,7 +256,10 @@ class BrowserSession:
             self._locator(ref).click()
         except PlaywrightError as exc:
             return self._element_error(ref, exc, "click")
-        return f"Clicked {ref}. The page may have changed — take a fresh snapshot."
+        return (
+            f"Clicked {ref}. The page may have changed — take a fresh snapshot."
+            + self._off_origin_notice()
+        )
 
     def fill(self, ref: str = "", value: str = "") -> str:
         try:
@@ -230,21 +289,26 @@ class BrowserSession:
             self._locator(ref).press(key)
         except PlaywrightError as exc:
             return self._element_error(ref, exc, "press")
-        return f"Pressed {key} on {ref}. The page may have changed — take a fresh snapshot."
+        return (
+            f"Pressed {key} on {ref}. The page may have changed — take a fresh snapshot."
+            + self._off_origin_notice()
+        )
 
     def go_back(self) -> str:
         try:
             self._page.go_back()
         except PlaywrightError as exc:
             return f"ERROR: could not go back: {exc}"
-        return f"Went back to {self._page.url}. Take a fresh snapshot."
+        return f"Went back to {self._page.url}. Take a fresh snapshot." + self._off_origin_notice()
 
     def go_forward(self) -> str:
         try:
             self._page.go_forward()
         except PlaywrightError as exc:
             return f"ERROR: could not go forward: {exc}"
-        return f"Went forward to {self._page.url}. Take a fresh snapshot."
+        return (
+            f"Went forward to {self._page.url}. Take a fresh snapshot." + self._off_origin_notice()
+        )
 
     def set_viewport(self, width: int = 1280, height: int = 720) -> str:
         try:

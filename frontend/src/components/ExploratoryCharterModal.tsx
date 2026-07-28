@@ -152,8 +152,13 @@ export default function ExploratoryCharterModal({ sprintId, onClose }: Props) {
               Review the charters for <strong>{draft.requirement_name}</strong>. Each becomes one
               time-boxed session.
             </p>
+            {/* The first variable is where each session's browser opens, so
+                name it rather than showing an undifferentiated list — the
+                order is part of what the user is approving here. */}
             <p className="charter-urls">
-              Reachable during exploration: {draft.base_url_env_vars.join(', ')}
+              Exploration starts at <strong>{draft.base_url_env_vars[0]}</strong>
+              {draft.base_url_env_vars.length > 1 &&
+                `; also reachable: ${draft.base_url_env_vars.slice(1).join(', ')}`}
             </p>
             <ul className="charter-list">
               {charters.map((charter, index) => (

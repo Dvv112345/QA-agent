@@ -24,6 +24,10 @@ class _FakeLocator:
         if self._selector in self._page.broken_selectors:
             raise PlaywrightError("Timeout 10000ms exceeded.")
         self._page.actions.append((action, self._selector, *args))
+        # A click or keypress can follow a link, which is how a page leaves
+        # the allowed origins without navigate() ever being called.
+        if self._page.action_navigates_to is not None:
+            self._page.url = self._page.action_navigates_to
 
     def click(self):
         self._record("click")
@@ -54,6 +58,7 @@ class _FakePage:
         self.screenshot_error = False
         self.goto_error: str | None = None
         self.redirect_to: str | None = None
+        self.action_navigates_to: str | None = None
         self.handlers: dict = {}
         self.viewport = None
         self.default_timeout = None
@@ -149,6 +154,63 @@ class TestNavigate:
         result = _session(page).navigate("https://app.test/down")
         assert result.startswith("ERROR:")
         assert "ERR_CONNECTION_REFUSED" in result
+
+
+class TestOffOriginDrift:
+    """Link-driven navigation off the app is allowed, but never silent.
+
+    Following the application's own links (an OAuth hop, an external
+    reference the charter asks about) can be exactly what a charter calls
+    for, so it is not blocked. What must not happen is the model probing a
+    third-party page without realising it left.
+    """
+
+    def test_off_origin_click_still_succeeds(self):
+        page = _FakePage()
+        page.action_navigates_to = "https://partner.test/oauth"
+        result = _session(page).click("e3")
+        assert not result.startswith("ERROR:")
+        assert page.url == "https://partner.test/oauth"  # not undone
+
+    def test_off_origin_click_carries_the_notice(self):
+        page = _FakePage()
+        page.action_navigates_to = "https://partner.test/oauth"
+        result = _session(page).click("e3")
+        assert "outside the application under test" in result
+        assert "https://app.test" in result  # names where it may return to
+
+    def test_on_origin_click_has_no_notice(self):
+        page = _FakePage()
+        page.action_navigates_to = "https://app.test/reports"
+        result = _session(page).click("e3")
+        assert "outside the application" not in result
+
+    def test_press_and_history_carry_the_notice(self):
+        page = _FakePage()
+        page.action_navigates_to = "https://partner.test/oauth"
+        assert "outside the application" in _session(page).press("e3", "Enter")
+
+        page = _FakePage(url="https://partner.test/oauth")
+        session = _session(page)
+        page.go_forward = lambda: setattr(page, "url", "https://partner.test/next")
+        assert "outside the application" in session.go_forward()
+
+    def test_snapshot_header_carries_the_notice_while_off_origin(self):
+        """The load-bearing one: the reminder persists, not just at the click."""
+        page = _FakePage(url="https://partner.test/oauth")
+        result = _session(page).snapshot()
+        assert "outside the application under test" in result
+
+    def test_snapshot_header_is_clean_while_on_origin(self):
+        page = _FakePage(url="https://app.test/reports")
+        assert "outside the application" not in _session(page).snapshot()
+
+    def test_navigating_back_clears_the_notice(self):
+        page = _FakePage(url="https://partner.test/oauth")
+        session = _session(page)
+        assert "outside the application" in session.snapshot()
+        session.navigate("https://app.test/reports")
+        assert "outside the application" not in session.snapshot()
 
 
 class TestSnapshot:
@@ -316,6 +378,61 @@ class TestToolRegistry:
     def test_registry_entries_are_callable(self):
         for executor in _session(_FakePage()).tool_registry().values():
             assert callable(executor)
+
+
+def _patch_playwright(monkeypatch, page):
+    """Wire sync_playwright to hand back *page*; returns the close-order log."""
+    closed: list[str] = []
+    browser = SimpleNamespace(new_page=lambda: page, close=lambda: closed.append("browser"))
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(launch=lambda headless: browser),
+        stop=lambda: closed.append("playwright"),
+    )
+    monkeypatch.setattr(
+        browser_session, "sync_playwright", lambda: SimpleNamespace(start=lambda: playwright)
+    )
+    return closed
+
+
+class TestOpensOnTheApplication:
+    """__enter__ navigates to base_urls[0] instead of leaving about:blank.
+
+    Without it the model's first action is spent discovering where the
+    application lives, since it only ever sees env var *names*.
+    """
+
+    def test_enter_opens_the_first_base_url(self, monkeypatch):
+        page = _FakePage(url="about:blank")
+        _patch_playwright(monkeypatch, page)
+
+        with BrowserSession(
+            base_urls=["https://app.test/home", "https://api.test"],
+            env_vars={},
+            on_finding=lambda r, p: None,
+        ):
+            assert page.url == "https://app.test/home"
+
+    def test_empty_base_urls_does_not_raise(self, monkeypatch):
+        """BrowserSession is constructible directly — an IndexError here would
+        escape the never-raise contract and kill the session before any
+        executor ran."""
+        page = _FakePage(url="about:blank")
+        _patch_playwright(monkeypatch, page)
+
+        with BrowserSession(base_urls=[], env_vars={}, on_finding=lambda r, p: None) as session:
+            assert session._page is page
+            assert page.url == "about:blank"
+
+    def test_unreachable_application_still_yields_a_usable_session(self, monkeypatch):
+        """A dead app is itself a finding — it must not kill the session."""
+        page = _FakePage(url="about:blank")
+        page.goto_error = "net::ERR_CONNECTION_REFUSED"
+        _patch_playwright(monkeypatch, page)
+
+        with BrowserSession(
+            base_urls=["https://app.test"], env_vars={}, on_finding=lambda r, p: None
+        ) as session:
+            assert session.snapshot().startswith("Current URL:")
 
 
 class TestLifecycle:
