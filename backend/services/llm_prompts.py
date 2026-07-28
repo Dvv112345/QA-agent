@@ -425,9 +425,11 @@ EXPLORATION_SYSTEM_PROMPT = (
     "happens on bad input, type those with fill as normal.\n\n"
     "RECORDING WHAT YOU FIND: call record_finding the moment you observe "
     "something worth reporting. A screenshot is captured at that instant, so "
-    "recording while the problem is on screen gives the best evidence — but if "
-    "you only realise later, record it anyway. A screenshot of the wrong page "
-    "is far better than a finding nobody ever files. Classify each as:\n"
+    "recording while the problem is on screen gives the best evidence. If you "
+    "only realise after navigating to a different screen, record it anyway "
+    "— but set page_still_shows_problem "
+    "to false, so no image of an unrelated page is attached as if it showed "
+    "the defect. Never let the timing stop you filing. Classify each as:\n"
     "- bug: the product itself is wrong — it behaves differently from what the "
     "requirement says. A feature that fails is a bug even when that feature is "
     "signing in, and even when its failure blocks the rest of your session.\n"
@@ -462,6 +464,28 @@ SESSION_WRAPUP_PROMPT = (
     "including anything you did not get to. Report only what you actually "
     "observed during the session. Respond with a JSON object of the shape "
     '{"notes": string}.'
+)
+
+HISTORY_COMPACTION_PROMPT = (
+    "You are compacting the earlier part of an exploratory testing session so "
+    "it fits in the tester's working memory. What you write is not a report "
+    "for a human — it is handed straight back to the tester as their own "
+    "memory of what happened, and they will act on it. Anything you leave out "
+    "is gone.\n\n"
+    "Preserve, verbatim wherever they appeared:\n"
+    "- identifiers of records created, edited, or deleted, so they can still "
+    "be cleaned up or referred to\n"
+    "- exact error text, status codes, and console messages\n"
+    "- URLs and pages visited, and how they were reached\n"
+    "- credentials variables used (names only — values are never shown)\n"
+    "- what was already tried and ruled out, so it is not repeated\n"
+    "- what was already recorded as a finding, so it is not recorded twice\n\n"
+    "Drop page structure, element refs, and navigation chatter: refs are stale "
+    "and the tester will take a fresh snapshot. Prefer a longer, specific "
+    "summary over a short, tidy one — brevity is not the goal here, and a "
+    "generalisation like 'tested several inputs' is worse than useless "
+    "because it reads as coverage while naming nothing.\n\n"
+    'Respond with a JSON object of the shape {"summary": string}.'
 )
 
 EXPLORATION_SUMMARY_SYSTEM_PROMPT = (
@@ -623,6 +647,14 @@ BROWSER_TOOLS = [
             },
             "expected": {"type": "string", "description": "What should have happened."},
             "actual": {"type": "string", "description": "What actually happened."},
+            "page_still_shows_problem": {
+                "type": "boolean",
+                "description": "Whether the problem is visible on the page right "
+                "now. Defaults to true, and the screenshot taken then is this "
+                "finding's evidence — keep it whenever the problem is on "
+                "screen. Set false only if you have since navigated or the "
+                "page has changed, so no misleading image is attached.",
+            },
         },
         ["finding_type", "severity", "title", "steps_to_reproduce", "expected", "actual"],
     ),

@@ -16,6 +16,7 @@ const STOP_REASON_LABELS: Record<string, string> = {
   charter_complete: 'Charter explored',
   action_cap: 'Time box exhausted',
   model_stopped: 'Ended without calling finish_session',
+  context_limit: 'Ran out of context room',
   error: 'Stopped by an error',
 }
 

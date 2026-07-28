@@ -332,17 +332,24 @@ class BrowserSession:
         steps_to_reproduce: str = "",
         expected: str = "",
         actual: str = "",
+        page_still_shows_problem: bool = True,
     ) -> str:
         if self.findings_recorded >= self._max_findings:
             return _FINDING_LIMIT.format(limit=self._max_findings)
 
         # Capture while the problem is still on screen — this is the whole
         # reason recording is a tool rather than a post-hoc parse of the notes.
+        #
+        # When it isn't, skip: an image of whatever the model happened to be
+        # looking at reads as evidence of the defect, and false evidence is
+        # worse than none. The caller reports the fact ("is it still visible")
+        # rather than the action, so this decision stays in code.
         screenshot: bytes | None = None
-        try:
-            screenshot = self._page.screenshot()
-        except PlaywrightError as exc:
-            logger.warning("Finding screenshot failed: %s", exc)
+        if page_still_shows_problem:
+            try:
+                screenshot = self._page.screenshot()
+            except PlaywrightError as exc:
+                logger.warning("Finding screenshot failed: %s", exc)
 
         record = FindingRecord(
             finding_type=finding_type,

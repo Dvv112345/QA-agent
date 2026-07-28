@@ -124,6 +124,13 @@ EXPLORATORY_SNAPSHOT_MAX_CHARS: int = _get_int("EXPLORATORY_SNAPSHOT_MAX_CHARS",
 # replaced with a one-line placeholder. Snapshots are the only large item in
 # the loop, and a ref from many actions ago is stale anyway.
 EXPLORATORY_SNAPSHOT_WINDOW: int = _get_int("EXPLORATORY_SNAPSHOT_WINDOW", 3)
+# Prompt-token size at which a session compacts its own history into a summary
+# before the next round. A backstop, not a routine step: at the default action
+# cap a session lands around 11-21k, so this normally never fires. It cannot
+# push below the floor of system prompt + charter + the verbatim snapshot
+# window — those snapshots hold the refs the model is about to act on — so
+# SNAPSHOT_WINDOW and SNAPSHOT_MAX_CHARS are the levers for that floor.
+EXPLORATORY_CONTEXT_TOKEN_LIMIT: int = _get_int("EXPLORATORY_CONTEXT_TOKEN_LIMIT", 40000)
 # Wall-clock timeout for a single Playwright action. Kept well below
 # Playwright's 30 s default: an exploratory action that takes 30 s is usually
 # itself the finding, and a stale element ref burns this whole budget before

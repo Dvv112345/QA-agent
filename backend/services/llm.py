@@ -26,6 +26,7 @@ import openai
 from sqlmodel import SQLModel
 
 from backend.config import (
+    EXPLORATORY_CONTEXT_TOKEN_LIMIT,
     EXPLORATORY_MAX_CHARTERS,
     EXPLORATORY_MAX_FINDINGS,
     OPENAI_API_KEY,
@@ -43,6 +44,7 @@ from backend.services.llm_prompts import (
     ENV_VARS_SYSTEM_PROMPT,
     EXPLORATION_SUMMARY_SYSTEM_PROMPT,
     EXPLORATION_SYSTEM_PROMPT,
+    HISTORY_COMPACTION_PROMPT,
     READ_FILE_TOOL,
     REVISE_SYSTEM_PROMPT,
     SESSION_WRAPUP_PROMPT,
@@ -618,6 +620,18 @@ STOP_ACTION_CAP = "action_cap"
 # before, which is what let the JSON-mode bug below go unnoticed.
 STOP_MODEL_STOPPED = "model_stopped"
 
+# The session ran out of context room before it ran out of actions.
+STOP_CONTEXT_LIMIT = "context_limit"
+
+# Never compacted: the system prompt and the opening user message carrying the
+# requirement, charter, and base URLs. That is the session's oracle — losing it
+# would be far worse than an overflow.
+_COMPACTION_PRESERVED_HEAD = 2
+
+# Below this many messages there is nothing worth an LLM call, and retrying
+# every round would thrash.
+_MIN_COMPACTION_MESSAGES = 4
+
 # Remaining actions at which the budget note switches from "wrap up soon" to
 # "record now or lose it" — see the call site for why the two differ.
 _LOW_BUDGET_ACTIONS = 3
@@ -718,6 +732,95 @@ def _prune_snapshots(messages: list, snapshot_indices: list[int], window: int) -
             messages[index]["content"] = _PRUNED_SNAPSHOT
 
 
+def _is_tool_result(message) -> bool:
+    return isinstance(message, dict) and message.get("role") == "tool"
+
+
+def _message_text(message) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
+
+
+def _estimate_tokens(messages: list) -> int:
+    """Rough prompt size, used only when the provider reports no usage.
+
+    Four characters per token is the usual English approximation; ARIA
+    snapshots are denser than prose so this under-counts, which is the safe
+    direction for a fallback that only has to decide "are we near the limit".
+    """
+    return sum(len(_message_text(m)) for m in messages) // 4
+
+
+def _compaction_cut(messages: list, keep_groups: int) -> int:
+    """Index where the retained tail starts, or 0 when there is nothing to compact.
+
+    A ``role="tool"`` message is only valid immediately after the assistant
+    message carrying its ``tool_call_id``, so a cut landing mid-group would
+    orphan tool results and the provider rejects the entire request.  Every
+    non-tool-result message is therefore a safe boundary — note that includes
+    the idle-nudge pair (an assistant message with no ``tool_calls``, then a
+    user message), which is why this tests for "not a tool result" rather than
+    "assistant with tool calls".
+
+    Walks back from the end counting boundaries, so the removed span is whole
+    groups by construction.
+    """
+    boundaries_seen = 0
+    for index in range(len(messages) - 1, _COMPACTION_PRESERVED_HEAD - 1, -1):
+        if _is_tool_result(messages[index]):
+            continue
+        boundaries_seen += 1
+        if boundaries_seen > keep_groups:
+            return index
+    return 0
+
+
+def _render_history(messages: list) -> str:
+    """Flatten a span of the conversation into text for the compaction call."""
+    lines: list[str] = []
+    for message in messages:
+        if _is_tool_result(message):
+            lines.append(f"RESULT: {_message_text(message)}")
+            continue
+        if isinstance(message, dict):
+            lines.append(f"{message.get('role', 'user').upper()}: {_message_text(message)}")
+            continue
+        text = _message_text(message)
+        if text:
+            lines.append(f"TESTER: {text}")
+        for call in getattr(message, "tool_calls", None) or []:
+            lines.append(f"ACTION: {call.function.name}({call.function.arguments})")
+    return "\n".join(lines)
+
+
+def _compact_history(messages: list, keep_groups: int) -> bool:
+    """Replace the middle of the conversation with an LLM summary, in place.
+
+    Returns ``False`` when there is nothing worth compacting — which, while
+    over the token limit, means the floor itself (system prompt + charter +
+    the verbatim snapshot window) exceeds it and no amount of retrying will
+    help.  Raises ``LLMError`` if the summarising call fails.
+    """
+    cut = _compaction_cut(messages, keep_groups)
+    span = messages[_COMPACTION_PRESERVED_HEAD:cut]
+    if len(span) < _MIN_COMPACTION_MESSAGES:
+        return False
+
+    result = _complete(HISTORY_COMPACTION_PROMPT, _render_history(span), ExplorationSummaryResult)
+    messages[_COMPACTION_PRESERVED_HEAD:cut] = [
+        {
+            "role": "user",
+            "content": (
+                "[Earlier in this session, compacted to save context. Element "
+                "refs from before this point are stale — take a fresh "
+                f"snapshot before acting.]\n{result.summary}"
+            ),
+        }
+    ]
+    return True
+
+
 def run_exploration_loop(
     name: str,
     description: str,
@@ -733,6 +836,7 @@ def run_exploration_loop(
     on_round: Callable[[], None],
     secret_values: set[str] | None = None,
     max_free_recordings: int = EXPLORATORY_MAX_FINDINGS,
+    context_token_limit: int = EXPLORATORY_CONTEXT_TOKEN_LIMIT,
 ) -> ExplorationLoopResult:
     """Drive one charter's session as a bounded browser tool loop.
 
@@ -782,6 +886,9 @@ def run_exploration_loop(
 
     action_log: list[str] = []
     snapshot_indices: list[int] = []
+    # Snapshot results are identified by tool_call_id rather than by position,
+    # because compaction shifts every index after the span it removes.
+    snapshot_call_ids: set[str] = set()
     last_signature: str | None = None
     repeat_count = 0
     actions_used = 0
@@ -890,6 +997,7 @@ def run_exploration_loop(
             )
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
             if tool_name == "snapshot":
+                snapshot_call_ids.add(tool_call.id)
                 snapshot_indices.append(len(messages) - 1)
                 _prune_snapshots(messages, snapshot_indices, snapshot_window)
 
@@ -907,7 +1015,54 @@ def run_exploration_loop(
             tail = "call finish_session when the charter is explored"
         messages[-1]["content"] += f"\n[{remaining} of {max_actions} actions remaining — {tail}]"
 
-    # Budget exhausted — force the session notes.
+        # Context backstop. Measured from what the request we just made
+        # actually cost, so it reacts a round late — fine for something that
+        # normally never fires, and it avoids estimating on every round.
+        used_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
+        if used_tokens is None:
+            used_tokens = _estimate_tokens(messages)
+        if used_tokens > context_token_limit:
+            try:
+                # Keep every snapshot the pruner still holds verbatim, plus the
+                # round that produced the oldest of them: compacting one away
+                # would strip the refs the model is about to act on.
+                compacted = _compact_history(messages, snapshot_window + 1)
+            except LLMError as exc:
+                logger.warning("Exploration history compaction failed: %s", exc)
+                return _forced_wrap_up(
+                    client, messages, on_round, STOP_CONTEXT_LIMIT, actions_used, action_log
+                )
+            on_round()
+            if not compacted:
+                # Nothing left to compact while still over the limit: the
+                # floor exceeds it, so retrying next round would only thrash.
+                logger.warning("Exploration context over limit with nothing left to compact")
+                return _forced_wrap_up(
+                    client, messages, on_round, STOP_CONTEXT_LIMIT, actions_used, action_log
+                )
+            snapshot_indices = [
+                index
+                for index, item in enumerate(messages)
+                if _is_tool_result(item) and item.get("tool_call_id") in snapshot_call_ids
+            ]
+
+    return _forced_wrap_up(client, messages, on_round, STOP_ACTION_CAP, actions_used, action_log)
+
+
+def _forced_wrap_up(
+    client,
+    messages: list,
+    on_round: Callable[[], None],
+    stop_reason: str,
+    actions_used: int,
+    action_log: list[str],
+) -> ExplorationLoopResult:
+    """Ask for the session notes and stop, however the session ran out.
+
+    Shared by the action cap and both context-limit exits.  Keeps JSON mode —
+    unlike the acting rounds, here the JSON object genuinely is the wanted
+    output, and ``SESSION_WRAPUP_PROMPT`` asks for it.
+    """
     messages.append({"role": "user", "content": SESSION_WRAPUP_PROMPT})
     try:
         response = client.chat.completions.create(
@@ -923,7 +1078,7 @@ def run_exploration_loop(
     wrap_up = _parse_json(response.choices[0].message.content, SessionWrapUpResult)
     return ExplorationLoopResult(
         notes=wrap_up.notes,
-        stop_reason=STOP_ACTION_CAP,
+        stop_reason=stop_reason,
         actions_used=actions_used,
         action_log=action_log,
     )

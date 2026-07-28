@@ -24,7 +24,7 @@ from backend.services.llm import (
     revise_test_plan,
     split_prd,
 )
-from backend.services.llm_prompts import TestCaseLike
+from backend.services.llm_prompts import EXPLORATION_SYSTEM_PROMPT, TestCaseLike
 
 
 class _StubClient:
@@ -948,11 +948,26 @@ class _ScriptedClient:
     ``_StubClient`` it must hand back a different message each round.
     """
 
-    def __init__(self, responses: list):
+    def __init__(self, responses: list, prompt_tokens=None):
         self.responses = list(responses)
         self.requests: list[dict] = []
+        # None models a provider that reports no usage, which is what drives
+        # the char-estimate fallback. A list is consumed per call with the
+        # last value sticky, so a test can let context grow before the limit
+        # is crossed — as it does in reality.
+        self.prompt_tokens = prompt_tokens
 
         stub = self
+
+        def next_usage():
+            if stub.prompt_tokens is None:
+                return None
+            if isinstance(stub.prompt_tokens, int):
+                return SimpleNamespace(prompt_tokens=stub.prompt_tokens)
+            value = stub.prompt_tokens[0]
+            if len(stub.prompt_tokens) > 1:
+                stub.prompt_tokens = stub.prompt_tokens[1:]
+            return SimpleNamespace(prompt_tokens=value)
 
         class _Completions:
             def create(self, **kwargs):
@@ -960,7 +975,9 @@ class _ScriptedClient:
                 if not stub.responses:
                     raise AssertionError("scripted client ran out of responses")
                 message = stub.responses.pop(0)
-                return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=message)], usage=next_usage()
+                )
 
         self.chat = SimpleNamespace(completions=_Completions())
 
@@ -982,8 +999,8 @@ def _answering(content: str):
     return SimpleNamespace(content=content, tool_calls=None)
 
 
-def _scripted(monkeypatch, responses):
-    client = _ScriptedClient(responses)
+def _scripted(monkeypatch, responses, prompt_tokens=None):
+    client = _ScriptedClient(responses, prompt_tokens=prompt_tokens)
     monkeypatch.setattr(llm, "_get_client", lambda: client)
     return client
 
@@ -996,6 +1013,7 @@ def _run_loop(
     base_urls=("https://app.test",),
     secret_values=None,
     max_free_recordings=llm.EXPLORATORY_MAX_FINDINGS,
+    context_token_limit=llm.EXPLORATORY_CONTEXT_TOKEN_LIMIT,
 ):
     """Invoke the loop with sensible defaults for the fields under test."""
     return llm.run_exploration_loop(
@@ -1013,6 +1031,7 @@ def _run_loop(
         on_round=(lambda: rounds.append(1)) if rounds is not None else (lambda: None),
         secret_values=secret_values,
         max_free_recordings=max_free_recordings,
+        context_token_limit=context_token_limit,
     )
 
 
@@ -1488,6 +1507,183 @@ class TestRunExplorationLoop:
         monkeypatch.setattr(llm, "_get_client", lambda: _Boom())
         with pytest.raises(LLMError, match="LLM request failed"):
             _run_loop({})
+
+
+class TestHistoryCompaction:
+    """Threshold-triggered backstop — pressure-driven, never on a schedule."""
+
+    # Usage stays under the limit while history accumulates, crosses on round
+    # 8 — by which point there are enough complete groups to compact — then
+    # falls back under, as it does once the span has actually been replaced.
+    GROWING_USAGE = [50] * 7 + [9999] + [50] * 30
+
+    @staticmethod
+    def _acting_script(n):
+        return [_acting(_tool_call(f"c{i}", "snapshot")) for i in range(n)]
+
+    @staticmethod
+    def _patch_compaction(monkeypatch, summary="EARLIER: created record #4471."):
+        """Stub the compaction call, which goes through _complete, not the loop client."""
+        calls = []
+
+        def fake_complete(system_prompt, user_prompt, model_cls):
+            calls.append({"system": system_prompt, "user": user_prompt})
+            return llm.ExplorationSummaryResult(summary=summary)
+
+        monkeypatch.setattr(llm, "_complete", fake_complete)
+        return calls
+
+    def test_does_not_fire_under_the_limit(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            self._acting_script(3) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=100,
+        )
+        calls = self._patch_compaction(monkeypatch)
+
+        _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=5000)
+
+        assert calls == []
+
+    def test_fires_over_the_limit_and_preserves_the_oracle(self, monkeypatch):
+        client = _scripted(
+            monkeypatch,
+            self._acting_script(9) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+        self._patch_compaction(monkeypatch)
+
+        _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        messages = client.requests[-1]["messages"]
+        # The system prompt and the charter/requirement message are the
+        # session's oracle and must survive every compaction.
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == EXPLORATION_SYSTEM_PROMPT
+        assert messages[1]["role"] == "user"
+        assert "Your charter for this session" in messages[1]["content"]
+        assert any(
+            isinstance(m, dict) and "compacted to save context" in str(m.get("content", ""))
+            for m in messages
+        )
+
+    def test_leaves_no_orphan_tool_results(self, monkeypatch):
+        """A tool result without its assistant parent makes the provider 400."""
+        client = _scripted(
+            monkeypatch,
+            self._acting_script(9) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+        self._patch_compaction(monkeypatch)
+
+        _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        messages = client.requests[-1]["messages"]
+        live_ids: set[str] = set()
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "tool":
+                assert message["tool_call_id"] in live_ids, "orphaned tool result"
+            elif not isinstance(message, dict):
+                live_ids.update(c.id for c in getattr(message, "tool_calls", None) or [])
+
+    def test_snapshot_indices_survive_compaction(self, monkeypatch):
+        """Indices are absolute; compaction shifts them and pruning would corrupt.
+
+        After compacting, a later prune must still hit snapshot results and
+        never an unrelated message.
+        """
+        script = []
+        for i in range(9):
+            script.append(_acting(_tool_call(f"s{i}", "snapshot")))
+            script.append(_acting(_tool_call(f"k{i}", "click", ref=f"e{i}")))
+        script.append(_acting(_tool_call("cf", "finish_session", notes="x")))
+        client = _scripted(monkeypatch, script, prompt_tokens=self.GROWING_USAGE)
+        self._patch_compaction(monkeypatch)
+
+        _run_loop(
+            {"snapshot": lambda **kw: "SNAP-BODY", "click": lambda **kw: "CLICK-RESULT"},
+            context_token_limit=100,
+            snapshot_window=1,
+        )
+
+        messages = client.requests[-1]["messages"]
+        # Whatever got replaced by the pruner must have been a snapshot; a
+        # click result turning into the placeholder is the corruption.
+        for message in messages:
+            if isinstance(message, dict) and llm._PRUNED_SNAPSHOT in str(message.get("content")):
+                assert message.get("role") == "tool"
+        assert not any(
+            isinstance(m, dict)
+            and m.get("role") == "tool"
+            and m.get("content") == llm._PRUNED_SNAPSHOT
+            and m.get("tool_call_id", "").startswith("k")
+            for m in messages
+        )
+
+    def test_estimate_counts_every_message(self):
+        assert llm._estimate_tokens([{"role": "user", "content": "x" * 400}]) == 100
+
+    def test_uses_char_estimate_when_provider_reports_no_usage(self, monkeypatch):
+        """No usage field must not mean "no limit" — nor a TypeError on None."""
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c0", "snapshot")), _answering('{"notes": "no room"}')],
+            prompt_tokens=None,
+        )
+        self._patch_compaction(monkeypatch)
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=1)
+
+        assert result.stop_reason == llm.STOP_CONTEXT_LIMIT
+
+    def test_compaction_failure_ends_the_session_cleanly(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            self._acting_script(8) + [_answering('{"notes": "ran out of room"}')],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+
+        def boom(*args, **kwargs):
+            raise LLMError("provider exploded")
+
+        monkeypatch.setattr(llm, "_complete", boom)
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        assert result.stop_reason == llm.STOP_CONTEXT_LIMIT
+        assert result.notes == "ran out of room"
+
+    def test_nothing_to_compact_ends_rather_than_thrashing(self, monkeypatch):
+        """When the floor itself exceeds the limit, retrying every round is futile."""
+        calls = self._patch_compaction(monkeypatch)
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c0", "snapshot")), _answering('{"notes": "no room"}')],
+            prompt_tokens=9999,
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        assert result.stop_reason == llm.STOP_CONTEXT_LIMIT
+        assert calls == []  # never even attempted — nothing worth compacting
+
+    def test_compaction_does_not_consume_an_action(self, monkeypatch):
+        rounds = []
+        _scripted(
+            monkeypatch,
+            self._acting_script(9) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+        self._patch_compaction(monkeypatch)
+
+        result = _run_loop(
+            {"snapshot": lambda **kw: "page"}, context_token_limit=100, rounds=rounds
+        )
+
+        assert result.actions_used == 9  # the snapshots only
+        # Heartbeats cover the acting rounds plus every compaction, so a slow
+        # compaction cannot get the run swept as a dead worker.
+        assert len(rounds) > 9
 
 
 class TestSnapshotPruning:

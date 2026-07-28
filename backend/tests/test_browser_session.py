@@ -56,6 +56,7 @@ class _FakePage:
         self.snapshot_error = False
         self.screenshot_bytes = b"PNGDATA"
         self.screenshot_error = False
+        self.screenshot_calls = 0
         self.goto_error: str | None = None
         self.redirect_to: str | None = None
         self.action_navigates_to: str | None = None
@@ -90,6 +91,7 @@ class _FakePage:
         self.viewport = size
 
     def screenshot(self):
+        self.screenshot_calls += 1
         if self.screenshot_error:
             raise PlaywrightError("screenshot boom")
         return self.screenshot_bytes
@@ -331,7 +333,37 @@ class TestRecordFinding:
         assert isinstance(record, FindingRecord)
         assert record.title == "Empty export"
         assert png == b"PNGDATA"
+        assert page.screenshot_calls == 1  # capturing is the default
         assert "Recorded bug" in result
+
+    def test_skips_the_capture_when_the_page_has_moved_on(self):
+        """False evidence is worse than none — an image of an unrelated page
+        still reads as showing the defect."""
+        page = _FakePage()
+        seen: list = []
+        session = _session(page, on_finding=lambda record, png: seen.append((record, png)))
+
+        result = session.record_finding(
+            title="Export lost the last row",
+            page_still_shows_problem=False,
+        )
+
+        record, png = seen[0]
+        assert record.title == "Export lost the last row"  # still filed
+        assert png is None
+        # Asserting only on the None cannot tell "skipped" from "captured and
+        # thrown away", and only the former avoids the wasted call.
+        assert page.screenshot_calls == 0
+        assert "Recorded" in result
+
+    def test_skipped_capture_still_counts_toward_the_limit(self):
+        page = _FakePage()
+        session = _session(page, max_findings=1)
+
+        session.record_finding(title="First", page_still_shows_problem=False)
+        result = session.record_finding(title="Second", page_still_shows_problem=False)
+
+        assert "limit of 1 findings" in result
 
     def test_screenshot_failure_still_records_the_finding(self):
         page = _FakePage()
