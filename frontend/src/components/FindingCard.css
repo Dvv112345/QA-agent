@@ -1,0 +1,89 @@
+.finding-card {
+  border: 1px solid #e0e4ea;
+  border-left-width: 4px;
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.9rem;
+  background: #fff;
+}
+
+.finding-bug {
+  border-left-color: #b3261e;
+}
+
+.finding-issue {
+  border-left-color: #b8860b;
+}
+
+.finding-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
+.finding-title {
+  margin: 0;
+  font-size: 1rem;
+  flex: 1 1 100%;
+}
+
+.finding-badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  color: #fff;
+}
+
+.finding-badge-bug {
+  background: #b3261e;
+}
+
+.finding-badge-issue {
+  background: #b8860b;
+}
+
+.finding-severity {
+  font-size: 0.75rem;
+  color: #555;
+  text-transform: uppercase;
+}
+
+.finding-severity-high {
+  color: #b3261e;
+  font-weight: 600;
+}
+
+.finding-body {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.finding-body dt {
+  font-weight: 600;
+  color: #444;
+  margin-top: 0.5rem;
+}
+
+.finding-body dd {
+  margin: 0.15rem 0 0;
+}
+
+.finding-steps {
+  margin: 0.2rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.finding-screenshot-link {
+  display: block;
+  margin-top: 0.8rem;
+}
+
+.finding-screenshot {
+  max-width: 100%;
+  border: 1px solid #e0e4ea;
+  border-radius: 4px;
+}

@@ -1099,3 +1099,236 @@ class TestSprintTestRunFlag:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_runs"] is True
+
+
+# == Exploratory testing model ========================================
+
+
+def _seed_exploratory_run(db_session, sprint, requirement, **kwargs):
+    from backend.models.database import ExploratoryRun
+
+    kwargs.setdefault("base_url_env_vars_csv", "APP_URL")
+    run = ExploratoryRun(sprint_id=sprint.id, requirement_id=requirement.id, **kwargs)
+    db_session.add(run)
+    db_session.commit()
+    db_session.refresh(run)
+    return run
+
+
+def _seed_exploratory_session(db_session, run, position=0, **kwargs):
+    from backend.models.database import ExploratorySession
+
+    kwargs.setdefault("charter", "Explore the export flow")
+    kwargs.setdefault("sfdipot_areas_csv", "Function,Data")
+    session = ExploratorySession(exploratory_run_id=run.id, position=position, **kwargs)
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+    return session
+
+
+def _seed_exploratory_finding(db_session, session, position=0, **kwargs):
+    from backend.models.database import ExploratoryFinding, FindingSeverity, FindingType
+
+    kwargs.setdefault("finding_type", FindingType.BUG)
+    kwargs.setdefault("severity", FindingSeverity.HIGH)
+    kwargs.setdefault("title", "Export produces an empty file")
+    kwargs.setdefault("steps_to_reproduce", "Open reports\nClick Export")
+    kwargs.setdefault("expected", "A CSV with a header row")
+    kwargs.setdefault("actual", "A zero-byte file")
+    finding = ExploratoryFinding(exploratory_session_id=session.id, position=position, **kwargs)
+    db_session.add(finding)
+    db_session.commit()
+    db_session.refresh(finding)
+    return finding
+
+
+class TestExploratoryModel:
+    """Comma-joined column accessors, ordering, and cascade behaviour."""
+
+    def _sprint_and_requirement(self, db_session):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        return sprint, requirement
+
+    def test_base_url_env_vars_splits_multiple(self, db_session):
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(
+            db_session, sprint, requirement, base_url_env_vars_csv="APP_URL,API_URL"
+        )
+        assert run.base_url_env_vars == ["APP_URL", "API_URL"]
+
+    def test_base_url_env_vars_splits_single(self, db_session):
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(
+            db_session, sprint, requirement, base_url_env_vars_csv="APP_URL"
+        )
+        assert run.base_url_env_vars == ["APP_URL"]
+
+    def test_base_url_env_vars_empty_string_yields_empty_list(self, db_session):
+        """A naive ``"".split(",")`` returns ``[""]`` — the property must not."""
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(db_session, sprint, requirement, base_url_env_vars_csv="")
+        assert run.base_url_env_vars == []
+
+    def test_sfdipot_areas_splits(self, db_session):
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(db_session, sprint, requirement)
+        session = _seed_exploratory_session(
+            db_session, run, sfdipot_areas_csv="Function,Data,Interfaces"
+        )
+        assert session.sfdipot_areas == ["Function", "Data", "Interfaces"]
+
+    def test_sfdipot_areas_empty_string_yields_empty_list(self, db_session):
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(db_session, sprint, requirement)
+        session = _seed_exploratory_session(db_session, run, sfdipot_areas_csv="")
+        assert session.sfdipot_areas == []
+
+    def test_requirement_name_property(self, db_session):
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(db_session, sprint, requirement)
+        db_session.refresh(run)
+        assert run.requirement_name == requirement.name
+
+    def test_sessions_ordered_by_position(self, db_session):
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(db_session, sprint, requirement)
+        _seed_exploratory_session(db_session, run, position=2, charter="third")
+        _seed_exploratory_session(db_session, run, position=0, charter="first")
+        _seed_exploratory_session(db_session, run, position=1, charter="second")
+
+        db_session.refresh(run)
+        assert [s.charter for s in run.sessions] == ["first", "second", "third"]
+
+    def test_delete_run_cascades_to_sessions_and_findings(self, db_session):
+        from sqlmodel import select
+
+        from backend.models.database import (
+            ExploratoryFinding,
+            ExploratoryRun,
+            ExploratorySession,
+        )
+
+        sprint, requirement = self._sprint_and_requirement(db_session)
+        run = _seed_exploratory_run(db_session, sprint, requirement)
+        session = _seed_exploratory_session(db_session, run)
+        _seed_exploratory_finding(db_session, session)
+
+        run_id = run.id
+        db_session.delete(run)
+        db_session.commit()
+
+        assert db_session.get(ExploratoryRun, run_id) is None
+        assert db_session.exec(select(ExploratorySession)).all() == []
+        assert db_session.exec(select(ExploratoryFinding)).all() == []
+
+
+class TestSprintExploratoryFlag:
+    """`has_exploratory_runs` — model value and serialization."""
+
+    def test_false_with_no_runs(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        assert sprint.has_exploratory_runs is False
+
+    def test_true_with_one_run(self, db_session):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_exploratory_run(db_session, sprint, requirement)
+
+        db_session.refresh(sprint)
+        assert sprint.has_exploratory_runs is True
+
+    @pytest.mark.asyncio
+    async def test_flag_serialized_on_list_and_detail(self, async_client, db_session):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            assert resp.status_code == 200
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_exploratory_runs"] is False
+
+        _seed_exploratory_run(db_session, sprint, requirement)
+
+        for url in ("/api/sprints", f"/api/sprints/{sprint.id}"):
+            resp = await async_client.get(url)
+            data = resp.json()
+            row = data[0] if isinstance(data, list) else data
+            assert row["has_exploratory_runs"] is True
+
+
+class TestFinishSprintSweepsExploratoryRuns:
+    """Finishing a sprint must not leave an exploration in progress."""
+
+    def _run(self, db_session, sprint, status=None, **kwargs):
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement
+
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        if status is not None:
+            kwargs["status"] = status
+        return _seed_exploratory_run(db_session, sprint, requirement, **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_fails_in_progress_runs(self, async_client, db_session):
+        from datetime import datetime, timezone
+
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            ExploratoryRun,
+            ExploratoryRunStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        pending = self._run(db_session, sprint)
+        running = self._run(
+            db_session,
+            sprint,
+            status=ExploratoryRunStatus.RUNNING,
+            last_heartbeat=datetime.now(timezone.utc),
+        )
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for run_id in (pending.id, running.id):
+            row = db_session.get(ExploratoryRun, run_id)
+            assert row.status == ExploratoryRunStatus.FAILED
+            assert row.error == SPRINT_FINISHED_ERROR
+            assert row.last_heartbeat is None
+
+    @pytest.mark.asyncio
+    async def test_settled_runs_untouched(self, async_client, db_session):
+        from backend.models.database import ExploratoryRun, ExploratoryRunStatus
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        settled = {
+            self._run(db_session, sprint, status=status).id: status
+            for status in (ExploratoryRunStatus.COMPLETED, ExploratoryRunStatus.FAILED)
+        }
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        for run_id, status in settled.items():
+            row = db_session.get(ExploratoryRun, run_id)
+            assert row.status == status
+            assert row.error is None

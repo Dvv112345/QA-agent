@@ -1,5 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 import CreateSprintPage from './pages/CreateSprintPage'
+import ExploratoryRunDetailPage from './pages/ExploratoryRunDetailPage'
+import ExploratorySessionPage from './pages/ExploratorySessionPage'
 import RepoListPage from './pages/RepoListPage'
 import SprintDetailPage from './pages/SprintDetailPage'
 import SprintListPage from './pages/SprintListPage'
@@ -20,6 +22,14 @@ export const routes = [
       { path: '/sprints/:id/test-plans', element: <TestPlansPage /> },
       { path: '/sprints/:id/test-runs', element: <TestRunsPage /> },
       { path: '/sprints/:id/test-runs/:runId', element: <TestRunDetailPage /> },
+      {
+        path: '/sprints/:id/exploratory-runs/:runId',
+        element: <ExploratoryRunDetailPage />,
+      },
+      {
+        path: '/sprints/:id/exploratory-sessions/:sessionId',
+        element: <ExploratorySessionPage />,
+      },
       { path: '/repos', element: <RepoListPage /> },
     ],
   },

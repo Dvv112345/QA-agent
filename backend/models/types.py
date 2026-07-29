@@ -57,6 +57,7 @@ class SprintResponse(SQLModel):
     has_test_plans: bool = False
     test_plans_complete: bool = False
     has_test_runs: bool = False
+    has_exploratory_runs: bool = False
 
 
 class SprintUpdateRequest(SQLModel):
@@ -220,3 +221,121 @@ class TestRunDetailResponse(SQLModel):
 
 class TestRunCreateRequest(SQLModel):
     requirement_ids: list[int]
+
+
+# ── Exploratory testing ───────────────────────────────────────────────
+
+
+class ExploratoryFindingResponse(SQLModel):
+    id: int
+    position: int
+    finding_type: str
+    severity: str
+    title: str
+    steps_to_reproduce: str
+    expected: str
+    actual: str
+    # Whether a screenshot exists — the path itself is never exposed, and
+    # None is normal when STORE_OFFLINE is false, not an error.
+    has_screenshot: bool = False
+    created_at: datetime
+
+
+class ExploratorySessionSummaryResponse(SQLModel):
+    """List shape — omits ``action_log``, which only the detail view needs."""
+
+    id: int
+    position: int
+    charter: str
+    sfdipot_areas: list[str] = []
+    status: str
+    actions_used: int
+    stop_reason: str | None = None
+    error: str | None = None
+    finding_count: int = 0
+    updated_at: datetime
+
+
+class ExploratorySessionResponse(SQLModel):
+    id: int
+    exploratory_run_id: int
+    position: int
+    charter: str
+    sfdipot_areas: list[str] = []
+    status: str
+    actions_used: int
+    session_notes: str | None = None
+    action_log: str | None = None
+    stop_reason: str | None = None
+    error: str | None = None
+    findings: list[ExploratoryFindingResponse] = []
+    updated_at: datetime
+
+
+class ExploratoryRunResponse(SQLModel):
+    """List-page shape — aggregates computed at response time, never stored."""
+
+    id: int
+    sprint_id: int
+    requirement_id: int
+    requirement_name: str
+    status: str
+    summary: str | None = None
+    error: str | None = None
+    session_count: int = 0
+    bug_count: int = 0
+    issue_count: int = 0
+    high_severity_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExploratoryRunDetailResponse(SQLModel):
+    id: int
+    sprint_id: int
+    requirement_id: int
+    requirement_name: str
+    status: str
+    summary: str | None = None
+    error: str | None = None
+    base_url_env_vars: list[str] = []
+    sessions: list[ExploratorySessionSummaryResponse] = []
+    bug_count: int = 0
+    issue_count: int = 0
+    high_severity_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class CharterDraft(SQLModel):
+    """One proposed charter — request and response shape both."""
+
+    charter: str
+    sfdipot_areas: list[str] = []
+
+
+class ExploratoryCharterDraftResponse(SQLModel):
+    """Drafted charters plus everything the review screen needs.
+
+    ``projected_minutes`` is heuristic arithmetic over the charter count
+    (Convention #10 — computed server-side so the frontend never reassembles
+    it from config literals). It is deliberately not something the LLM was
+    asked to estimate.
+    """
+
+    requirement_id: int
+    requirement_name: str
+    charters: list[CharterDraft] = []
+    base_url_env_vars: list[str] = []
+    charter_count: int = 0
+    projected_minutes: int = 0
+
+
+class ExploratoryCharterGenerateRequest(SQLModel):
+    requirement_id: int
+
+
+class ExploratoryRunCreateRequest(SQLModel):
+    requirement_id: int
+    charters: list[CharterDraft]
+    base_url_env_vars: list[str]

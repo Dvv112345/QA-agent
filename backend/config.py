@@ -98,13 +98,58 @@ MAX_TEST_ENV_REVISION_ROUNDS: int = _get_int("MAX_TEST_ENV_REVISION_ROUNDS", 3)
 # ── Test planning ─────────────────────────────────────────────────────
 MAX_TEST_PLAN_FEEDBACK_ROUNDS: int = _get_int("MAX_TEST_PLAN_FEEDBACK_ROUNDS", 3)
 # Max read_file tool rounds per plan generation before a forced final answer.
-TEST_PLAN_TOOL_ROUNDS: int = _get_int("TEST_PLAN_TOOL_ROUNDS", 8)
+TEST_PLAN_TOOL_ROUNDS: int = _get_int("TEST_PLAN_TOOL_ROUNDS", 2)
 # Per-file character cap for repo files fetched by the tool loop.
 TEST_PLAN_FILE_MAX_CHARS: int = _get_int("TEST_PLAN_FILE_MAX_CHARS", 20000)
 # RQ job_timeout for plan jobs. Must cover a worst-case tool loop (up to
-# TEST_PLAN_TOOL_ROUNDS + 1 LLM calls × OPENAI_TIMEOUT plus GitHub fetches),
-# which JOB_TIMEOUT (sized for single-call analysis jobs) does not.
+# TEST_PLAN_TOOL_ROUNDS + 1 LLM calls × OPENAI_TIMEOUT plus GitHub fetches).
+# Generous at the default round count, which fits inside JOB_TIMEOUT on its
+# own — kept separate and roomy so raising TEST_PLAN_TOOL_ROUNDS does not
+# silently start timing plan jobs out.
 TEST_PLAN_JOB_TIMEOUT: int = _get_int("TEST_PLAN_JOB_TIMEOUT", 900)
+
+# ── Exploratory testing ───────────────────────────────────────────────
+# The SBTM time box, measured in LLM tool rounds rather than wall clock.
+# This is the main lever on a run's duration: charters run serially, so a
+# run takes the sum of its sessions with no parallelism anywhere.
+# Not the whole ceiling: record_finding is free for its first
+# EXPLORATORY_MAX_FINDINGS calls, so a session runs at most
+# MAX_ACTIONS + MAX_FINDINGS rounds.
+EXPLORATORY_MAX_ACTIONS: int = _get_int("EXPLORATORY_MAX_ACTIONS", 25)
+# Cap on charters per run (also enforced on user-edited charter lists).
+EXPLORATORY_MAX_CHARTERS: int = _get_int("EXPLORATORY_MAX_CHARTERS", 6)
+# Per-snapshot character cap — an ARIA snapshot of a large SPA is unbounded.
+EXPLORATORY_SNAPSHOT_MAX_CHARS: int = _get_int("EXPLORATORY_SNAPSHOT_MAX_CHARS", 20000)
+# How many recent snapshots stay verbatim in the conversation; older ones are
+# replaced with a one-line placeholder. Snapshots are the only large item in
+# the loop, and a ref from many actions ago is stale anyway.
+EXPLORATORY_SNAPSHOT_WINDOW: int = _get_int("EXPLORATORY_SNAPSHOT_WINDOW", 3)
+# Prompt-token size at which a session compacts its own history into a summary
+# before the next round. A backstop, not a routine step: at the default action
+# cap a session lands around 11-21k, so this normally never fires. It cannot
+# push below the floor of system prompt + charter + the verbatim snapshot
+# window — those snapshots hold the refs the model is about to act on — so
+# SNAPSHOT_WINDOW and SNAPSHOT_MAX_CHARS are the levers for that floor.
+EXPLORATORY_CONTEXT_TOKEN_LIMIT: int = _get_int("EXPLORATORY_CONTEXT_TOKEN_LIMIT", 40000)
+# Wall-clock timeout for a single Playwright action. Kept well below
+# Playwright's 30 s default: an exploratory action that takes 30 s is usually
+# itself the finding, and a stale element ref burns this whole budget before
+# erroring.
+EXPLORATORY_ACTION_TIMEOUT: int = _get_int("EXPLORATORY_ACTION_TIMEOUT", 10)
+# Display only — feeds the pre-run duration estimate shown on the confirm
+# button. Bounds nothing at runtime, so being wrong costs an inaccurate label.
+EXPLORATORY_SECONDS_PER_ACTION: int = _get_int("EXPLORATORY_SECONDS_PER_ACTION", 8)
+# Max findings one session may record, guarding against a runaway model.
+# Doubles as the free-recording budget in run_exploration_loop: recording
+# does not spend an action while under this cap, and does once past it —
+# a free non-terminal tool would remove the loop's termination guarantee.
+EXPLORATORY_MAX_FINDINGS: int = _get_int("EXPLORATORY_MAX_FINDINGS", 20)
+# RQ job_timeout for exploratory runs. Must cover every charter serially:
+# MAX_CHARTERS × (MAX_ACTIONS + MAX_FINDINGS) × ACTION_TIMEOUT plus the
+# summary call — free recordings are extra rounds, so they count here too.
+EXPLORATORY_JOB_TIMEOUT: int = _get_int("EXPLORATORY_JOB_TIMEOUT", 7200)
+# Headed mode is for local debugging — watching the agent explore.
+EXPLORATORY_HEADLESS: bool = _get_bool("EXPLORATORY_HEADLESS", True)
 
 # ── Reconciler ────────────────────────────────────────────────────────
 RECONCILER_INTERVAL: int = _get_int("RECONCILER_INTERVAL", 30)
@@ -121,8 +166,9 @@ PENDING_JOB_STALE_SECONDS: int = _get_int("PENDING_JOB_STALE_SECONDS", 30)
 # script-bug verdict is given up on (marked "error", not "failed").
 MAX_SCRIPT_FIX_ROUNDS: int = _get_int("MAX_SCRIPT_FIX_ROUNDS", 3)
 # Max read_file tool rounds per test-script generation/diagnosis call
-# before a forced final answer. Smaller than TEST_PLAN_TOOL_ROUNDS — a
-# script targets one concrete test case, not a whole plan.
+# before a forced final answer. Sized independently of TEST_PLAN_TOOL_ROUNDS:
+# a script targets one concrete test case, and diagnosing a failing one is
+# the call that most needs room to look around.
 TEST_EXECUTION_TOOL_ROUNDS: int = _get_int("TEST_EXECUTION_TOOL_ROUNDS", 5)
 # Wall-clock timeout (seconds) for a single test-script subprocess run.
 SCRIPT_EXECUTION_TIMEOUT: int = _get_int("SCRIPT_EXECUTION_TIMEOUT", 60)

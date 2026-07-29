@@ -50,6 +50,7 @@ class Sprint(SQLModel, table=True):
         back_populates="sprint", sa_relationship_kwargs={"uselist": False}
     )
     test_runs: list["TestRun"] = Relationship(back_populates="sprint")
+    exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="sprint")
 
     @property
     def requirements_complete(self) -> bool:
@@ -88,6 +89,11 @@ class Sprint(SQLModel, table=True):
     def has_test_runs(self) -> bool:
         """Whether at least one test run has been submitted for this sprint."""
         return any(self.test_runs)
+
+    @property
+    def has_exploratory_runs(self) -> bool:
+        """Whether at least one exploratory run has been started for this sprint."""
+        return any(self.exploratory_runs)
 
 
 class RequirementStatus(str, Enum):
@@ -135,6 +141,7 @@ class Requirement(SQLModel, table=True):
         back_populates="requirement", sa_relationship_kwargs={"uselist": False}
     )
     test_executions: list["TestExecution"] = Relationship(back_populates="requirement")
+    exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="requirement")
 
     @property
     def clarification_cap_reached(self) -> bool:
@@ -435,3 +442,204 @@ class TestCaseExecution(SQLModel, table=True):
 
     test_execution: Optional["TestExecution"] = Relationship(back_populates="cases")
     test_case: Optional["TestCase"] = Relationship()
+
+
+# ── Exploratory testing ───────────────────────────────────────────────
+
+
+class SfdipotArea(str, Enum):
+    """Product elements from the SFDIPOT heuristic (Rapid Software Testing).
+
+    A charter targets one or more of these; the generator skips dimensions
+    that don't apply to the requirement rather than forcing all seven.
+    """
+
+    STRUCTURE = "Structure"
+    FUNCTION = "Function"
+    DATA = "Data"
+    INTERFACES = "Interfaces"
+    PLATFORM = "Platform"
+    OPERATIONS = "Operations"
+    TIME = "Time"
+
+
+class ExploratoryRunStatus(str, Enum):
+    """Lifecycle status of one requirement's exploratory run.
+
+    Mirrors ``TestExecutionStatus`` — the run is the row an RQ job operates
+    on, so it carries the same four states.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ExploratorySessionStatus(str, Enum):
+    """Outcome of a single charter's session within a run.
+
+    ``COMPLETED`` regardless of how many findings it produced — a
+    finding-heavy session is a successful session. ``ERROR`` means the
+    session machinery itself broke.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
+class FindingType(str, Enum):
+    """SBTM distinguishes product defects from testing obstructions.
+
+    Collapsing these would discard the signal that a session was *blocked*
+    rather than clean.
+    """
+
+    BUG = "bug"  # the product is wrong
+    ISSUE = "issue"  # something obstructed the testing itself
+
+
+class FindingSeverity(str, Enum):
+    """Reporter-assigned severity of a finding."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class ExploratoryRun(SQLModel, table=True):
+    """One requirement's exploration — list-page entity and RQ job row in one.
+
+    Deliberately fuses what ``TestRun`` and ``TestExecution`` keep apart:
+    ``TestRun`` exists as a machinery-free grouping row only because a
+    scripted submission can batch several requirements, each needing its own
+    job. An exploratory run covers exactly one requirement, so that level has
+    nothing to group and the machinery columns land directly here.
+
+    Charters run sequentially within the single job, so a run never has two
+    browsers open against the test environment at once.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    requirement_id: int = Field(foreign_key="requirement.id", index=True)
+    # Comma-joined keys of TestEnvironmentAccess.env_vars holding application
+    # URLs this run may reach (frontend, API, …), nominated by the
+    # charter-generation call and validated there. Persisted so the task never
+    # re-derives them. Comma-joined rather than JSON because these are
+    # UPPER_SNAKE_CASE identifiers that can never contain a comma — same
+    # storage choice as ExploratorySession.sfdipot_areas_csv.
+    base_url_env_vars_csv: str
+    # LLM synthesis of this run's session sheets. Best-effort: left None when
+    # the (single, cheap) summary call fails, recoverable via the summarize
+    # endpoint — the findings, not this paragraph, are the deliverable.
+    summary: str | None = Field(default=None)
+    # ── machinery (identical to TestExecution) ──
+    status: str = Field(default=ExploratoryRunStatus.PENDING)
+    retry_count: int = Field(default=0)  # automatic re-enqueues (reconciler/task)
+    job_id: str | None = Field(default=None)  # RQ job id — reconciler dedup guard
+    last_heartbeat: datetime | None = Field(default=None)  # worker liveness while running
+    error: str | None = Field(default=None)  # user-facing summary when failed
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Sprint | None = Relationship(back_populates="exploratory_runs")
+    requirement: Optional["Requirement"] = Relationship(back_populates="exploratory_runs")
+    sessions: list["ExploratorySession"] = Relationship(
+        back_populates="exploratory_run",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "ExploratorySession.position",
+        },
+    )
+
+    @property
+    def base_url_env_vars(self) -> list[str]:
+        """Decoded ``base_url_env_vars_csv`` — the single accessor for the list.
+
+        Mirrors ``TestEnvironmentAccess.env_vars``: the column name carries
+        the encoding, this property carries the clean name, and nothing above
+        the column ever sees the joined string.
+        """
+        return [name for name in self.base_url_env_vars_csv.split(",") if name]
+
+    @property
+    def requirement_name(self) -> str:
+        """Name of the requirement this run explores (serialized for run cards)."""
+        return self.requirement.name if self.requirement is not None else ""
+
+
+class ExploratorySession(SQLModel, table=True):
+    """One charter's session — the SBTM unit of work.
+
+    Child row with its own status for resumability but no job machinery,
+    exactly like ``TestCaseExecution``: a retried run skips sessions already
+    finalized and restarts only the one that was in flight (a half-explored
+    browser cannot be resumed — its state died with the worker).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    exploratory_run_id: int = Field(foreign_key="exploratoryrun.id", index=True)
+    position: int
+    charter: str  # the approved (possibly user-edited) mission
+    sfdipot_areas_csv: str  # comma-joined SfdipotArea values
+    status: str = Field(default=ExploratorySessionStatus.PENDING)
+    actions_used: int = Field(default=0)
+    session_notes: str | None = Field(default=None)  # SBTM test-notes narrative
+    # Full tool-call trace. Credential-free by construction: fill_secret
+    # resolves values inside the browser executor, and literal matches against
+    # the environment values are redacted as a backstop.
+    action_log: str | None = Field(default=None)
+    stop_reason: str | None = Field(default=None)  # charter_complete / action_cap / error
+    error: str | None = Field(default=None)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    exploratory_run: Optional["ExploratoryRun"] = Relationship(back_populates="sessions")
+    findings: list["ExploratoryFinding"] = Relationship(
+        back_populates="session",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "ExploratoryFinding.position",
+        },
+    )
+
+    @property
+    def sfdipot_areas(self) -> list[str]:
+        """Decoded ``sfdipot_areas_csv`` — see ``ExploratoryRun.base_url_env_vars``."""
+        return [area for area in self.sfdipot_areas_csv.split(",") if area]
+
+
+class ExploratoryFinding(SQLModel, table=True):
+    """One bug or issue recorded during a session.
+
+    Written live by the ``record_finding`` tool rather than parsed out of the
+    session notes afterwards — that is the only way to capture a screenshot
+    of the failure while it is still on screen.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    exploratory_session_id: int = Field(foreign_key="exploratorysession.id", index=True)
+    position: int
+    finding_type: str  # FindingType value
+    severity: str  # FindingSeverity value
+    title: str
+    steps_to_reproduce: str  # newline-joined, matching TestCase.steps storage
+    expected: str
+    actual: str
+    # Absolute path — StorageService.store_screenshot returns abspath. None
+    # whenever STORE_OFFLINE is false: the normal case for that setting, not
+    # an error.
+    screenshot_path: str | None = Field(default=None)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    session: Optional["ExploratorySession"] = Relationship(back_populates="findings")

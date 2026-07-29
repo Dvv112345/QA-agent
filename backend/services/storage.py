@@ -84,3 +84,26 @@ class StorageService:
 
         logger.info("Stored PRD → %s", prd_path)
         return os.path.abspath(prd_path)
+
+    def store_screenshot(
+        self, png: bytes, directory: str, session_id: int, position: int
+    ) -> str | None:
+        """Persist an exploratory finding's screenshot if offline mode is active.
+
+        Returns the path, or ``None`` when ``STORE_OFFLINE`` is disabled — in
+        which case findings simply carry no screenshot.  That is the normal
+        outcome for that setting, not an error: callers must treat ``None`` as
+        "no image available" rather than a failure.
+        """
+        if not self._offline:
+            return None
+
+        session_dir = os.path.join(self._base, directory, "exploratory", f"session_{session_id}")
+        os.makedirs(session_dir, exist_ok=True)
+
+        screenshot_path = os.path.join(session_dir, f"finding_{position}.png")
+        with open(screenshot_path, "wb") as fh:
+            fh.write(png)
+
+        logger.info("Stored finding screenshot → %s", screenshot_path)
+        return os.path.abspath(screenshot_path)

@@ -337,3 +337,423 @@ def test_script_context(
     )
     parts.append(case_block)
     return parts
+
+
+# ── Exploratory testing ───────────────────────────────────────────────
+
+SFDIPOT_EXPLANATION = (
+    "SFDIPOT is the Rapid Software Testing 'product elements' heuristic, used "
+    "here to attack a requirement from genuinely different angles rather than "
+    "writing seven rephrasings of the happy path:\n"
+    "- Structure: what the product is made of — files, pages, components\n"
+    "- Function: what it does — features, calculations, error handling\n"
+    "- Data: what it operates on — inputs, outputs, boundaries, volumes, "
+    "unusual or hostile values\n"
+    "- Interfaces: how it is accessed — UI, APIs, imports/exports, links\n"
+    "- Platform: what it depends on — browser, viewport, screen size, locale\n"
+    "- Operations: how it is used in practice — realistic scenarios, "
+    "different user roles, permissions\n"
+    "- Time: how it behaves over time — ordering, concurrency, delays, "
+    "stale data, repeated actions"
+)
+
+CHARTER_SYSTEM_PROMPT = (
+    "You are a senior exploratory tester planning Session-Based Test Management "
+    "(SBTM) sessions for one requirement. A charter is a short mission statement "
+    "for a single time-boxed session — specific enough to focus the session, open "
+    "enough to leave room for discovery. Write charters as missions ('Explore the "
+    "export flow with unusual data to discover encoding and boundary problems'), "
+    f"never as scripted steps.\n\n{SFDIPOT_EXPLANATION}\n\n"
+    "Select ONLY the dimensions that genuinely apply to this requirement and "
+    "write one charter for each — skip the rest rather than padding. A charter "
+    "may target more than one dimension. Most requirements warrant 3 to 6 "
+    "charters.\n\n"
+    "You are shown the requirement's already-approved scripted test cases. Those "
+    "are already covered: aim your charters at what those cases would miss, not "
+    "at repeating them.\n\n"
+    "You are also shown the names of the environment variables holding test "
+    "environment access details. Nominate every variable whose value is a URL of "
+    "the application under test that exploration may need to reach — typically "
+    "the web frontend, plus a separate API host if there is one. Include only "
+    "application URLs a browser should visit: exclude database connection "
+    "strings, message-queue URLs, and anything else that merely looks "
+    "URL-shaped. List the browsable web frontend FIRST — each exploratory "
+    "session opens its browser on the first URL in this list, so putting an "
+    "API host first would start the session on a raw JSON endpoint.\n\n"
+    "Respond with a JSON object of the shape "
+    '{"charters": [{"charter": string, "sfdipot_areas": [string]}], '
+    '"base_url_env_vars": [string]}. Each area must be exactly one of: '
+    "Structure, Function, Data, Interfaces, Platform, Operations, Time."
+)
+
+EXPLORATION_SYSTEM_PROMPT = (
+    "You are a senior QA engineer doing exploratory testing based on "
+    "Session-Based Test Management and have been given a charter to focus on. "
+    "You are using a real browser against a live application. Each turn you call "
+    "exactly one tool and see its result before choosing the next action. Work "
+    "like a tester, not a script: observe, form a hypothesis, probe it, follow "
+    "what looks odd.\n\n"
+    "HOW TO ACT: call tools through the tool interface. Never write a tool call "
+    "as text in your reply — a message that describes an action instead of "
+    "calling it does nothing at all, and wastes part of your budget.\n\n"
+    "WHAT COUNTS AS CORRECT: the requirement defines the expected "
+    "behaviour. Judge what you observe against it — never against what the "
+    "application happens to do, and never assume the current behaviour is right "
+    "because it is what the application does. You cannot read the source code, "
+    "and that is deliberate: your job is to decide whether the product does what "
+    "was asked, not what the code intends.\n\n"
+    "WHERE YOU ARE: the browser is already open on the application under test. "
+    "You may only type a URL that is in the allowed list, but you may follow links "
+    "that lead off the website when the charter calls for it — an external sign-in, a payment "
+    "provider, a link you were asked to verify. You will be told whenever the "
+    "page is off the application; navigate back when you are done, and do not "
+    "report defects in someone else's software as bugs in this one.\n\n"
+    "START by calling snapshot to see the page. Every element you interact with "
+    "needs a ref from a recent snapshot; refs change when the page changes, so "
+    "take a fresh snapshot after anything that navigates or re-renders. A stale "
+    "ref wastes a significant part of your budget before it fails.\n\n"
+    "YOUR BUDGET: every tool call spends one action, snapshots included. "
+    "Re-snapshot whenever the page has actually changed, but not out of habit — "
+    "budget spent re-reading a page you have already seen is budget not spent "
+    "exploring the charter. record_finding is the exception: it does not "
+    "spend an action, so recording what you find never costs you exploring "
+    "time and there is never a reason to put it off.\n\n"
+    "CREDENTIALS: never type a real password or token literally — use "
+    "fill_secret with the name of the environment variable, and the value is "
+    "filled in for you without ever being shown to you. Deliberately wrong or "
+    "made-up values are not secrets: when the charter calls for testing what "
+    "happens on bad input, type those with fill as normal.\n\n"
+    "RECORDING WHAT YOU FIND: call record_finding the moment you observe "
+    "something worth reporting. A screenshot is captured at that instant, so "
+    "recording while the problem is on screen gives the best evidence. If you "
+    "only realise after navigating to a different screen, record it anyway "
+    "— but set page_still_shows_problem "
+    "to false, so no image of an unrelated page is attached as if it showed "
+    "the defect. Never let the timing stop you filing. Classify each as:\n"
+    "- bug: the product itself is wrong — it behaves differently from what the "
+    "requirement says. A feature that fails is a bug even when that feature is "
+    "signing in, and even when its failure blocks the rest of your session.\n"
+    "- issue: the product may be fine, but something outside it obstructed "
+    "your testing — a credential you were never given, a fixture nobody set "
+    "up, an environment that is down.\n"
+    "Ask whose fault it is, not which part of the application it happened in.\n"
+    "Every finding needs concrete reproduction steps and a specific expected vs "
+    "actual. If you cannot yet state precisely what you expected and what "
+    "happened, keep investigating until you can — and then record it. Accuracy "
+    "matters more than volume, so do not pad the list with speculation, but a "
+    "real defect you chose not to file is the worse error by far.\n"
+    "YOUR NOTES ARE NOT A BUG REPORT. The findings are the deliverable; the "
+    "notes are only the narrative around them. Anything you would describe as "
+    "a defect or an obstruction in your notes must already exist as a "
+    "record_finding call. A problem mentioned only in prose has not been "
+    "reported at all, as far as anyone reading the results is concerned.\n\n"
+    "RESTRAINT: this is a shared test environment. Exercise destructive actions "
+    "when the charter genuinely calls for it, but do not bulk-delete data or "
+    "repeatedly hammer destructive admin operations.\n\n"
+    "FINISHING: before you call finish_session, read back the notes you are "
+    "about to write. If they mention a defect or an obstruction you have not "
+    "recorded, record it first — that is your last chance, because once the "
+    "session ends nothing can be added. Then call finish_session, summarising "
+    "what you did and what you concluded. If your action budget runs out "
+    "first you will be asked for that summary instead."
+)
+
+SESSION_WRAPUP_PROMPT = (
+    "Your action budget for this session is exhausted. Write the SBTM session "
+    "notes now: what you explored, what you observed, and what you concluded, "
+    "including anything you did not get to. Report only what you actually "
+    "observed during the session. Respond with a JSON object of the shape "
+    '{"notes": string}.'
+)
+
+HISTORY_COMPACTION_PROMPT = (
+    "You are compacting the earlier part of an exploratory testing session so "
+    "it fits in the tester's working memory. What you write is not a report "
+    "for a human — it is handed straight back to the tester as their own "
+    "memory of what happened, and they will act on it. Anything you leave out "
+    "is gone.\n\n"
+    "Preserve, verbatim wherever they appeared:\n"
+    "- identifiers of records created, edited, or deleted, so they can still "
+    "be cleaned up or referred to\n"
+    "- exact error text, status codes, and console messages\n"
+    "- URLs and pages visited, and how they were reached\n"
+    "- credentials variables used (names only — values are never shown)\n"
+    "- what was already tried and ruled out, so it is not repeated\n"
+    "- what was already recorded as a finding, so it is not recorded twice\n\n"
+    "Drop page structure, element refs, and navigation chatter: refs are stale "
+    "and the tester will take a fresh snapshot. Prefer a longer, specific "
+    "summary over a short, tidy one — brevity is not the goal here, and a "
+    "generalisation like 'tested several inputs' is worse than useless "
+    "because it reads as coverage while naming nothing.\n\n"
+    'Respond with a JSON object of the shape {"summary": string}.'
+)
+
+EXPLORATION_SUMMARY_SYSTEM_PROMPT = (
+    "You are a senior QA lead summarising a completed exploratory testing run "
+    "for one requirement. You are given the requirement and every session's "
+    "charter, notes, and findings. Write a short narrative summary of the "
+    "requirement's state: what was covered, what was found, and where the risk "
+    "now sits.\n\n"
+    "Summarise only what the sessions actually observed — do not speculate "
+    "beyond the evidence, and do not invent coverage that no session performed. "
+    "Do not re-judge whether a recorded finding was really a bug: that verdict "
+    "was made with the page on screen and you cannot see it. Report findings as "
+    "the sessions classified them.\n\n"
+    'Respond with a JSON object of the shape {"summary": string}.'
+)
+
+
+@dataclass(frozen=True)
+class FindingLike:
+    """Plain finding fields passed to the summary prompt.
+
+    Keeps ``services/llm.py`` free of DB imports, exactly like
+    ``TestCaseLike`` does for the test-script prompts.
+    """
+
+    finding_type: str
+    severity: str
+    title: str
+    expected: str
+    actual: str
+
+
+@dataclass(frozen=True)
+class ExploratorySessionLike:
+    """Plain session-sheet fields passed to the summary prompt."""
+
+    charter: str
+    sfdipot_areas: list[str]
+    status: str
+    actions_used: int
+    stop_reason: str | None
+    session_notes: str | None
+    findings: list[FindingLike]
+
+
+def _tool(name: str, description: str, properties: dict, required: list[str]) -> dict:
+    """Build one OpenAI function-tool schema (the browser surface has many)."""
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
+_REF = {"type": "string", "description": "Element ref from a recent snapshot, e.g. 'e12'."}
+
+# The exploratory tool surface. Deliberately excludes read_file: this loop's
+# whole job is judging whether observed behaviour is wrong, which is exactly
+# where handing the model the implementation corrupts the oracle (see the
+# CLAUDE.md gotcha). It also keeps the session free of asyncio.run, which
+# cannot coexist with Playwright's sync API in one thread.
+BROWSER_TOOLS = [
+    _tool(
+        "snapshot",
+        "Capture the current page's accessibility tree, including a ref for "
+        "every element. Call this first, and again after anything that "
+        "navigates or re-renders the page.",
+        {},
+        [],
+    ),
+    _tool(
+        "navigate",
+        "Navigate to a URL. Only URLs on the application under test are "
+        "allowed; anything else is refused.",
+        {"url": {"type": "string", "description": "Absolute URL to navigate to."}},
+        ["url"],
+    ),
+    _tool("click", "Click an element.", {"ref": _REF}, ["ref"]),
+    _tool(
+        "fill",
+        "Type text into an input. Never use this for passwords, tokens, or "
+        "other secrets — use fill_secret instead.",
+        {"ref": _REF, "value": {"type": "string", "description": "Text to type."}},
+        ["ref", "value"],
+    ),
+    _tool(
+        "fill_secret",
+        "Type a secret into an input without ever seeing its value. Give the "
+        "name of an available environment variable and its value is filled in.",
+        {
+            "ref": _REF,
+            "env_var_name": {
+                "type": "string",
+                "description": "Name from the available environment variables list.",
+            },
+        },
+        ["ref", "env_var_name"],
+    ),
+    _tool(
+        "press",
+        "Press a key while an element is focused, e.g. 'Enter', 'Tab', 'Escape'.",
+        {"ref": _REF, "key": {"type": "string", "description": "Key name."}},
+        ["ref", "key"],
+    ),
+    _tool("go_back", "Go back in browser history.", {}, []),
+    _tool("go_forward", "Go forward in browser history.", {}, []),
+    _tool(
+        "set_viewport",
+        "Resize the browser viewport — useful for Platform-dimension charters.",
+        {
+            "width": {"type": "integer", "description": "Viewport width in pixels."},
+            "height": {"type": "integer", "description": "Viewport height in pixels."},
+        },
+        ["width", "height"],
+    ),
+    _tool(
+        "read_console",
+        "Read browser console errors and failed network requests observed "
+        "since the last call. Often reveals problems the page does not show.",
+        {},
+        [],
+    ),
+    _tool(
+        "record_finding",
+        "Record a bug or issue you have observed. Captures a screenshot of the "
+        "current page. Use as soon as you observe the problem, while it is "
+        "still on screen.",
+        {
+            "finding_type": {
+                "type": "string",
+                "enum": ["bug", "issue"],
+                "description": "'bug' if the product is wrong; 'issue' if "
+                "something obstructed your testing.",
+            },
+            "severity": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+                # Without a bar the model's severity is arbitrary, and
+                # high_severity_count is the first number a reader anchors on.
+                "description": "'high' if the requirement cannot be met — data "
+                "loss, a blocked primary flow, or a wrong result a user would "
+                "act on. 'medium' if the requirement is still met but "
+                "materially degraded, or there is a workaround. 'low' for "
+                "cosmetic problems and minor annoyances.",
+            },
+            "title": {"type": "string", "description": "One-line summary."},
+            "steps_to_reproduce": {
+                "type": "string",
+                # Rendered into an <ol>, which supplies the numbers — asking
+                # for numbered steps here produced "1. 1. Open the page".
+                "description": "One step per line. Do not number them.",
+            },
+            "expected": {"type": "string", "description": "What should have happened."},
+            "actual": {"type": "string", "description": "What actually happened."},
+            "page_still_shows_problem": {
+                "type": "boolean",
+                "description": "Whether the problem is visible on the page right "
+                "now. Defaults to true, and the screenshot taken then is this "
+                "finding's evidence — keep it whenever the problem is on "
+                "screen. Set false only if you have since navigated or the "
+                "page has changed, so no misleading image is attached.",
+            },
+        },
+        ["finding_type", "severity", "title", "steps_to_reproduce", "expected", "actual"],
+    ),
+    _tool(
+        "finish_session",
+        "End the session because the charter is explored. Provide your SBTM session notes.",
+        {
+            "notes": {
+                "type": "string",
+                "description": "What you explored, observed, and concluded.",
+            }
+        },
+        ["notes"],
+    ),
+]
+
+
+def charter_context(
+    name: str,
+    description: str,
+    covered_cases: list[TestCaseLike],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+) -> list[str]:
+    """User-prompt blocks for charter generation."""
+    parts = context_sections(readme, file_tree)
+    parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
+    if covered_cases:
+        covered = "\n".join(f"- {case.title}: {case.expected_result}" for case in covered_cases)
+        parts.append(
+            "Scripted test cases already approved for this requirement "
+            f"(already covered — explore what these miss):\n{covered}"
+        )
+    parts.append(
+        "Available test environment variable names:\n"
+        + ("\n".join(f"- {v}" for v in env_var_names) if env_var_names else "(none)")
+    )
+    return parts
+
+
+def exploration_context(
+    name: str,
+    description: str,
+    charter: str,
+    sfdipot_areas: list[str],
+    base_urls: list[str],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+) -> list[str]:
+    """User-prompt blocks for one exploratory session."""
+    parts = context_sections(readme, file_tree)
+    parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
+    parts.append(
+        f"Your charter for this session:\n{charter}\n"
+        f"SFDIPOT areas: {', '.join(sfdipot_areas) if sfdipot_areas else '(unspecified)'}"
+    )
+    # Without this the model has no idea where the application lives — it only
+    # ever sees variable names, never their values.
+    if base_urls:
+        listed = "\n".join(
+            f"- {url}" + ("  (the browser is already open here)" if index == 0 else "")
+            for index, url in enumerate(base_urls)
+        )
+        parts.append(
+            f"Application under test:\n{listed}\n"
+            "Typing a URL outside these origins is refused; following the "
+            "application's own links off them is allowed."
+        )
+    parts.append(
+        "Environment variable names available to fill_secret:\n"
+        + ("\n".join(f"- {v}" for v in env_var_names) if env_var_names else "(none)")
+    )
+    return parts
+
+
+def exploration_summary_context(
+    name: str,
+    description: str,
+    sessions: list[ExploratorySessionLike],
+) -> list[str]:
+    """User-prompt blocks for the per-requirement summary."""
+    parts = [f"Requirement name: {name}\nRequirement description:\n{description}"]
+    for index, session in enumerate(sessions, start=1):
+        findings = (
+            "\n".join(
+                f"  - [{f.finding_type}/{f.severity}] {f.title} "
+                f"(expected: {f.expected} | actual: {f.actual})"
+                for f in session.findings
+            )
+            or "  (none)"
+        )
+        parts.append(
+            f"Session {index} — charter: {session.charter}\n"
+            f"SFDIPOT areas: {', '.join(session.sfdipot_areas) or '(unspecified)'}\n"
+            f"Status: {session.status}; actions used: {session.actions_used}; "
+            f"stop reason: {session.stop_reason or '(unknown)'}\n"
+            f"Notes:\n{session.session_notes or '(no notes recorded)'}\n"
+            f"Findings:\n{findings}"
+        )
+    return parts

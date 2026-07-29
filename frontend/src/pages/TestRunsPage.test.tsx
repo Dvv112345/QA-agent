@@ -12,15 +12,23 @@ vi.mock('../services/api', async (importOriginal) => {
     fetchTestRuns: vi.fn(),
     fetchTestPlans: vi.fn(),
     createTestRun: vi.fn(),
+    fetchExploratoryRuns: vi.fn(),
   }
 })
 
-import { createTestRun, fetchSprint, fetchTestPlans, fetchTestRuns } from '../services/api'
+import {
+  createTestRun,
+  fetchExploratoryRuns,
+  fetchSprint,
+  fetchTestPlans,
+  fetchTestRuns,
+} from '../services/api'
 
 const mockFetchSprint = fetchSprint as ReturnType<typeof vi.fn>
 const mockFetchTestRuns = fetchTestRuns as ReturnType<typeof vi.fn>
 const mockFetchTestPlans = fetchTestPlans as ReturnType<typeof vi.fn>
 const mockCreateTestRun = createTestRun as ReturnType<typeof vi.fn>
+const mockFetchExploratoryRuns = fetchExploratoryRuns as ReturnType<typeof vi.fn>
 
 function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
   return {
@@ -37,6 +45,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     has_test_plans: true,
     test_plans_complete: true,
     has_test_runs: false,
+    has_exploratory_runs: false,
     ...overrides,
   }
 }
@@ -91,6 +100,7 @@ describe('TestRunsPage', () => {
     vi.clearAllMocks()
     mockFetchTestRuns.mockResolvedValue([])
     mockFetchTestPlans.mockResolvedValue([])
+    mockFetchExploratoryRuns.mockResolvedValue([])
   })
 
   it('shows guard notice when ungated', async () => {
@@ -181,5 +191,121 @@ describe('TestRunsPage', () => {
     await waitFor(() => {
       expect(mockCreateTestRun).toHaveBeenCalledWith(1, [100])
     })
+  })
+})
+
+describe('TestRunsPage — exploratory list', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockFetchTestRuns.mockResolvedValue([])
+    mockFetchTestPlans.mockResolvedValue([])
+    mockFetchExploratoryRuns.mockResolvedValue([])
+    mockFetchSprint.mockResolvedValue(makeSprint())
+  })
+
+  function makeExploratoryRun(overrides = {}) {
+    return {
+      id: 5,
+      sprint_id: 1,
+      requirement_id: 11,
+      requirement_name: 'Export reports',
+      status: 'completed' as const,
+      summary: 'Looks sound.',
+      error: null,
+      session_count: 3,
+      bug_count: 2,
+      issue_count: 1,
+      high_severity_count: 1,
+      created_at: '2026-07-28T00:00:00Z',
+      updated_at: '2026-07-28T00:00:00Z',
+      ...overrides,
+    }
+  }
+
+  it('renders both section headings', async () => {
+    renderPage()
+
+    expect(await screen.findByText('Exploratory Sessions')).toBeInTheDocument()
+    expect(screen.getByText('Scripted Test Runs')).toBeInTheDocument()
+  })
+
+  it('renders both empty states independently', async () => {
+    renderPage()
+
+    expect(await screen.findByText('No exploratory runs yet.')).toBeInTheDocument()
+    expect(screen.getByText('No test runs yet.')).toBeInTheDocument()
+  })
+
+  it('shows an exploratory run with its finding summary', async () => {
+    mockFetchExploratoryRuns.mockResolvedValue([makeExploratoryRun()])
+    renderPage()
+
+    expect(await screen.findByText('Export reports')).toBeInTheDocument()
+    expect(screen.getByText('2 bugs / 1 issue')).toBeInTheDocument()
+  })
+
+  it('says "No findings" for a clean completed run', async () => {
+    mockFetchExploratoryRuns.mockResolvedValue([
+      makeExploratoryRun({ bug_count: 0, issue_count: 0 }),
+    ])
+    renderPage()
+
+    expect(await screen.findByText('No findings')).toBeInTheDocument()
+  })
+
+  it('links an exploratory run to its detail page', async () => {
+    mockFetchExploratoryRuns.mockResolvedValue([makeExploratoryRun()])
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: /Export reports/ })
+    expect(link).toHaveAttribute('href', '/sprints/1/exploratory-runs/5')
+  })
+
+  it('opens the charter modal from the exploratory button', async () => {
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start exploratory testing' }))
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('keeps the page reachable when only exploratory runs exist', async () => {
+    // Runs outlive test_plans_complete going false again — the guard keys on
+    // the absence of *both* run types.
+    mockFetchSprint.mockResolvedValue(makeSprint({ test_plans_complete: false }))
+    mockFetchExploratoryRuns.mockResolvedValue([makeExploratoryRun()])
+    renderPage()
+
+    expect(await screen.findByText('Exploratory Sessions')).toBeInTheDocument()
+    expect(screen.queryByText('Approve every test plan first.')).not.toBeInTheDocument()
+  })
+
+  it('polls while an exploratory run is in progress, then stops', async () => {
+    // Fake timers must be installed before render — an interval registered
+    // under real timers can't be advanced later.
+    vi.useFakeTimers()
+    try {
+      mockFetchExploratoryRuns.mockResolvedValueOnce([makeExploratoryRun({ status: 'running' })])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(screen.getByText('Exploring')).toBeInTheDocument()
+
+      mockFetchExploratoryRuns.mockResolvedValue([makeExploratoryRun({ status: 'completed' })])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2600)
+      })
+      expect(screen.getByText('Completed')).toBeInTheDocument()
+
+      const callsAfterSettle = mockFetchExploratoryRuns.mock.calls.length
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000)
+      })
+      expect(mockFetchExploratoryRuns.mock.calls.length).toBe(callsAfterSettle)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -24,7 +24,7 @@ from backend.services.llm import (
     revise_test_plan,
     split_prd,
 )
-from backend.services.llm_prompts import TestCaseLike
+from backend.services.llm_prompts import EXPLORATION_SYSTEM_PROMPT, TestCaseLike
 
 
 class _StubClient:
@@ -936,3 +936,832 @@ class TestScriptPromptsAdvertiseAvailableLibraries:
         from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
 
         assert library in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+
+# ── Exploratory testing ───────────────────────────────────────────────
+
+
+class _ScriptedClient:
+    """Returns a queued sequence of responses; records every request.
+
+    The exploration loop is a multi-round conversation, so unlike
+    ``_StubClient`` it must hand back a different message each round.
+    """
+
+    def __init__(self, responses: list, prompt_tokens=None):
+        self.responses = list(responses)
+        self.requests: list[dict] = []
+        # None models a provider that reports no usage, which is what drives
+        # the char-estimate fallback. A list is consumed per call with the
+        # last value sticky, so a test can let context grow before the limit
+        # is crossed — as it does in reality.
+        self.prompt_tokens = prompt_tokens
+
+        stub = self
+
+        def next_usage():
+            if stub.prompt_tokens is None:
+                return None
+            if isinstance(stub.prompt_tokens, int):
+                return SimpleNamespace(prompt_tokens=stub.prompt_tokens)
+            value = stub.prompt_tokens[0]
+            if len(stub.prompt_tokens) > 1:
+                stub.prompt_tokens = stub.prompt_tokens[1:]
+            return SimpleNamespace(prompt_tokens=value)
+
+        class _Completions:
+            def create(self, **kwargs):
+                stub.requests.append(kwargs)
+                if not stub.responses:
+                    raise AssertionError("scripted client ran out of responses")
+                message = stub.responses.pop(0)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=message)], usage=next_usage()
+                )
+
+        self.chat = SimpleNamespace(completions=_Completions())
+
+
+def _tool_call(call_id: str, name: str, **arguments):
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+def _acting(*tool_calls):
+    """An assistant message that calls tools."""
+    return SimpleNamespace(content=None, tool_calls=list(tool_calls))
+
+
+def _answering(content: str):
+    """An assistant message with no tool calls."""
+    return SimpleNamespace(content=content, tool_calls=None)
+
+
+def _scripted(monkeypatch, responses, prompt_tokens=None):
+    client = _ScriptedClient(responses, prompt_tokens=prompt_tokens)
+    monkeypatch.setattr(llm, "_get_client", lambda: client)
+    return client
+
+
+def _run_loop(
+    tools,
+    max_actions=25,
+    snapshot_window=3,
+    rounds=None,
+    base_urls=("https://app.test",),
+    secret_values=None,
+    max_free_recordings=llm.EXPLORATORY_MAX_FINDINGS,
+    context_token_limit=llm.EXPLORATORY_CONTEXT_TOKEN_LIMIT,
+):
+    """Invoke the loop with sensible defaults for the fields under test."""
+    return llm.run_exploration_loop(
+        name="Export reports",
+        description="Users can export reports as CSV",
+        charter="Explore the export flow with unusual data",
+        sfdipot_areas=["Data"],
+        base_urls=list(base_urls),
+        env_var_names=["APP_URL", "ADMIN_PASSWORD"],
+        readme=None,
+        file_tree=None,
+        tools=tools,
+        max_actions=max_actions,
+        snapshot_window=snapshot_window,
+        on_round=(lambda: rounds.append(1)) if rounds is not None else (lambda: None),
+        secret_values=secret_values,
+        max_free_recordings=max_free_recordings,
+        context_token_limit=context_token_limit,
+    )
+
+
+class TestGenerateCharters:
+    def _payload(self, **overrides):
+        payload = {
+            "charters": [
+                {"charter": "Explore export triggers", "sfdipot_areas": ["Function"]},
+                {"charter": "Explore export with edge data", "sfdipot_areas": ["Data"]},
+            ],
+            "base_url_env_vars": ["APP_URL"],
+        }
+        payload.update(overrides)
+        return json.dumps(payload)
+
+    def test_parses_charters_and_url_vars(self, stub_client):
+        stub_client.content = self._payload()
+
+        result = llm.generate_charters(
+            name="Export reports",
+            description="Users can export reports as CSV",
+            covered_cases=[],
+            env_var_names=["APP_URL"],
+            readme=None,
+            file_tree=None,
+        )
+
+        assert [c.charter for c in result.charters] == [
+            "Explore export triggers",
+            "Explore export with edge data",
+        ]
+        assert result.charters[1].sfdipot_areas == ["Data"]
+        assert result.base_url_env_vars == ["APP_URL"]
+
+    def test_covered_cases_reach_the_prompt(self, stub_client):
+        stub_client.content = self._payload()
+
+        llm.generate_charters(
+            name="Export reports",
+            description="Users can export reports as CSV",
+            covered_cases=[
+                TestCaseLike(
+                    title="Export with one row",
+                    preconditions=None,
+                    steps="Click export",
+                    expected_result="A CSV downloads",
+                    case_type="functional",
+                    priority="high",
+                )
+            ],
+            env_var_names=["APP_URL"],
+            readme=None,
+            file_tree=None,
+        )
+
+        prompt = _user_prompt(stub_client)
+        assert "already covered" in prompt
+        assert "Export with one row" in prompt
+        assert "APP_URL" in prompt
+
+    def test_rejects_empty_charter_list(self, stub_client):
+        stub_client.content = self._payload(charters=[])
+        with pytest.raises(LLMError, match="no charters"):
+            llm.generate_charters("R", "D", [], ["APP_URL"], None, None)
+
+    def test_rejects_over_cap(self, stub_client, monkeypatch):
+        monkeypatch.setattr(llm, "EXPLORATORY_MAX_CHARTERS", 2)
+        stub_client.content = self._payload(
+            charters=[{"charter": f"Charter {i}", "sfdipot_areas": ["Function"]} for i in range(3)]
+        )
+        with pytest.raises(LLMError, match="above the cap"):
+            llm.generate_charters("R", "D", [], ["APP_URL"], None, None)
+
+    def test_rejects_blank_charter(self, stub_client):
+        stub_client.content = self._payload(
+            charters=[{"charter": "   ", "sfdipot_areas": ["Function"]}]
+        )
+        with pytest.raises(LLMError, match="blank charter"):
+            llm.generate_charters("R", "D", [], ["APP_URL"], None, None)
+
+    def test_rejects_unknown_sfdipot_area(self, stub_client):
+        stub_client.content = self._payload(
+            charters=[{"charter": "Explore", "sfdipot_areas": ["Usability"]}]
+        )
+        with pytest.raises(LLMError, match="unknown SFDIPOT area"):
+            llm.generate_charters("R", "D", [], ["APP_URL"], None, None)
+
+    def test_rejects_empty_url_var_list(self, stub_client):
+        stub_client.content = self._payload(base_url_env_vars=[])
+        with pytest.raises(LLMError, match="no environment variable"):
+            llm.generate_charters("R", "D", [], ["APP_URL"], None, None)
+
+
+class TestSummarizeExploration:
+    def _session(self, **overrides):
+        from backend.services.llm_prompts import ExploratorySessionLike, FindingLike
+
+        defaults = {
+            "charter": "Explore export with edge data",
+            "sfdipot_areas": ["Data"],
+            "status": "completed",
+            "actions_used": 18,
+            "stop_reason": "charter_complete",
+            "session_notes": "Exported with zero rows; file had no header.",
+            "findings": [
+                FindingLike(
+                    finding_type="bug",
+                    severity="high",
+                    title="Empty export omits header row",
+                    expected="A header row is always present",
+                    actual="Zero-byte file",
+                )
+            ],
+        }
+        defaults.update(overrides)
+        return ExploratorySessionLike(**defaults)
+
+    def test_parses_summary(self, stub_client):
+        stub_client.content = json.dumps({"summary": "Export is broken for empty result sets."})
+        result = llm.summarize_exploration("Export", "Users can export", [self._session()])
+        assert result.summary == "Export is broken for empty result sets."
+
+    def test_session_sheets_reach_the_prompt(self, stub_client):
+        stub_client.content = json.dumps({"summary": "ok"})
+        llm.summarize_exploration("Export", "Users can export", [self._session()])
+
+        prompt = _user_prompt(stub_client)
+        assert "Explore export with edge data" in prompt
+        assert "Empty export omits header row" in prompt
+        assert "no header" in prompt
+
+    def test_blank_summary_raises(self, stub_client):
+        stub_client.content = json.dumps({"summary": "   "})
+        with pytest.raises(LLMError, match="blank exploration summary"):
+            llm.summarize_exploration("Export", "Users can export", [self._session()])
+
+
+class TestRunExplorationLoop:
+    def test_dispatches_tool_and_feeds_result_back(self, monkeypatch):
+        client = _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "finish_session", notes="Done exploring.")),
+            ],
+        )
+        calls = []
+        tools = {"snapshot": lambda **kw: calls.append(kw) or "- button 'Export' [ref=e3]"}
+
+        result = _run_loop(tools)
+
+        assert calls == [{}]
+        assert result.notes == "Done exploring."
+        assert result.stop_reason == llm.STOP_CHARTER_COMPLETE
+        assert result.actions_used == 1
+        # The snapshot's output was fed back as a tool message.
+        tool_messages = [
+            m
+            for m in client.requests[-1]["messages"]
+            if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        assert "ref=e3" in tool_messages[0]["content"]
+
+    def test_finish_session_does_not_consume_an_action(self, monkeypatch):
+        _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="Nothing here."))])
+        result = _run_loop({})
+        assert result.actions_used == 0
+        assert result.stop_reason == llm.STOP_CHARTER_COMPLETE
+
+    def test_base_urls_reach_the_prompt(self, monkeypatch):
+        """Without this the model only sees variable names, never the app's URL."""
+        client = _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="x"))])
+
+        _run_loop({}, base_urls=["https://app.test", "https://api.test"])
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "https://app.test" in prompt
+        assert "https://api.test" in prompt
+        # The first one is where the browser already is — say so, since the
+        # ordering is what BrowserSession.__enter__ acts on.
+        assert "already open" in prompt
+
+    def test_no_base_urls_omits_the_block(self, monkeypatch):
+        client = _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="x"))])
+        _run_loop({}, base_urls=[])
+        assert "Application under test:" not in client.requests[0]["messages"][1]["content"]
+
+    def test_action_cap_forces_wrap_up(self, monkeypatch):
+        client = _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "snapshot")),
+                _answering(json.dumps({"notes": "Ran out of budget.", "stop_reason": "cap"})),
+            ],
+        )
+        tools = {"snapshot": lambda **kw: "page"}
+
+        result = _run_loop(tools, max_actions=2)
+
+        assert result.actions_used == 2
+        assert result.stop_reason == llm.STOP_ACTION_CAP
+        assert result.notes == "Ran out of budget."
+        # The forced final call must disable tools.
+        assert client.requests[-1]["tool_choice"] == "none"
+
+    def test_acting_rounds_do_not_use_json_mode(self, monkeypatch):
+        """JSON mode tells the model to emit content; acting rounds want a tool call.
+
+        Regression test for sessions ending at zero actions because the model
+        answered with {"tool": "snapshot", "params": {}} as message content
+        instead of calling the tool.
+        """
+        client = _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="x"))])
+        _run_loop({})
+        assert "response_format" not in client.requests[0]
+
+    def test_a_tool_free_response_is_nudged_not_fatal(self, monkeypatch):
+        """One content-only reply must not cost the whole charter."""
+        client = _scripted(
+            monkeypatch,
+            [
+                # Exactly what DeepSeek returned in the wild.
+                _answering('{"tool": "snapshot", "params": {}}'),
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "finish_session", notes="Explored it.")),
+            ],
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"})
+
+        assert result.actions_used == 1  # recovered and actually explored
+        assert result.notes == "Explored it."
+        nudges = [
+            m
+            for m in client.requests[-1]["messages"]
+            if isinstance(m, dict)
+            and m.get("role") == "user"
+            and "did not call a tool" in m["content"]
+        ]
+        assert len(nudges) == 1
+
+    def test_two_tool_free_responses_end_the_session(self, monkeypatch):
+        """Twice in a row, take the model at its word."""
+        _scripted(
+            monkeypatch,
+            [_answering('{"notes": "I have finished exploring."}')] * 2,
+        )
+        result = _run_loop({})
+        assert result.stop_reason == llm.STOP_MODEL_STOPPED
+        # Parsed, not stored raw — otherwise the session sheet shows JSON.
+        assert result.notes == "I have finished exploring."
+
+    def test_answer_that_is_not_the_wrap_up_shape_falls_back_to_raw_text(self, monkeypatch):
+        """Never lose what the model said, even off-contract."""
+        _scripted(monkeypatch, [_answering("I have finished exploring.")] * 2)
+        result = _run_loop({})
+        assert result.notes == "I have finished exploring."
+
+    def test_empty_answer_gets_a_placeholder(self, monkeypatch):
+        _scripted(monkeypatch, [_answering("")] * 2)
+        result = _run_loop({})
+        assert result.notes == "(model ended the session without notes)"
+
+    def test_record_finding_does_not_consume_an_action(self, monkeypatch):
+        """Findings are the deliverable — they must not compete with exploring."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "record_finding", title="Export drops a row")),
+                _acting(_tool_call("c3", "finish_session", notes="done")),
+            ],
+        )
+
+        result = _run_loop(
+            {"snapshot": lambda **kw: "page", "record_finding": lambda **kw: "Recorded."}
+        )
+
+        assert result.actions_used == 1  # the snapshot only
+        assert any("record_finding" in line for line in result.action_log)
+
+    def test_recordings_stop_being_free_past_the_cap(self, monkeypatch):
+        """The termination guarantee: an always-free non-terminal tool never exits.
+
+        ``actions_used < max_actions`` is the loop's only bound, and past the
+        finding cap record_finding returns "limit reached" without changing
+        anything — so if it stayed free a model could call it forever.
+        """
+        # 2 free rounds + 3 charged rounds exhausts max_actions=3, then the
+        # forced wrap-up. Distinct titles, so the repeat-nudge never fires and
+        # cannot be what saves us here.
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call(f"c{i}", "record_finding", title=f"Finding {i}"))
+                for i in range(2 + 3)
+            ]
+            + [_answering('{"notes": "budget gone"}')],
+        )
+
+        result = _run_loop(
+            {"record_finding": lambda **kw: "Recorded."},
+            max_actions=3,
+            max_free_recordings=2,
+        )
+
+        assert result.actions_used == 3
+        assert result.stop_reason == llm.STOP_ACTION_CAP
+
+    def test_total_rounds_are_bounded_by_actions_plus_free_recordings(self, monkeypatch):
+        client = _scripted(
+            monkeypatch,
+            [_acting(_tool_call(f"c{i}", "record_finding", title=f"F{i}")) for i in range(4 + 3)]
+            + [_answering('{"notes": "budget gone"}')],
+        )
+
+        _run_loop(
+            {"record_finding": lambda **kw: "Recorded."},
+            max_actions=4,
+            max_free_recordings=3,
+        )
+
+        # 3 free + 4 charged acting rounds, plus the forced wrap-up call —
+        # the ceiling a free non-terminal tool would otherwise remove.
+        assert len(client.requests) == 4 + 3 + 1
+
+    def test_low_budget_switches_to_record_now(self, monkeypatch):
+        """Past the cap record_finding is unreachable, so warn while it isn't.
+
+        The forced wrap-up runs with tool_choice="none", so a finding still
+        unrecorded when the budget runs out can only land in the notes — where
+        nothing reads it as a finding.
+        """
+        client = _scripted(
+            monkeypatch,
+            [_acting(_tool_call(f"c{i}", "click", ref=f"e{i}")) for i in range(6)]
+            + [_acting(_tool_call("cf", "finish_session", notes="done"))],
+        )
+
+        _run_loop({"click": lambda **kw: "clicked"}, max_actions=8)
+
+        budget_notes = [
+            m["content"].rsplit("\n[", 1)[-1]
+            for m in client.requests[-1]["messages"]
+            if isinstance(m, dict)
+            and m.get("role") == "tool"
+            and "actions remaining" in m["content"]
+        ]
+        # 7 remaining down to 5: ordinary wrap-up advice.
+        assert all("call finish_session" in note for note in budget_notes[:3])
+        # 3 remaining and below: record-or-lose-it.
+        assert all("not yet recorded" in note for note in budget_notes[4:])
+
+    def test_wrap_up_call_still_uses_json_mode(self, monkeypatch):
+        """The forced wrap-up genuinely wants a JSON object, and says so."""
+        client = _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c1", "snapshot"))] * 2 + [_answering('{"notes": "n"}')],
+        )
+        _run_loop({"snapshot": lambda **kw: "page"}, max_actions=2)
+        assert client.requests[-1]["response_format"] == {"type": "json_object"}
+        assert client.requests[-1]["tool_choice"] == "none"
+
+    def test_unknown_tool_returns_error_string(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "teleport", to="mars")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+        result = _run_loop({})
+        assert any("unknown tool" in entry for entry in result.action_log)
+
+    def test_executor_receives_arguments(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "fill", ref="e7", value="hello")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+        seen = {}
+        tools = {"fill": lambda **kw: seen.update(kw) or "filled"}
+
+        _run_loop(tools)
+        assert seen == {"ref": "e7", "value": "hello"}
+
+    def test_fill_secret_logs_variable_name_not_value(self, monkeypatch):
+        """The literal never reaches this module — the executor resolves it."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "fill_secret", ref="e8", env_var_name="ADMIN_PASSWORD")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+        tools = {"fill_secret": lambda **kw: "filled ADMIN_PASSWORD"}
+
+        result = _run_loop(tools)
+        log = "\n".join(result.action_log)
+        assert "ADMIN_PASSWORD" in log
+        assert "hunter2" not in log
+
+    def test_fill_with_a_secret_literal_is_redacted(self, monkeypatch):
+        """Backstop for a model that ignores fill_secret and types the value."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "fill", ref="e8", value="hunter2")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+
+        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+
+        log = "\n".join(result.action_log)
+        assert "hunter2" not in log
+        assert "***" in log
+
+    def test_non_secret_fill_values_stay_readable(self, monkeypatch):
+        """Exact-match redaction must not mangle ordinary log lines."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "fill", ref="e8", value="hunter2 is my dog")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+
+        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+
+        assert "hunter2 is my dog" in "\n".join(result.action_log)
+
+    def test_heartbeats_every_round(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "finish_session", notes="done")),
+            ],
+        )
+        rounds = []
+        _run_loop({"snapshot": lambda **kw: "page"}, rounds=rounds)
+        assert len(rounds) == 2
+
+    def test_repeated_identical_calls_get_a_nudge(self, monkeypatch):
+        calls = []
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call(f"c{i}", "click", ref="e5")) for i in range(5)]
+            + [_acting(_tool_call("cf", "finish_session", notes="done"))],
+        )
+        tools = {"click": lambda **kw: calls.append(kw) or "clicked"}
+
+        result = _run_loop(tools)
+
+        # Executed the first three, then nudged instead of executing again.
+        assert len(calls) == 3
+        assert any("repeated this exact action" in entry for entry in result.action_log)
+        # The nudged rounds still cost budget so a stuck model cannot loop forever.
+        assert result.actions_used == 5
+
+    def test_llm_error_propagates(self, monkeypatch):
+        class _Boom:
+            def __init__(self):
+                self.chat = SimpleNamespace(completions=self)
+
+            def create(self, **kwargs):
+                raise openai.APIError("boom", request=httpx.Request("POST", "http://x"), body=None)
+
+        monkeypatch.setattr(llm, "_get_client", lambda: _Boom())
+        with pytest.raises(LLMError, match="LLM request failed"):
+            _run_loop({})
+
+
+class TestHistoryCompaction:
+    """Threshold-triggered backstop — pressure-driven, never on a schedule."""
+
+    # Usage stays under the limit while history accumulates, crosses on round
+    # 8 — by which point there are enough complete groups to compact — then
+    # falls back under, as it does once the span has actually been replaced.
+    GROWING_USAGE = [50] * 7 + [9999] + [50] * 30
+
+    @staticmethod
+    def _acting_script(n):
+        return [_acting(_tool_call(f"c{i}", "snapshot")) for i in range(n)]
+
+    @staticmethod
+    def _patch_compaction(monkeypatch, summary="EARLIER: created record #4471."):
+        """Stub the compaction call, which goes through _complete, not the loop client."""
+        calls = []
+
+        def fake_complete(system_prompt, user_prompt, model_cls):
+            calls.append({"system": system_prompt, "user": user_prompt})
+            return llm.ExplorationSummaryResult(summary=summary)
+
+        monkeypatch.setattr(llm, "_complete", fake_complete)
+        return calls
+
+    def test_does_not_fire_under_the_limit(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            self._acting_script(3) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=100,
+        )
+        calls = self._patch_compaction(monkeypatch)
+
+        _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=5000)
+
+        assert calls == []
+
+    def test_fires_over_the_limit_and_preserves_the_oracle(self, monkeypatch):
+        client = _scripted(
+            monkeypatch,
+            self._acting_script(9) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+        self._patch_compaction(monkeypatch)
+
+        _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        messages = client.requests[-1]["messages"]
+        # The system prompt and the charter/requirement message are the
+        # session's oracle and must survive every compaction.
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == EXPLORATION_SYSTEM_PROMPT
+        assert messages[1]["role"] == "user"
+        assert "Your charter for this session" in messages[1]["content"]
+        assert any(
+            isinstance(m, dict) and "compacted to save context" in str(m.get("content", ""))
+            for m in messages
+        )
+
+    def test_leaves_no_orphan_tool_results(self, monkeypatch):
+        """A tool result without its assistant parent makes the provider 400."""
+        client = _scripted(
+            monkeypatch,
+            self._acting_script(9) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+        self._patch_compaction(monkeypatch)
+
+        _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        messages = client.requests[-1]["messages"]
+        live_ids: set[str] = set()
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "tool":
+                assert message["tool_call_id"] in live_ids, "orphaned tool result"
+            elif not isinstance(message, dict):
+                live_ids.update(c.id for c in getattr(message, "tool_calls", None) or [])
+
+    def test_snapshot_indices_survive_compaction(self, monkeypatch):
+        """Indices are absolute; compaction shifts them and pruning would corrupt.
+
+        After compacting, a later prune must still hit snapshot results and
+        never an unrelated message.
+        """
+        script = []
+        for i in range(9):
+            script.append(_acting(_tool_call(f"s{i}", "snapshot")))
+            script.append(_acting(_tool_call(f"k{i}", "click", ref=f"e{i}")))
+        script.append(_acting(_tool_call("cf", "finish_session", notes="x")))
+        client = _scripted(monkeypatch, script, prompt_tokens=self.GROWING_USAGE)
+        self._patch_compaction(monkeypatch)
+
+        _run_loop(
+            {"snapshot": lambda **kw: "SNAP-BODY", "click": lambda **kw: "CLICK-RESULT"},
+            context_token_limit=100,
+            snapshot_window=1,
+        )
+
+        messages = client.requests[-1]["messages"]
+        # Whatever got replaced by the pruner must have been a snapshot; a
+        # click result turning into the placeholder is the corruption.
+        for message in messages:
+            if isinstance(message, dict) and llm._PRUNED_SNAPSHOT in str(message.get("content")):
+                assert message.get("role") == "tool"
+        assert not any(
+            isinstance(m, dict)
+            and m.get("role") == "tool"
+            and m.get("content") == llm._PRUNED_SNAPSHOT
+            and m.get("tool_call_id", "").startswith("k")
+            for m in messages
+        )
+
+    def test_estimate_counts_every_message(self):
+        assert llm._estimate_tokens([{"role": "user", "content": "x" * 400}]) == 100
+
+    def test_uses_char_estimate_when_provider_reports_no_usage(self, monkeypatch):
+        """No usage field must not mean "no limit" — nor a TypeError on None."""
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c0", "snapshot")), _answering('{"notes": "no room"}')],
+            prompt_tokens=None,
+        )
+        self._patch_compaction(monkeypatch)
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=1)
+
+        assert result.stop_reason == llm.STOP_CONTEXT_LIMIT
+
+    def test_compaction_failure_ends_the_session_cleanly(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            self._acting_script(8) + [_answering('{"notes": "ran out of room"}')],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+
+        def boom(*args, **kwargs):
+            raise LLMError("provider exploded")
+
+        monkeypatch.setattr(llm, "_complete", boom)
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        assert result.stop_reason == llm.STOP_CONTEXT_LIMIT
+        assert result.notes == "ran out of room"
+
+    def test_nothing_to_compact_ends_rather_than_thrashing(self, monkeypatch):
+        """When the floor itself exceeds the limit, retrying every round is futile."""
+        calls = self._patch_compaction(monkeypatch)
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c0", "snapshot")), _answering('{"notes": "no room"}')],
+            prompt_tokens=9999,
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, context_token_limit=100)
+
+        assert result.stop_reason == llm.STOP_CONTEXT_LIMIT
+        assert calls == []  # never even attempted — nothing worth compacting
+
+    def test_compaction_does_not_consume_an_action(self, monkeypatch):
+        rounds = []
+        _scripted(
+            monkeypatch,
+            self._acting_script(9) + [_acting(_tool_call("cf", "finish_session", notes="x"))],
+            prompt_tokens=self.GROWING_USAGE,
+        )
+        self._patch_compaction(monkeypatch)
+
+        result = _run_loop(
+            {"snapshot": lambda **kw: "page"}, context_token_limit=100, rounds=rounds
+        )
+
+        assert result.actions_used == 9  # the snapshots only
+        # Heartbeats cover the acting rounds plus every compaction, so a slow
+        # compaction cannot get the run swept as a dead worker.
+        assert len(rounds) > 9
+
+
+class TestSnapshotPruning:
+    def _messages_of_last_request(self, client):
+        return client.requests[-1]["messages"]
+
+    def test_older_snapshots_replaced_newest_kept(self, monkeypatch):
+        # Interleave clicks so consecutive snapshots aren't identical actions
+        # (four bare snapshots in a row would trip the repeat nudge, which is
+        # itself correct behaviour — nothing changed the page between them).
+        script = []
+        for i in range(4):
+            script.append(_acting(_tool_call(f"s{i}", "snapshot")))
+            script.append(_acting(_tool_call(f"k{i}", "click", ref=f"e{i}")))
+        script.append(_acting(_tool_call("cf", "finish_session", notes="done")))
+        client = _scripted(monkeypatch, script)
+
+        counter = {"n": 0}
+
+        def snapshot(**kw):
+            counter["n"] += 1
+            return f"SNAPSHOT-BODY-{counter['n']}"
+
+        _run_loop(
+            {"snapshot": snapshot, "click": lambda **kw: "clicked"},
+            snapshot_window=2,
+        )
+
+        messages = self._messages_of_last_request(client)
+        snapshot_contents = [
+            m["content"]
+            for m in messages
+            if isinstance(m, dict)
+            and m.get("role") == "tool"
+            and ("SNAPSHOT-BODY" in m["content"] or llm._PRUNED_SNAPSHOT in m["content"])
+        ]
+        # Four snapshots taken, window of 2: the first two are placeholders.
+        assert len(snapshot_contents) == 4
+        assert llm._PRUNED_SNAPSHOT in snapshot_contents[0]
+        assert llm._PRUNED_SNAPSHOT in snapshot_contents[1]
+        assert "SNAPSHOT-BODY-3" in snapshot_contents[2]
+        assert "SNAPSHOT-BODY-4" in snapshot_contents[3]
+
+    def test_assistant_messages_are_never_pruned(self, monkeypatch):
+        """Rule 2 — the model's own commentary is the narrative thread."""
+        client = _scripted(
+            monkeypatch,
+            [_acting(_tool_call(f"c{i}", "snapshot")) for i in range(4)]
+            + [_acting(_tool_call("cf", "finish_session", notes="done"))],
+        )
+        _run_loop({"snapshot": lambda **kw: "BODY"}, snapshot_window=1)
+
+        messages = self._messages_of_last_request(client)
+        assistant_messages = [
+            m for m in messages if not isinstance(m, dict) and getattr(m, "tool_calls", None)
+        ]
+        # Four snapshot rounds plus the finish_session round — every one still
+        # present and untouched, even though snapshots were pruned beneath them.
+        assert len(assistant_messages) == 5
+        for message in assistant_messages:
+            assert message.tool_calls  # untouched objects, not placeholders
+
+    def test_non_snapshot_results_are_never_pruned(self, monkeypatch):
+        client = _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "click", ref="e1")),
+                _acting(_tool_call("c2", "snapshot")),
+                _acting(_tool_call("c3", "snapshot")),
+                _acting(_tool_call("cf", "finish_session", notes="done")),
+            ],
+        )
+        tools = {"click": lambda **kw: "CLICK-RESULT", "snapshot": lambda **kw: "SNAP"}
+
+        _run_loop(tools, snapshot_window=1)
+
+        messages = self._messages_of_last_request(client)
+        tool_contents = [
+            m["content"] for m in messages if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        assert "CLICK-RESULT" in tool_contents[0]

@@ -9,9 +9,9 @@ Automated Quality Assurance analysis for source code and requirement documents. 
 - Python 3.10+
 - Node.js 22+
 - PostgreSQL with a `qa_agent` database (`createdb qa_agent`)
-- Redis (optional — required for requirement analysis, test-plan generation, and test execution)
-- An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis, the test-environment check, test-plan generation, and test execution)
-- For test execution: `playwright install chromium` on the worker host (one-time, after `pip install -e ".[dev]"`)
+- Redis (optional — required for requirement analysis, test-plan generation, test execution, and exploratory testing)
+- An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis, the test-environment check, test-plan generation, test execution, and exploratory testing)
+- For test execution and exploratory testing: `playwright install chromium` on the worker host (one-time, after `pip install -e ".[dev]"`)
 
 ### Backend
 
@@ -38,7 +38,7 @@ npm install
 npm run dev
 ```
 
-### Worker (requires Redis; `playwright install chromium` for test execution)
+### Worker (requires Redis; `playwright install chromium` for test execution and exploratory testing)
 
 ```bash
 # Start Redis, then in a separate terminal:
