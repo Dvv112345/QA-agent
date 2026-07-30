@@ -396,6 +396,36 @@ class TestSummaryFailure:
         assert refreshed.status == ExploratoryRunStatus.COMPLETED
         assert refreshed.error is None
 
+    def test_summary_heartbeats_while_the_run_is_still_running(
+        self, db_session, patched, monkeypatch
+    ):
+        """A retried summary must not look like a dead worker to the reconciler.
+
+        The summary runs while the run is ``running``, so each of its attempts
+        heartbeats — otherwise ``HEARTBEAT_STALE_SECONDS`` could elapse and the
+        reconciler would re-enqueue a run that is nearly finished.
+        """
+        from backend.tasks import explore_requirement as task_module
+
+        _, _, run = _seed_run_with_sessions(db_session)
+        run_id = run.id
+        observed: dict = {}
+
+        def stub(**kwargs):
+            kwargs["on_attempt"]()
+            db_session.expire_all()
+            row = db_session.get(ExploratoryRun, run_id)
+            observed["status"] = row.status
+            observed["heartbeat"] = row.last_heartbeat
+            return llm.ExplorationSummaryResult(summary="ok")
+
+        monkeypatch.setattr(task_module.llm, "summarize_exploration", stub)
+
+        explore_requirement_task(run_id)
+
+        assert observed["heartbeat"] is not None
+        assert observed["status"] == ExploratoryRunStatus.RUNNING
+
 
 # ── guards ────────────────────────────────────────────────────────────
 

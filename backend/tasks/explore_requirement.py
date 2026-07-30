@@ -370,13 +370,26 @@ def _write_summary(session: Session, run: ExploratoryRun, requirement) -> None:
     the end.  A failure here logs and leaves ``summary`` null rather than
     failing the run: the findings and session sheets are the deliverable, and
     the user can retry the summary from the run page.
+
+    The run is still ``running`` here, so each of the summary call's attempts
+    heartbeats — otherwise a retried summary could out-wait
+    ``HEARTBEAT_STALE_SECONDS`` and have the reconciler re-enqueue the whole
+    run as a crashed worker.  Not ``_build_on_round``: that one also publishes
+    a session's action count, and no session is in scope any more.
     """
     session.refresh(run)
+
+    def heartbeat() -> None:
+        run.last_heartbeat = _now()
+        session.add(run)
+        session.commit()
+
     try:
         result = llm.summarize_exploration(
             name=requirement.name,
             description=requirement.description,
             sessions=session_sheets(run),
+            on_attempt=heartbeat,
         )
     except llm.LLMError as exc:
         logger.warning("Exploratory run %d: summary unavailable: %s", run.id, exc)

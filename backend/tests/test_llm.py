@@ -975,6 +975,8 @@ class _ScriptedClient:
                 if not stub.responses:
                     raise AssertionError("scripted client ran out of responses")
                 message = stub.responses.pop(0)
+                if isinstance(message, Exception):
+                    raise message
                 return SimpleNamespace(
                     choices=[SimpleNamespace(message=message)], usage=next_usage()
                 )
@@ -1167,6 +1169,65 @@ class TestSummarizeExploration:
         stub_client.content = json.dumps({"summary": "   "})
         with pytest.raises(LLMError, match="blank exploration summary"):
             llm.summarize_exploration("Export", "Users can export", [self._session()])
+
+    def test_retries_after_a_provider_error(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _bad_request_error("upstream hiccup"),
+            _final_response({"summary": "Export drops the header row."}),
+        )
+
+        result = llm.summarize_exploration("Export", "Users can export", [self._session()])
+
+        assert result.summary == "Export drops the header row."
+        assert len(client.requests) == 2
+
+    def test_retries_a_blank_summary(self, monkeypatch):
+        """The blank check is a semantic failure, and it earns a retry too."""
+        _sequence_client(
+            monkeypatch,
+            _final_response({"summary": "   "}),
+            _final_response({"summary": "Export is fine."}),
+        )
+
+        result = llm.summarize_exploration("Export", "Users can export", [self._session()])
+
+        assert result.summary == "Export is fine."
+
+    def test_gives_up_at_the_attempt_cap(self, monkeypatch):
+        """Pins the cap: a third attempt has to be a deliberate edit."""
+        client = _sequence_client(
+            monkeypatch,
+            *[_final_response("not json") for _ in range(llm._SUMMARY_ATTEMPTS)],
+        )
+
+        with pytest.raises(LLMError, match="malformed"):
+            llm.summarize_exploration("Export", "Users can export", [self._session()])
+
+        assert len(client.requests) == llm._SUMMARY_ATTEMPTS
+
+    def test_heartbeats_once_per_attempt(self, monkeypatch):
+        """The worker is watched for liveness while this runs — see _write_summary."""
+        _sequence_client(
+            monkeypatch,
+            _bad_request_error("hiccup"),
+            _final_response({"summary": "ok"}),
+        )
+        beats: list[int] = []
+
+        llm.summarize_exploration(
+            "Export",
+            "Users can export",
+            [self._session()],
+            on_attempt=lambda: beats.append(1),
+        )
+
+        assert len(beats) == 2
+
+    def test_on_attempt_is_optional(self, stub_client):
+        """The summary-retry route has no heartbeat to keep — a completed run has none."""
+        stub_client.content = json.dumps({"summary": "ok"})
+        assert llm.summarize_exploration("Export", "D", [self._session()]).summary == "ok"
 
 
 class TestRunExplorationLoop:
@@ -1498,6 +1559,113 @@ class TestRunExplorationLoop:
         # LLM call.
         assert rounds == [0, 1, 1, 2, 2]
         assert result.actions_used == 2
+
+    def test_wrap_up_retries_unparseable_output(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _answering("here are my notes, unfenced prose"),
+                _answering(json.dumps({"notes": "Export drops the header."})),
+            ],
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, max_actions=1)
+
+        assert result.notes == "Export drops the header."
+        assert result.stop_reason == llm.STOP_ACTION_CAP
+
+    def test_wrap_up_keeps_raw_text_rather_than_losing_the_session(self, monkeypatch):
+        """A charter that spent its whole budget must not lose its notes to a parse error.
+
+        Raising here would have ``_run_one_session`` mark the session ``error``
+        and discard both the notes and the action log.
+        """
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c1", "snapshot"))]
+            + [_answering("Found a bug: empty export has no header.")] * llm._SUMMARY_ATTEMPTS,
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, max_actions=1)
+
+        assert result.notes == "Found a bug: empty export has no header."
+        assert result.stop_reason == llm.STOP_ACTION_CAP
+        assert result.actions_used == 1
+        assert result.action_log  # the log survives too
+
+    def test_wrap_up_reports_a_dead_provider_in_the_notes(self, monkeypatch):
+        """Never raise: the action log lives only in the loop's frame.
+
+        Raising would have ``_run_one_session`` mark the session ``error`` and
+        discard the whole record of a charter that already spent its budget, so
+        the failure is reported as the notes instead.
+        """
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c1", "snapshot"))]
+            + [_bad_request_error("upstream down")] * llm._SUMMARY_ATTEMPTS,
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, max_actions=1)
+
+        assert "wrap-up unavailable" in result.notes
+        assert "upstream down" in result.notes
+        assert result.stop_reason == llm.STOP_ACTION_CAP
+        assert result.actions_used == 1
+        assert result.action_log  # the point of not raising
+
+    def test_wrap_up_recovers_from_a_transport_blip(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _bad_request_error("hiccup"),
+                _answering(json.dumps({"notes": "Wrapped up on the retry."})),
+            ],
+        )
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, max_actions=1)
+
+        assert result.notes == "Wrapped up on the retry."
+
+    def test_wrap_up_prompt_is_appended_once_across_retries(self, monkeypatch):
+        """Appending per attempt would send the model two wrap-up instructions."""
+        client = _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _answering("unparseable"),
+                _answering(json.dumps({"notes": "done"})),
+            ],
+        )
+
+        _run_loop({"snapshot": lambda **kw: "page"}, max_actions=1)
+
+        wrap_up_messages = [
+            m
+            for m in client.requests[-1]["messages"]
+            if isinstance(m, dict) and m.get("content") == llm.SESSION_WRAPUP_PROMPT
+        ]
+        assert len(wrap_up_messages) == 1
+
+    def test_wrap_up_heartbeats_once_per_attempt(self, monkeypatch):
+        """Retrying must not widen the heartbeat gap the reconciler watches."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _answering("unparseable"),
+                _answering(json.dumps({"notes": "done"})),
+            ],
+        )
+        rounds: list[int] = []
+
+        _run_loop({"snapshot": lambda **kw: "page"}, max_actions=1, rounds=rounds)
+
+        # Two of the heartbeats are the wrap-up's two attempts, both at the
+        # final action count.
+        assert rounds[-2:] == [1, 1]
 
     def test_on_round_reports_the_final_count_at_the_wrap_up(self, monkeypatch):
         _scripted(

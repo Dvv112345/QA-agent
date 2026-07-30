@@ -658,6 +658,19 @@ _PRUNED_SNAPSHOT = "[snapshot replaced to save context — take a fresh one if y
 # another execution.
 _REPEAT_NUDGE_THRESHOLD = 3
 
+# Attempts for the two summary calls — the only retried calls in this module.
+# They earn it by being the ones whose input cannot be cheaply reproduced: a
+# charter or a plan regenerates from rows that are still in the database, but a
+# summary reads session sheets from a browser run that took the sum of its
+# charters to produce.
+#
+# This is purely a cost/latency choice (the summary-retry route has a user
+# waiting on the response), *not* a timing constraint — both call sites
+# heartbeat per attempt, so the reconciler cannot mistake a slow summary for a
+# dead worker no matter how many attempts there are. Raising it is a one-line
+# change; see ``summarize_exploration`` and ``_forced_wrap_up``.
+_SUMMARY_ATTEMPTS = 2
+
 
 def _validate_charters(result: CharterResult) -> CharterResult:
     """Reject charter sets that are empty, over-cap, blank, or mis-tagged."""
@@ -704,19 +717,53 @@ def summarize_exploration(
     name: str,
     description: str,
     sessions: list[ExploratorySessionLike],
+    on_attempt: Callable[[], None] | None = None,
 ) -> ExplorationSummaryResult:
     """Synthesize a run's session sheets into a per-requirement summary.
 
-    Plain single completion.  Callers treat failure as non-fatal — the
-    findings, not this paragraph, are the run's deliverable.
+    Retried up to ``_SUMMARY_ATTEMPTS`` times.  The retry is a plain re-send
+    rather than a re-prompt with the error fed back: for a transport blip that
+    is exactly right, and for malformed output it is a weaker but free second
+    roll.  Feeding the error back would mean plumbing it through ``_complete``,
+    which every other caller would pay for.
+
+    ``on_attempt`` fires at the start of each attempt so a caller being watched
+    for liveness can heartbeat.  The worker passes one because it calls this
+    while the run is still ``running``; without it, retrying would widen the
+    heartbeat gap and the reconciler could sweep a live summary as a dead
+    worker.  Heartbeating per attempt makes the safety condition "one attempt
+    shorter than the stale threshold" — the invariant ``config.py`` already
+    promises between ``HEARTBEAT_STALE_SECONDS`` and ``OPENAI_TIMEOUT`` —
+    instead of arithmetic over the attempt count.
+
+    Callers treat exhaustion as non-fatal: the findings, not this paragraph,
+    are the run's deliverable.
     """
     parts = exploration_summary_context(name, description, sessions)
-    result = _complete(
-        EXPLORATION_SUMMARY_SYSTEM_PROMPT, "\n\n".join(parts), ExplorationSummaryResult
-    )
-    if not result.summary.strip():
-        raise LLMError("LLM returned a blank exploration summary.")
-    return result
+    user_prompt = "\n\n".join(parts)
+
+    for attempt in range(1, _SUMMARY_ATTEMPTS + 1):
+        if on_attempt is not None:
+            on_attempt()
+        try:
+            result = _complete(
+                EXPLORATION_SUMMARY_SYSTEM_PROMPT, user_prompt, ExplorationSummaryResult
+            )
+            if not result.summary.strip():
+                raise LLMError("LLM returned a blank exploration summary.")
+            return result
+        except LLMError as exc:
+            if attempt == _SUMMARY_ATTEMPTS:
+                raise
+            logger.warning(
+                "Exploration summary attempt %d of %d failed, retrying: %s",
+                attempt,
+                _SUMMARY_ATTEMPTS,
+                exc,
+            )
+
+    # Unreachable: the loop either returns or re-raises on the last attempt.
+    raise LLMError("Exploration summary exhausted its attempts.")
 
 
 def _prune_snapshots(messages: list, snapshot_indices: list[int], window: int) -> None:
@@ -1072,22 +1119,79 @@ def _forced_wrap_up(
     Shared by the action cap and both context-limit exits.  Keeps JSON mode —
     unlike the acting rounds, here the JSON object genuinely is the wanted
     output, and ``SESSION_WRAPUP_PROMPT`` asks for it.
+
+    **Never raises**, because this is the most expensive call in the system to
+    lose: ``action_log`` exists only in this call stack, so an exception would
+    have ``_run_one_session`` mark the session ``error`` and discard the entire
+    record of a charter that already spent its whole action budget driving a
+    real browser.  Exploration is over by the time the wrap-up is asked for, so
+    a failure here costs the notes, never the session.
+
+    Three degrees, in order: retry up to ``_SUMMARY_ATTEMPTS`` times; fall back
+    to the raw message text when the JSON will not parse (the same salvage the
+    idle-rounds exit above already does — unparseable notes are still notes);
+    and if the request itself never succeeds, say so *in* the notes.  A reader
+    looking at the session sheet sees why it has no wrap-up, which is what the
+    ``error`` status would otherwise have told them, minus the collateral.
+
+    ``on_round`` doubles as the per-attempt heartbeat (it is already the
+    caller's liveness signal), so retrying here cannot widen the heartbeat gap
+    enough for the reconciler to sweep a live session.
+
+    The wrap-up prompt is appended once, outside the retry loop: appending it
+    per attempt would send the model two wrap-up instructions.
     """
     messages.append({"role": "user", "content": SESSION_WRAPUP_PROMPT})
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=messages,
-            tools=BROWSER_TOOLS,
-            tool_choice="none",
-            response_format={"type": "json_object"},
-        )
-    except openai.OpenAIError as exc:
-        raise LLMError(f"LLM request failed: {exc}") from exc
-    on_round(actions_used)
-    wrap_up = _parse_json(response.choices[0].message.content, SessionWrapUpResult)
+
+    notes: str | None = None
+    for attempt in range(1, _SUMMARY_ATTEMPTS + 1):
+        on_round(actions_used)
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                tools=BROWSER_TOOLS,
+                tool_choice="none",
+                response_format={"type": "json_object"},
+            )
+        except openai.OpenAIError as exc:
+            if attempt == _SUMMARY_ATTEMPTS:
+                # Report the failure as the notes rather than raising. The
+                # action log exists only in this frame, so raising would take
+                # the whole session record down with it — and exploration had
+                # already finished by the time the wrap-up was asked for, so
+                # there is nothing dishonest about ending the session here.
+                logger.warning("Session wrap-up request failed on every attempt: %s", exc)
+                notes = f"(session wrap-up unavailable — the LLM request failed: {exc})"
+                break
+            logger.warning(
+                "Session wrap-up attempt %d of %d failed, retrying: %s",
+                attempt,
+                _SUMMARY_ATTEMPTS,
+                exc,
+            )
+            continue
+
+        content = response.choices[0].message.content
+        try:
+            notes = _parse_json(content, SessionWrapUpResult).notes.strip()
+            break
+        except LLMError as exc:
+            if attempt == _SUMMARY_ATTEMPTS:
+                # Keep what the model actually said: unparseable notes are
+                # still the session record, and losing them costs the charter.
+                logger.warning("Session wrap-up unparseable, keeping raw text: %s", exc)
+                notes = (content or "").strip()
+                break
+            logger.warning(
+                "Session wrap-up attempt %d of %d returned unparseable output, retrying: %s",
+                attempt,
+                _SUMMARY_ATTEMPTS,
+                exc,
+            )
+
     return ExplorationLoopResult(
-        notes=wrap_up.notes,
+        notes=notes or "(session ended without notes)",
         stop_reason=stop_reason,
         actions_used=actions_used,
         action_log=action_log,

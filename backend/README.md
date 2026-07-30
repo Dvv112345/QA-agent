@@ -462,7 +462,7 @@ Restart a `failed` run (uncapped). Charter-level resumability is automatic: alre
 
 #### `POST /api/exploratory-runs/{run_id}/summarize`
 
-Regenerate the per-requirement summary. The summary is written best-effort at the end of a run, so one transient provider failure can leave it null; this retries it synchronously. Works whether or not a summary already exists.
+Regenerate the per-requirement summary. The summary is written best-effort at the end of a run and already retries itself once, so only a repeated provider failure leaves it null; this retries it synchronously (also twice). Works whether or not a summary already exists.
 
 **Errors:** 404, 422 (run isn't `completed`), 502 (LLM failure — any existing summary is left untouched).
 
