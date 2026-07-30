@@ -106,6 +106,36 @@ def _fail_run(session: Session, run: ExploratoryRun, error: str) -> None:
     session.commit()
 
 
+def _heartbeat(session: Session, run: ExploratoryRun) -> None:
+    """Mark the run alive so a live session is never swept as a crashed worker."""
+    run.last_heartbeat = _now()
+    session.add(run)
+    session.commit()
+
+
+def _build_on_round(
+    session: Session,
+    run: ExploratoryRun,
+    exploratory_session: ExploratorySession,
+):
+    """Heartbeat the run and publish the session's action count as it climbs.
+
+    The loop's own counter is otherwise only readable once the session ends,
+    which left the UI showing 0 for the whole session and then the final
+    number.  Both writes share the one commit the heartbeat already made.
+    """
+
+    def on_round(actions_used: int) -> None:
+        run.last_heartbeat = _now()
+        session.add(run)
+        exploratory_session.actions_used = actions_used
+        exploratory_session.updated_at = _now()
+        session.add(exploratory_session)
+        session.commit()
+
+    return on_round
+
+
 def _build_on_finding(
     session: Session,
     exploratory_session: ExploratorySession,
@@ -199,14 +229,7 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
             env_var_names = list(env_vars.keys())
             storage = StorageService()
 
-            def on_round() -> None:
-                # Heartbeat between LLM rounds so a live session is never
-                # swept as a crashed worker.
-                run.last_heartbeat = _now()
-                session.add(run)
-                session.commit()
-
-            on_round()
+            _heartbeat(session, run)
 
             sessions = session.exec(
                 select(ExploratorySession)
@@ -235,6 +258,9 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
                     return
 
                 exploratory_session.status = ExploratorySessionStatus.RUNNING
+                # A retried charter restarts from scratch, so any count left
+                # behind by the attempt that died describes nothing.
+                exploratory_session.actions_used = 0
                 exploratory_session.updated_at = _now()
                 session.add(exploratory_session)
                 session.commit()
@@ -251,7 +277,7 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
                     file_tree=file_tree,
                     directory=sprint.directory,
                     storage=storage,
-                    on_round=on_round,
+                    on_round=_build_on_round(session, run, exploratory_session),
                 )
 
             _write_summary(session, run, requirement)
@@ -314,6 +340,9 @@ def _run_one_session(
             )
     except Exception as exc:
         logger.exception("Exploratory session %d failed", exploratory_session.id)
+        # Only uncommitted state is discarded, so the per-round action counts
+        # on_round already committed survive: a session that dies mid-charter
+        # reports how far it actually got rather than 0.
         session.rollback()
         exploratory_session.status = ExploratorySessionStatus.ERROR
         exploratory_session.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
@@ -341,13 +370,26 @@ def _write_summary(session: Session, run: ExploratoryRun, requirement) -> None:
     the end.  A failure here logs and leaves ``summary`` null rather than
     failing the run: the findings and session sheets are the deliverable, and
     the user can retry the summary from the run page.
+
+    The run is still ``running`` here, so each of the summary call's attempts
+    heartbeats — otherwise a retried summary could out-wait
+    ``HEARTBEAT_STALE_SECONDS`` and have the reconciler re-enqueue the whole
+    run as a crashed worker.  Not ``_build_on_round``: that one also publishes
+    a session's action count, and no session is in scope any more.
     """
     session.refresh(run)
+
+    def heartbeat() -> None:
+        run.last_heartbeat = _now()
+        session.add(run)
+        session.commit()
+
     try:
         result = llm.summarize_exploration(
             name=requirement.name,
             description=requirement.description,
             sessions=session_sheets(run),
+            on_attempt=heartbeat,
         )
     except llm.LLMError as exc:
         logger.warning("Exploratory run %d: summary unavailable: %s", run.id, exc)

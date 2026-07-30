@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import FindingCard from '../components/FindingCard'
 import { fetchExploratorySession } from '../services/api'
 import type { ExploratorySessionResponse } from '../types'
 import './ExploratorySessionPage.css'
+
+const POLL_INTERVAL_MS = 2500
 
 const STATUS_LABELS: Record<string, string> = {
   pending: 'Queued',
@@ -29,6 +31,8 @@ export default function ExploratorySessionPage() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
+  const fetchingRef = useRef(false)
+
   useEffect(() => {
     let cancelled = false
     fetchExploratorySession(exploratorySessionId)
@@ -46,6 +50,25 @@ export default function ExploratorySessionPage() {
       cancelled = true
     }
   }, [exploratorySessionId])
+
+  const inProgress = session?.status === 'pending' || session?.status === 'running'
+
+  useEffect(() => {
+    if (!inProgress) return
+    const pollId = setInterval(() => {
+      if (fetchingRef.current) return
+      fetchingRef.current = true
+      fetchExploratorySession(exploratorySessionId)
+        .then(setSession)
+        .catch(() => {
+          /* transient poll failure — retry on next tick */
+        })
+        .finally(() => {
+          fetchingRef.current = false
+        })
+    }, POLL_INTERVAL_MS)
+    return () => clearInterval(pollId)
+  }, [inProgress, exploratorySessionId])
 
   if (loading) return <p className="exp-session-message">Loading session sheet&hellip;</p>
   if (loadError) return <p className="exp-session-message exp-session-error">{loadError}</p>

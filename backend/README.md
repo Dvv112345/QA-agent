@@ -448,7 +448,7 @@ Fetch one run's detail, including its session list. 404 if not found.
 
 #### `GET /api/exploratory-sessions/{session_id}`
 
-Fetch one charter's full SBTM session sheet: charter, SFDIPOT areas, actions used, stop reason, test notes, findings, and the complete action log. 404 if not found.
+Fetch one charter's full SBTM session sheet: charter, SFDIPOT areas, actions used, stop reason, test notes, findings, and the complete action log. Also the polling endpoint for a live session (plain DB read) — `actions_used` is written every LLM round while the session runs, not once at the end. 404 if not found.
 
 #### `GET /api/exploratory-findings/{finding_id}/screenshot`
 
@@ -462,7 +462,7 @@ Restart a `failed` run (uncapped). Charter-level resumability is automatic: alre
 
 #### `POST /api/exploratory-runs/{run_id}/summarize`
 
-Regenerate the per-requirement summary. The summary is written best-effort at the end of a run, so one transient provider failure can leave it null; this retries it synchronously. Works whether or not a summary already exists.
+Regenerate the per-requirement summary. The summary is written best-effort at the end of a run and already retries itself once, so only a repeated provider failure leaves it null; this retries it synchronously (also twice). Works whether or not a summary already exists.
 
 **Errors:** 404, 422 (run isn't `completed`), 502 (LLM failure — any existing summary is left untouched).
 
