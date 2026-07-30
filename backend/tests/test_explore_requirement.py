@@ -508,7 +508,7 @@ class TestHeartbeat:
         observed: list = []
 
         def capture(**kwargs):
-            kwargs["on_round"]()
+            kwargs["on_round"](3)
             db_session.expire_all()
             observed.append(db_session.get(ExploratoryRun, run.id).last_heartbeat)
             return patched["loop_result"]
@@ -526,3 +526,92 @@ class TestHeartbeat:
 
         db_session.expire_all()
         assert db_session.get(ExploratoryRun, run.id).last_heartbeat is None
+
+
+class TestLiveActionCount:
+    """``actions_used`` must climb during the session, not appear at the end."""
+
+    def test_on_round_publishes_the_count_mid_session(self, db_session, patched, monkeypatch):
+        from backend.tasks import explore_requirement as task_module
+
+        _, _, run = _seed_run_with_sessions(db_session)
+        observed: list[int] = []
+
+        def capture(**kwargs):
+            for count in (1, 2, 5):
+                kwargs["on_round"](count)
+                db_session.expire_all()
+                observed.append(db_session.get(ExploratoryRun, run.id).sessions[0].actions_used)
+            return patched["loop_result"]
+
+        monkeypatch.setattr(task_module.llm, "run_exploration_loop", capture)
+
+        explore_requirement_task(run.id)
+
+        assert observed == [1, 2, 5]
+        db_session.expire_all()
+        # The loop's own result still has the last word.
+        assert db_session.get(ExploratoryRun, run.id).sessions[0].actions_used == 7
+
+    def test_each_session_publishes_its_own_count(self, db_session, patched, monkeypatch):
+        from backend.tasks import explore_requirement as task_module
+
+        _, _, run = _seed_run_with_sessions(db_session, charters=("A", "B"))
+        observed: list[list[int]] = []
+
+        def capture(**kwargs):
+            kwargs["on_round"](4)
+            db_session.expire_all()
+            observed.append(
+                [s.actions_used for s in db_session.get(ExploratoryRun, run.id).sessions]
+            )
+            return patched["loop_result"]
+
+        monkeypatch.setattr(task_module.llm, "run_exploration_loop", capture)
+
+        explore_requirement_task(run.id)
+
+        # The second charter's rounds must not overwrite the first sheet.
+        assert observed == [[4, 0], [7, 4]]
+
+    def test_partial_count_survives_a_failed_session(self, db_session, patched, monkeypatch):
+        from backend.tasks import explore_requirement as task_module
+
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        def capture(**kwargs):
+            kwargs["on_round"](6)
+            raise RuntimeError("browser exploded")
+
+        monkeypatch.setattr(task_module.llm, "run_exploration_loop", capture)
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        session_row = db_session.get(ExploratoryRun, run.id).sessions[0]
+        assert session_row.status == ExploratorySessionStatus.ERROR
+        assert session_row.actions_used == 6
+
+    def test_restarted_charter_resets_a_stale_count(self, db_session, patched, monkeypatch):
+        """A retried charter explores from scratch, so its old count is meaningless."""
+        from backend.tasks import explore_requirement as task_module
+
+        _, _, run = _seed_run_with_sessions(db_session)
+        session_row = run.sessions[0]
+        session_row.status = ExploratorySessionStatus.RUNNING
+        session_row.actions_used = 19
+        db_session.add(session_row)
+        db_session.commit()
+
+        observed: list[int] = []
+
+        def capture(**kwargs):
+            db_session.expire_all()
+            observed.append(db_session.get(ExploratoryRun, run.id).sessions[0].actions_used)
+            return patched["loop_result"]
+
+        monkeypatch.setattr(task_module.llm, "run_exploration_loop", capture)
+
+        explore_requirement_task(run.id)
+
+        assert observed == [0]

@@ -1028,7 +1028,7 @@ def _run_loop(
         tools=tools,
         max_actions=max_actions,
         snapshot_window=snapshot_window,
-        on_round=(lambda: rounds.append(1)) if rounds is not None else (lambda: None),
+        on_round=(rounds.append) if rounds is not None else (lambda _actions: None),
         secret_values=secret_values,
         max_free_recordings=max_free_recordings,
         context_token_limit=context_token_limit,
@@ -1477,7 +1477,38 @@ class TestRunExplorationLoop:
         )
         rounds = []
         _run_loop({"snapshot": lambda **kw: "page"}, rounds=rounds)
-        assert len(rounds) == 2
+        assert len(rounds) >= 2
+
+    def test_on_round_reports_the_running_action_count(self, monkeypatch):
+        """The caller persists this, so it must climb as actions are spent."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "snapshot")),
+                _acting(_tool_call("c3", "finish_session", notes="done")),
+            ],
+        )
+        rounds: list[int] = []
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, rounds=rounds)
+
+        # Once before the first round's actions, then after each one — the
+        # count reaches the round's own actions without waiting for the next
+        # LLM call.
+        assert rounds == [0, 1, 1, 2, 2]
+        assert result.actions_used == 2
+
+    def test_on_round_reports_the_final_count_at_the_wrap_up(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call("c1", "snapshot"))] + [_answering('{"notes": "budget gone"}')],
+        )
+        rounds: list[int] = []
+
+        result = _run_loop({"snapshot": lambda **kw: "page"}, max_actions=1, rounds=rounds)
+
+        assert rounds[-1] == result.actions_used == 1
 
     def test_repeated_identical_calls_get_a_nudge(self, monkeypatch):
         calls = []

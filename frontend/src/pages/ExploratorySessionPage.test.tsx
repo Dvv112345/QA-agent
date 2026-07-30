@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, act } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import ExploratorySessionPage from './ExploratorySessionPage'
 import type { ExploratorySessionResponse } from '../types'
@@ -114,5 +114,70 @@ describe('ExploratorySessionPage', () => {
 
     expect(await screen.findByText('browser exploded')).toBeInTheDocument()
     expect(screen.getByText('No notes were recorded.')).toBeInTheDocument()
+  })
+
+  describe('polling', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('polls a running session until it finishes', async () => {
+      // Fake timers must be installed before render: an interval registered
+      // under real timers cannot be advanced afterwards.
+      vi.useFakeTimers()
+      mockFetchSession.mockResolvedValue(
+        makeSession({
+          status: 'running',
+          actions_used: 4,
+          session_notes: null,
+          stop_reason: null,
+        }),
+      )
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(screen.getByText('Exploring')).toBeInTheDocument()
+      expect(screen.getByText('4')).toBeInTheDocument()
+
+      // Still running → the count climbs without a reload.
+      mockFetchSession.mockResolvedValue(
+        makeSession({ status: 'running', actions_used: 9, stop_reason: null }),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(screen.getByText('9')).toBeInTheDocument()
+
+      // Finished → the sheet fills in and polling stops.
+      mockFetchSession.mockResolvedValue(makeSession({ actions_used: 12 }))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(screen.getByText('Completed')).toBeInTheDocument()
+      expect(screen.getByText('12')).toBeInTheDocument()
+      expect(mockFetchSession).toHaveBeenCalledTimes(3)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000)
+      })
+      expect(mockFetchSession).toHaveBeenCalledTimes(3)
+    })
+
+    it('never polls a session that was already finished', async () => {
+      vi.useFakeTimers()
+      mockFetchSession.mockResolvedValue(makeSession())
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000)
+      })
+
+      expect(mockFetchSession).toHaveBeenCalledTimes(1)
+    })
   })
 })

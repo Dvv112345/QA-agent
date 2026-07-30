@@ -833,7 +833,7 @@ def run_exploration_loop(
     tools: dict[str, Callable[..., str]],
     max_actions: int,
     snapshot_window: int,
-    on_round: Callable[[], None],
+    on_round: Callable[[int], None],
     secret_values: set[str] | None = None,
     max_free_recordings: int = EXPLORATORY_MAX_FINDINGS,
     context_token_limit: int = EXPLORATORY_CONTEXT_TOKEN_LIMIT,
@@ -856,6 +856,11 @@ def run_exploration_loop(
     ``tools`` maps tool name to executor.  Executors must never raise: they
     return error strings the model can react to, the same contract as
     ``read_file``.
+
+    ``on_round`` receives the actions consumed so far — unlike
+    ``_complete_with_tools``'s bare heartbeat, this one doubles as the live
+    progress feed, so the caller can persist a count that climbs during the
+    session instead of appearing only once the loop returns.
 
     ``secret_values`` is a redaction backstop for the action log: ``fill_secret``
     already keeps credentials out of this module entirely, so this only catches
@@ -913,7 +918,7 @@ def run_exploration_loop(
         except openai.OpenAIError as exc:
             raise LLMError(f"LLM request failed: {exc}") from exc
 
-        on_round()
+        on_round(actions_used)
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None)
 
@@ -1015,6 +1020,11 @@ def run_exploration_loop(
             tail = "call finish_session when the charter is explored"
         messages[-1]["content"] += f"\n[{remaining} of {max_actions} actions remaining — {tail}]"
 
+        # Report the round's actions as soon as they are spent. The heartbeat
+        # above fires before the tools run, so without this the persisted count
+        # would trail a whole LLM round behind what the session has done.
+        on_round(actions_used)
+
         # Context backstop. Measured from what the request we just made
         # actually cost, so it reacts a round late — fine for something that
         # normally never fires, and it avoids estimating on every round.
@@ -1032,7 +1042,7 @@ def run_exploration_loop(
                 return _forced_wrap_up(
                     client, messages, on_round, STOP_CONTEXT_LIMIT, actions_used, action_log
                 )
-            on_round()
+            on_round(actions_used)
             if not compacted:
                 # Nothing left to compact while still over the limit: the
                 # floor exceeds it, so retrying next round would only thrash.
@@ -1052,7 +1062,7 @@ def run_exploration_loop(
 def _forced_wrap_up(
     client,
     messages: list,
-    on_round: Callable[[], None],
+    on_round: Callable[[int], None],
     stop_reason: str,
     actions_used: int,
     action_log: list[str],
@@ -1074,7 +1084,7 @@ def _forced_wrap_up(
         )
     except openai.OpenAIError as exc:
         raise LLMError(f"LLM request failed: {exc}") from exc
-    on_round()
+    on_round(actions_used)
     wrap_up = _parse_json(response.choices[0].message.content, SessionWrapUpResult)
     return ExplorationLoopResult(
         notes=wrap_up.notes,
