@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { scriptDownloadUrl } from '../services/api'
 import type { TestCaseExecutionResponse } from '../types'
+import FindingCard from './FindingCard'
 import './TestCaseExecutionRow.css'
 
 const STATUS_LABELS: Record<string, string> = {
@@ -39,6 +40,15 @@ export default function TestCaseExecutionRow({ caseExecution }: Props) {
         <p className="case-execution-attempts">
           {caseExecution.attempts} attempt{caseExecution.attempts === 1 ? '' : 's'}
         </p>
+      )}
+
+      {/* The same card the exploratory pages use — a bug found by a script
+          and one found by a session are the same kind of thing, and should
+          not need two reading habits. Raw output stays below, collapsed. */}
+      {caseExecution.finding && (
+        <div className="case-execution-finding">
+          <FindingCard finding={caseExecution.finding} />
+        </div>
       )}
 
       {hasOutput && (

@@ -1,22 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import FindingCard from './FindingCard'
-import type { ExploratoryFindingResponse } from '../types'
+import type { Finding } from '../types'
 
-function makeFinding(
-  overrides: Partial<ExploratoryFindingResponse> = {},
-): ExploratoryFindingResponse {
+function makeFinding(overrides: Partial<Finding> = {}): Finding {
   return {
-    id: 7,
-    position: 0,
     finding_type: 'bug',
     severity: 'high',
     title: 'Empty export omits the header row',
     steps_to_reproduce: 'Open reports\nFilter to zero rows\nClick Export',
     expected: 'A CSV containing a header row',
     actual: 'A zero-byte file',
-    has_screenshot: false,
-    created_at: '2026-07-28T00:00:00Z',
+    environment: null,
     ...overrides,
   }
 }
@@ -46,16 +41,44 @@ describe('FindingCard', () => {
     expect(screen.queryByText('Bug')).not.toBeInTheDocument()
   })
 
+  it('shows where the finding was observed', () => {
+    render(
+      <FindingCard
+        finding={makeFinding({
+          environment: 'Chromium 131 · viewport 1280x720 · https://app.test/checkout',
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Environment')).toBeInTheDocument()
+    expect(
+      screen.getByText('Chromium 131 · viewport 1280x720 · https://app.test/checkout'),
+    ).toBeInTheDocument()
+  })
+
+  it('omits the environment row entirely when there is none', () => {
+    // Findings recorded before capture existed have none — a blank label
+    // would read as a missing value rather than an older record.
+    render(<FindingCard finding={makeFinding({ environment: null })} />)
+    expect(screen.queryByText('Environment')).not.toBeInTheDocument()
+  })
+
   it('renders cleanly without a screenshot', () => {
-    // The normal case when STORE_OFFLINE is disabled — no broken image.
-    render(<FindingCard finding={makeFinding({ has_screenshot: false })} />)
+    // The normal case when STORE_OFFLINE is disabled, and always the case
+    // for a scripted finding — no broken image.
+    render(<FindingCard finding={makeFinding()} />)
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
   })
 
-  it('shows the screenshot when one exists', () => {
-    render(<FindingCard finding={makeFinding({ has_screenshot: true })} />)
+  it('shows the screenshot the caller supplies', () => {
+    render(
+      <FindingCard
+        finding={makeFinding()}
+        screenshotUrl="/api/exploratory-findings/7/screenshot"
+      />,
+    )
 
     const image = screen.getByRole('img')
-    expect(image).toHaveAttribute('src', expect.stringContaining('/exploratory-findings/7/'))
+    expect(image).toHaveAttribute('src', '/api/exploratory-findings/7/screenshot')
   })
 })

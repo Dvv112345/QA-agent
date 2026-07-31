@@ -1,9 +1,15 @@
-import { findingScreenshotUrl } from '../services/api'
-import type { ExploratoryFindingResponse } from '../types'
+import type { Finding } from '../types'
 import './FindingCard.css'
 
 interface Props {
-  finding: ExploratoryFindingResponse
+  finding: Finding
+  /**
+   * Screenshot to show, when there is one. Passed in rather than derived
+   * here so the card stays source-agnostic: exploratory findings build it
+   * from their own id, and a scripted finding never has one — a subprocess
+   * has no page to photograph.
+   */
+  screenshotUrl?: string | null
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -11,7 +17,7 @@ const TYPE_LABELS: Record<string, string> = {
   issue: 'Issue',
 }
 
-export default function FindingCard({ finding }: Props) {
+export default function FindingCard({ finding, screenshotUrl }: Props) {
   return (
     <article className={`finding-card finding-${finding.finding_type}`}>
       <header className="finding-header">
@@ -40,21 +46,30 @@ export default function FindingCard({ finding }: Props) {
         <dd>{finding.expected}</dd>
         <dt>Actual</dt>
         <dd>{finding.actual}</dd>
+        {/* Omitted entirely rather than shown empty — findings recorded
+            before capture existed have none, and a blank label reads as a
+            missing value rather than an older record. */}
+        {finding.environment && (
+          <>
+            <dt>Environment</dt>
+            <dd className="finding-environment">{finding.environment}</dd>
+          </>
+        )}
       </dl>
 
-      {/* No screenshot is the normal case when STORE_OFFLINE is disabled —
-          the card must read cleanly without one rather than showing a
-          broken image. */}
-      {finding.has_screenshot && (
+      {/* No screenshot is the normal case when STORE_OFFLINE is disabled,
+          and always the case for a scripted finding — the card must read
+          cleanly without one rather than showing a broken image. */}
+      {screenshotUrl && (
         <a
           className="finding-screenshot-link"
-          href={findingScreenshotUrl(finding.id)}
+          href={screenshotUrl}
           target="_blank"
           rel="noreferrer"
         >
           <img
             className="finding-screenshot"
-            src={findingScreenshotUrl(finding.id)}
+            src={screenshotUrl}
             alt={`Screenshot taken when "${finding.title}" was recorded`}
           />
         </a>

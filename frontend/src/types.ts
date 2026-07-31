@@ -127,6 +127,28 @@ export interface TestEnvironmentVarsEditRequest {
   variables: Record<string, string>
 }
 
+// ── Findings (shared by scripted and exploratory testing) ────────────
+
+export type FindingType = 'bug' | 'issue'
+
+export type FindingSeverity = 'high' | 'medium' | 'low'
+
+/**
+ * The fields every finding carries, whoever found it. FindingCard renders
+ * this shape, so an exploratory session's live capture and a scripted run's
+ * failed case read identically.
+ */
+export interface Finding {
+  finding_type: FindingType
+  severity: FindingSeverity
+  title: string
+  steps_to_reproduce: string
+  expected: string
+  actual: string
+  /** Where it was observed. Null on findings recorded before capture existed. */
+  environment: string | null
+}
+
 // ── Test execution ──────────────────────────────────────────────────
 
 export type TestExecutionStatus = 'pending' | 'running' | 'completed' | 'failed'
@@ -140,6 +162,8 @@ export interface TestCaseExecutionResponse {
   attempts: number
   output: string | null
   error: string | null
+  /** Null unless the case ended in a terminal failure that recorded one. */
+  finding: Finding | null
   updated_at: string
 }
 
@@ -180,10 +204,6 @@ export type ExploratoryRunStatus = 'pending' | 'running' | 'completed' | 'failed
 
 export type ExploratorySessionStatus = 'pending' | 'running' | 'completed' | 'error'
 
-export type FindingType = 'bug' | 'issue'
-
-export type FindingSeverity = 'high' | 'medium' | 'low'
-
 export type SfdipotArea =
   'Structure' | 'Function' | 'Data' | 'Interfaces' | 'Platform' | 'Operations' | 'Time'
 
@@ -197,15 +217,9 @@ export const SFDIPOT_AREAS: SfdipotArea[] = [
   'Time',
 ]
 
-export interface ExploratoryFindingResponse {
+export interface ExploratoryFindingResponse extends Finding {
   id: number
   position: number
-  finding_type: FindingType
-  severity: FindingSeverity
-  title: string
-  steps_to_reproduce: string
-  expected: string
-  actual: string
   has_screenshot: boolean
   created_at: string
 }

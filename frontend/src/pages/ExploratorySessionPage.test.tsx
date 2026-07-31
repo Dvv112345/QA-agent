@@ -38,6 +38,7 @@ function makeSession(
         steps_to_reproduce: 'Open reports\nClick Export',
         expected: 'A header row',
         actual: 'Zero bytes',
+        environment: 'Chromium 131 · viewport 1280x720 · https://app.test/reports',
         has_screenshot: false,
         created_at: '2026-07-28T00:00:00Z',
       },
