@@ -135,13 +135,11 @@ def _bug_finding(diagnosis: llm.ScriptDiagnosisResult, test_case: TestCaseLike) 
     the entire TestExecution over a formatting slip in a report whose
     substance already arrived in ``explanation``.
     """
-    severity = diagnosis.finding_severity
-    if severity not in {member.value for member in FindingSeverity}:
-        # An unknown severity is worse than an assumed one: it would render
-        # as an unstyled badge and sort nowhere.
-        severity = FindingSeverity.MEDIUM
     return {
-        "finding_severity": severity,
+        # An unknown severity is worse than an assumed one: it would render
+        # as an unstyled badge and sort nowhere. Shared with the exploratory
+        # path so one count can't mean two things.
+        "finding_severity": FindingSeverity.normalize(diagnosis.finding_severity),
         "finding_title": (diagnosis.finding_title or test_case.title)[:_FINDING_TITLE_MAX_CHARS],
         "finding_steps_to_reproduce": (diagnosis.finding_steps_to_reproduce or test_case.steps)[
             :_OUTPUT_MAX_CHARS
@@ -150,6 +148,7 @@ def _bug_finding(diagnosis: llm.ScriptDiagnosisResult, test_case: TestCaseLike) 
             :_OUTPUT_MAX_CHARS
         ],
         "finding_actual": (diagnosis.finding_actual or diagnosis.explanation)[:_OUTPUT_MAX_CHARS],
+        "environment": environment_utils.script_environment(),
     }
 
 
@@ -172,18 +171,24 @@ def _issue_finding(test_case: TestCaseLike, attempts: int) -> dict[str, str]:
             "The failure looked like a problem with the script rather than the "
             "application every time."
         ),
+        "environment": environment_utils.script_environment(),
     }
 
 
 # Cleared on a passing case. A restarted execution reuses its
 # TestCaseExecution rows, so a fixed bug would otherwise keep reporting
 # itself from the previous attempt.
+#
+# ``environment`` belongs to the finding rather than the case: it is only
+# reachable through the nested `finding` response, so writing it on a
+# passing case would store something no reader can ever see.
 _NO_FINDING = {
     "finding_severity": None,
     "finding_title": None,
     "finding_steps_to_reproduce": None,
     "finding_expected": None,
     "finding_actual": None,
+    "environment": None,
 }
 
 
@@ -378,10 +383,6 @@ def execute_test_task(test_execution_id: int) -> None:
                 case_exec.script_snapshot = script
                 for field, value in finding.items():
                     setattr(case_exec, field, value)
-                # Written even when there is no finding: on a passing case
-                # this records where it passed, which is the same question a
-                # reader asks of a failure.
-                case_exec.environment = environment_utils.script_environment()
                 case_exec.updated_at = _now()
                 session.add(case_exec)
 

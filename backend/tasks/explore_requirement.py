@@ -43,6 +43,7 @@ from backend.models.database import (
     ExploratoryRunStatus,
     ExploratorySession,
     ExploratorySessionStatus,
+    FindingSeverity,
 )
 from backend.services import browser_session, llm
 from backend.services.storage import StorageService
@@ -166,7 +167,10 @@ def _build_on_finding(
             exploratory_session_id=exploratory_session.id,
             position=position,
             finding_type=record.finding_type,
-            severity=record.severity,
+            # The tool schema constrains severity to an enum, but the model
+            # is not bound by it. Normalized the same way the scripted path
+            # normalizes its own, so high_severity_count means one thing.
+            severity=FindingSeverity.normalize(record.severity),
             title=record.title,
             steps_to_reproduce=record.steps_to_reproduce,
             expected=record.expected,

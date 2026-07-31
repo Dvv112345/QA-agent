@@ -250,6 +250,27 @@ class TestFindings:
         findings = db_session.get(ExploratoryRun, run.id).sessions[0].findings
         assert findings[0].environment == "Chromium 131 · https://app.test/x"
 
+    def test_out_of_enum_severity_is_normalized(self, db_session, patched, monkeypatch):
+        """The tool schema constrains severity, but the model isn't bound by
+        it — and this count feeds the same card the scripted path does."""
+        from backend.tasks import explore_requirement as task_module
+
+        monkeypatch.setattr(
+            task_module.StorageService,
+            "store_screenshot",
+            lambda self, png, directory, session_id, position: None,
+        )
+        record = self._finding()
+        record.severity = "critical"
+        patched["findings"] = [record]
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        findings = db_session.get(ExploratoryRun, run.id).sessions[0].findings
+        assert findings[0].severity == "medium"
+
     def test_finding_without_an_environment_still_persists(self, db_session, patched, monkeypatch):
         """The browser layer promises a string, but the column is nullable so
         rows predating capture read cleanly — neither path may lose a finding."""

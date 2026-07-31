@@ -18,7 +18,7 @@ from __future__ import annotations
 import contextlib
 import platform
 import sys
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import version
 
 # Matches the separator used in the UI's single-line rendering.
 _SEPARATOR = " · "
@@ -48,9 +48,15 @@ def script_environment() -> str:
     would have launched is to launch one.  The Playwright package version
     is the honest, free approximation.
     """
-    parts = [os_environment(), f"Python {platform.python_version()}"]
-    # Absent is normal in a CI environment that installs no browser stack.
-    with contextlib.suppress(PackageNotFoundError):
+    parts = [os_environment()]
+    # Each probe is guarded separately so one unavailable detail costs only
+    # itself. importlib.metadata can raise more than PackageNotFoundError on
+    # a damaged install, and this module promises never to raise.
+    with contextlib.suppress(Exception):
+        parts.append(f"Python {platform.python_version()}")
+    # PackageNotFoundError is the expected case — normal in a CI environment
+    # that installs no browser stack — but not the only one worth surviving.
+    with contextlib.suppress(Exception):
         parts.append(f"Playwright {version('playwright')}")
     return _SEPARATOR.join(parts)
 
@@ -70,10 +76,14 @@ def browser_environment(
     parts: list[str] = []
     if browser_label:
         parts.append(browser_label)
-    if viewport:
-        width, height = viewport.get("width"), viewport.get("height")
-        if width and height:
-            parts.append(f"viewport {width}x{height}")
+    # Guarded rather than trusted: the viewport comes straight back from
+    # Playwright, and a value that isn't a mapping would otherwise raise
+    # AttributeError out of a function callers use unguarded.
+    with contextlib.suppress(Exception):
+        if viewport:
+            width, height = viewport.get("width"), viewport.get("height")
+            if width and height:
+                parts.append(f"viewport {width}x{height}")
     parts.append(os_environment())
     if url:
         parts.append(url)

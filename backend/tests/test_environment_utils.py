@@ -6,6 +6,7 @@ get a usable environment string.
 """
 
 import platform
+from importlib.metadata import PackageNotFoundError
 
 from backend.utils import environment_utils
 from backend.utils.environment_utils import (
@@ -36,7 +37,7 @@ class TestScriptEnvironment:
 
     def test_omits_playwright_when_not_installed(self, monkeypatch):
         def _missing(name):
-            raise environment_utils.PackageNotFoundError(name)
+            raise PackageNotFoundError(name)
 
         monkeypatch.setattr(environment_utils, "version", _missing)
         result = script_environment()
@@ -46,6 +47,26 @@ class TestScriptEnvironment:
     def test_includes_playwright_version_when_available(self, monkeypatch):
         monkeypatch.setattr(environment_utils, "version", lambda name: "1.49.0")
         assert "Playwright 1.49.0" in script_environment()
+
+    def test_survives_a_metadata_lookup_failing_unexpectedly(self, monkeypatch):
+        """A damaged install can raise more than PackageNotFoundError, and
+        this module promises never to raise."""
+
+        def _broken(name):
+            raise RuntimeError("metadata is corrupt")
+
+        monkeypatch.setattr(environment_utils, "version", _broken)
+        result = script_environment()
+        assert platform.platform() in result
+        assert "Playwright" not in result
+
+    def test_survives_python_version_probing_failing(self, monkeypatch):
+        monkeypatch.setattr(
+            environment_utils.platform,
+            "python_version",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        assert script_environment()  # non-empty, and did not raise
 
 
 class TestBrowserEnvironment:
@@ -72,6 +93,15 @@ class TestBrowserEnvironment:
     def test_omits_url_when_unavailable(self):
         result = browser_environment("Chromium 131", {"width": 800, "height": 600}, None)
         assert result.endswith(platform.platform())
+
+    def test_survives_a_viewport_that_is_not_a_mapping(self):
+        """Callers use this unguarded, so an AttributeError here would end a
+        session and discard the whole action log."""
+        result = browser_environment("Chromium 131", "1280x720", "https://app.test/")
+
+        assert "viewport" not in result
+        assert "Chromium 131" in result
+        assert "https://app.test/" in result
 
     def test_falls_back_to_os_alone(self):
         """A session constructed without a browser still describes something."""

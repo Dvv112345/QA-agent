@@ -70,6 +70,22 @@ class TestFindingProperty:
         ):
             assert _finished(status).finding is None
 
+    def test_missing_fields_become_empty_strings(self):
+        """FindingBase declares these non-optional over nullable columns, so
+        a single None would 500 the whole run-detail response rather than
+        just this card. Unreachable today — the task writes them as a group."""
+        row = _finished(TestCaseExecutionStatus.FAILED, finding_title="Only a title")
+
+        finding = row.finding
+
+        assert finding["severity"] == ""
+        assert finding["steps_to_reproduce"] == ""
+        assert finding["expected"] == ""
+        assert finding["actual"] == ""
+        assert finding["title"] == "Only a title"
+        # environment stays nullable — the response model allows it.
+        assert finding["environment"] is None
+
     def test_none_for_a_legacy_failed_row(self):
         """Rows written before findings were structured have no title.
 
@@ -77,3 +93,22 @@ class TestFindingProperty:
         of the API instead of surfacing an all-null card.
         """
         assert _finished(TestCaseExecutionStatus.FAILED, error="something broke").finding is None
+
+
+class TestSeverityNormalization:
+    """One definition, shared by both finding sources.
+
+    Two definitions would make ``high_severity_count`` mean different
+    things depending on which testing mode found the bug.
+    """
+
+    def test_valid_values_pass_through(self):
+        for value in ("high", "medium", "low"):
+            assert FindingSeverity.normalize(value) == value
+
+    def test_unknown_value_becomes_medium(self):
+        assert FindingSeverity.normalize("critical") == FindingSeverity.MEDIUM
+
+    def test_missing_value_becomes_medium(self):
+        assert FindingSeverity.normalize(None) == FindingSeverity.MEDIUM
+        assert FindingSeverity.normalize("") == FindingSeverity.MEDIUM

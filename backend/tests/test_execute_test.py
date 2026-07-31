@@ -355,8 +355,10 @@ class TestStructuredFindings:
         assert result.status == TestCaseExecutionStatus.PASSED
         assert result.finding is None
         assert result.finding_title is None
-        # Where it passed is the same question a reader asks of a failure.
-        assert result.environment
+        # environment travels with the finding rather than the case: it is
+        # only reachable through the nested `finding` response, so writing it
+        # on a passing case would store what no reader can see.
+        assert result.environment is None
 
     def test_a_restarted_case_that_now_passes_clears_its_old_finding(
         self, db_session, llm_stub, script_runner_stub
@@ -377,6 +379,7 @@ class TestStructuredFindings:
         assert result.finding_title is None
         assert result.finding_severity is None
         assert result.finding_expected is None
+        assert result.environment is None
         assert result.finding is None
 
 

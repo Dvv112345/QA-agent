@@ -342,6 +342,20 @@ class FindingSeverity(str, Enum):
     MEDIUM = "medium"
     LOW = "low"
 
+    @classmethod
+    def normalize(cls, value: str | None) -> str:
+        """Coerce a reported severity to a usable one, defaulting to medium.
+
+        Both finding sources are LLM-reported and both feed the same card
+        and the same ``high_severity_count``, so an unrecognised value has
+        to be resolved the same way on each — otherwise that count means
+        two different things depending on which mode found the bug.
+
+        Medium is the neutral choice: it neither inflates the headline
+        number nor buries something that might matter.
+        """
+        return value if value in {member.value for member in cls} else cls.MEDIUM
+
 
 class TestExecutionStatus(str, Enum):
     """Lifecycle status of one requirement's test-case run within a TestRun."""
@@ -516,16 +530,24 @@ class TestCaseExecution(SQLModel, table=True):
         Gated on ``finding_title`` rather than on status: rows written
         before this feature are ``failed`` with no finding, and must not
         surface as an empty card.
+
+        The six required fields are coalesced because ``FindingBase``
+        declares them non-optional over nullable columns: a single ``None``
+        would fail response validation and 500 the *whole* run detail
+        response rather than just this card.  The task always writes them as
+        a group, so this should be unreachable — but the blast radius is far
+        out of proportion to the cost of a fallback.  ``environment`` is
+        left alone: the response model already allows it to be null.
         """
         if not self.finding_title:
             return None
         return {
-            "finding_type": self.finding_type,
-            "severity": self.finding_severity,
+            "finding_type": self.finding_type or "",
+            "severity": self.finding_severity or "",
             "title": self.finding_title,
-            "steps_to_reproduce": self.finding_steps_to_reproduce,
-            "expected": self.finding_expected,
-            "actual": self.finding_actual,
+            "steps_to_reproduce": self.finding_steps_to_reproduce or "",
+            "expected": self.finding_expected or "",
+            "actual": self.finding_actual or "",
             "environment": self.environment,
         }
 
