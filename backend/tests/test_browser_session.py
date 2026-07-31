@@ -48,7 +48,7 @@ class _FakePage:
     """Minimal stand-in for a Playwright Page."""
 
     def __init__(self, url="https://app.test/", title="App"):
-        self.url = url
+        self._url = url
         self._title = title
         self.actions: list[tuple] = []
         self.broken_selectors: set[str] = set()
@@ -62,7 +62,21 @@ class _FakePage:
         self.action_navigates_to: str | None = None
         self.handlers: dict = {}
         self.viewport = None
+        self.viewport_size: dict | None = {"width": 1280, "height": 720}
+        self.url_error = False
         self.default_timeout = None
+
+    # A property so a test can make the page stop answering for its URL,
+    # the way a crashed or closed page does.
+    @property
+    def url(self):
+        if self.url_error:
+            raise PlaywrightError("page has been closed")
+        return self._url
+
+    @url.setter
+    def url(self, value):
+        self._url = value
 
     def set_default_timeout(self, ms):
         self.default_timeout = ms
@@ -89,6 +103,7 @@ class _FakePage:
 
     def set_viewport_size(self, size):
         self.viewport = size
+        self.viewport_size = size
 
     def screenshot(self):
         self.screenshot_calls += 1
@@ -335,6 +350,60 @@ class TestRecordFinding:
         assert png == b"PNGDATA"
         assert page.screenshot_calls == 1  # capturing is the default
         assert "Recorded bug" in result
+
+    def test_records_where_the_observation_was_made(self):
+        page = _FakePage(url="https://app.test/checkout")
+        seen: list = []
+        session = _session(page, on_finding=lambda record, png: seen.append((record, png)))
+        session._browser_label = "Chromium 131.0.6778.85"
+
+        session.record_finding(title="Total omits tax")
+
+        record, _ = seen[0]
+        assert "Chromium 131.0.6778.85" in record.environment
+        assert "viewport 1280x720" in record.environment
+        assert "https://app.test/checkout" in record.environment
+
+    def test_environment_reflects_the_viewport_at_that_moment(self):
+        """A finding at 375px wide is a different finding — the viewport must
+        describe this observation, not wherever the session ends up."""
+        page = _FakePage()
+        seen: list = []
+        session = _session(page, on_finding=lambda record, png: seen.append((record, png)))
+
+        session.set_viewport(375, 812)
+        session.record_finding(title="Nav bar overlaps content")
+        session.set_viewport(1280, 720)
+
+        record, _ = seen[0]
+        assert "viewport 375x812" in record.environment
+
+    def test_environment_survives_a_page_that_cannot_answer(self):
+        """A crashed page costs the detail, never the finding."""
+        page = _FakePage()
+        page.url_error = True
+        page.viewport_size = None
+        seen: list = []
+        session = _session(page, on_finding=lambda record, png: seen.append((record, png)))
+
+        result = session.record_finding(title="Something broke", page_still_shows_problem=False)
+
+        record, _ = seen[0]
+        assert record.environment  # non-empty: the OS is always available
+        assert "viewport" not in record.environment
+        assert "Recorded" in result
+
+    def test_environment_without_a_browser_label(self):
+        """Constructed directly, __enter__ never ran, so there is no label."""
+        page = _FakePage()
+        seen: list = []
+        session = _session(page, on_finding=lambda record, png: seen.append((record, png)))
+
+        session.record_finding(title="No browser handle")
+
+        record, _ = seen[0]
+        assert record.environment
+        assert "Chromium" not in record.environment
 
     def test_skips_the_capture_when_the_page_has_moved_on(self):
         """False evidence is worse than none — an image of an unrelated page

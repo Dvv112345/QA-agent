@@ -222,7 +222,7 @@ class TestHappyPath:
 
 
 class TestFindings:
-    def _finding(self, title="Empty export"):
+    def _finding(self, title="Empty export", environment="Chromium 131 · viewport 1280x720"):
         return FindingRecord(
             finding_type="bug",
             severity="high",
@@ -230,7 +230,45 @@ class TestFindings:
             steps_to_reproduce="Open reports\nClick Export",
             expected="A CSV with a header",
             actual="Zero bytes",
+            environment=environment,
         )
+
+    def test_environment_is_persisted(self, db_session, patched, monkeypatch):
+        from backend.tasks import explore_requirement as task_module
+
+        monkeypatch.setattr(
+            task_module.StorageService,
+            "store_screenshot",
+            lambda self, png, directory, session_id, position: None,
+        )
+        patched["findings"] = [self._finding(environment="Chromium 131 · https://app.test/x")]
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        findings = db_session.get(ExploratoryRun, run.id).sessions[0].findings
+        assert findings[0].environment == "Chromium 131 · https://app.test/x"
+
+    def test_finding_without_an_environment_still_persists(self, db_session, patched, monkeypatch):
+        """The browser layer promises a string, but the column is nullable so
+        rows predating capture read cleanly — neither path may lose a finding."""
+        from backend.tasks import explore_requirement as task_module
+
+        monkeypatch.setattr(
+            task_module.StorageService,
+            "store_screenshot",
+            lambda self, png, directory, session_id, position: None,
+        )
+        patched["findings"] = [self._finding(environment=None)]
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        findings = db_session.get(ExploratoryRun, run.id).sessions[0].findings
+        assert len(findings) == 1
+        assert findings[0].environment is None
 
     def test_findings_persist_with_screenshot(self, db_session, patched, monkeypatch):
         from backend.tasks import explore_requirement as task_module

@@ -182,6 +182,7 @@ def _finding_response(finding: ExploratoryFinding) -> ExploratoryFindingResponse
         steps_to_reproduce=finding.steps_to_reproduce,
         expected=finding.expected,
         actual=finding.actual,
+        environment=finding.environment,
         has_screenshot=finding.screenshot_path is not None,
         created_at=finding.created_at,
     )

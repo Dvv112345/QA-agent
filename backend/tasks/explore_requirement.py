@@ -172,6 +172,7 @@ def _build_on_finding(
             expected=record.expected,
             actual=record.actual,
             screenshot_path=screenshot_path,
+            environment=record.environment,
         )
         session.add(finding)
         session.commit()

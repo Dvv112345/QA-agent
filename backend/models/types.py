@@ -235,6 +235,9 @@ class ExploratoryFindingResponse(SQLModel):
     steps_to_reproduce: str
     expected: str
     actual: str
+    # Where it was observed (browser, viewport, OS, URL). None on findings
+    # recorded before capture existed.
+    environment: str | None = None
     # Whether a screenshot exists — the path itself is never exposed, and
     # None is normal when STORE_OFFLINE is false, not an error.
     has_screenshot: bool = False
