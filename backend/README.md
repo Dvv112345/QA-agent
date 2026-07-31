@@ -1,6 +1,6 @@
 # QA Agent Backend
 
-FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM, which also extracts the access details into structured, editable environment variables — and confirming it locks the sprint's requirement set. Next, an LLM generates a test plan per requirement on the same worker infrastructure, reading repository files through a bounded tool loop to ground the test cases; each draft plan goes through a capped feedback loop or uncapped direct edit until approved. Finally, running the approved plans generates (or reuses) a Playwright script per test case, executes it in a subprocess against the confirmed environment, and self-heals script bugs via an LLM diagnosis loop — stopping and reporting a `failed` case as soon as a failure looks like a genuine application bug.
+FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM, which also extracts the access details into structured, editable environment variables — and confirming it locks the sprint's requirement set. Next, an LLM generates a test plan per requirement on the same worker infrastructure — grounded in the requirement rather than the implementation, and written for automated execution; each draft plan goes through a capped feedback loop or uncapped direct edit until approved. Finally, running the approved plans generates (or reuses) a Playwright script per test case, reading repository files through a bounded tool loop to get real endpoints and response shapes right, executes it in a subprocess against the confirmed environment, and self-heals script bugs via an LLM diagnosis loop — stopping as soon as a failure looks like a genuine application bug and reporting it as a structured finding, in the same shape exploratory testing produces.
 
 ## Quick Start
 
@@ -65,11 +65,10 @@ Generated test scripts may import Playwright, `requests`, `Faker`, `psycopg2` (P
 | `MAX_PRD_REQUIREMENTS`                                      | `50`                                                     | Max requirements a single PRD split may produce; larger splits are rejected (422).                                              |
 | `MAX_TEST_ENV_REVISION_ROUNDS`                              | `3`                                                      | Answer/revise rounds for the test-environment text; direct edit stays uncapped.                                                 |
 | `MAX_TEST_PLAN_FEEDBACK_ROUNDS`                             | `3`                                                      | Feedback/revise rounds per test plan; direct edit stays uncapped.                                                               |
-| `TEST_PLAN_TOOL_ROUNDS`                                     | `2`                                                      | Max `read_file` LLM rounds per plan generation before the final answer is forced.                                               |
-| `TEST_PLAN_FILE_MAX_CHARS`                                  | `20000`                                                  | Per-file character cap for repo files fetched by the tool loop.                                                                 |
-| `TEST_PLAN_JOB_TIMEOUT`                                     | `900`                                                    | RQ job timeout for plan jobs — sized for a worst-case tool loop, unlike `JOB_TIMEOUT`.                                          |
+| `TEST_PLAN_JOB_TIMEOUT`                                     | `900`                                                    | RQ job timeout for plan jobs. Generation is a single LLM call, so this is vestigial headroom rather than a sized budget.        |
 | `MAX_SCRIPT_FIX_ROUNDS`                                     | `3`                                                      | Additional self-heal attempts per test case before a stubborn `script_bug` verdict gives up (case ends `error`, not `failed`).  |
-| `TEST_EXECUTION_TOOL_ROUNDS`                                | `5`                                                      | Max `read_file` LLM rounds per test-script generation/diagnosis call.                                                           |
+| `TEST_EXECUTION_TOOL_ROUNDS`                                | `5`                                                      | Max `read_file` LLM rounds per test-script generation/diagnosis call — the only stage with repository access.                   |
+| `TEST_EXECUTION_FILE_MAX_CHARS`                             | `20000`                                                  | Per-file character cap for repo files fetched by that tool loop.                                                                |
 | `SCRIPT_EXECUTION_TIMEOUT`                                  | `60`                                                     | Wall-clock timeout in seconds for one test-script subprocess run.                                                               |
 | `TEST_EXECUTION_JOB_TIMEOUT`                                | `3600`                                                   | RQ job timeout for test-execution jobs — sized for every case in a plan, each with multiple generate/execute/diagnose cycles.   |
 | `RECONCILER_INTERVAL`                                       | `30`                                                     | Seconds between reconciler ticks (re-enqueues lost/backlogged jobs).                                                            |
@@ -303,7 +302,11 @@ Finalize the access description. Terminal — and it **locks the sprint's requir
 
 ### Test Plans
 
-The third sprint stage, available once the test environment is confirmed (`requirements_locked`). One plan per confirmed requirement, generated asynchronously on the RQ worker: the LLM may call a `read_file(path)` tool up to `TEST_PLAN_TOOL_ROUNDS` times (paths validated against the captured file tree, contents truncated to `TEST_PLAN_FILE_MAX_CHARS`) before returning a structured plan — complexity (`low`/`medium`/`high`), summary, and ≥1 test case (title, optional preconditions, newline-joined steps, expected result, type, priority). Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) → approved` (terminal), plus `failed` (restartable). Poll the list endpoint to observe progress.
+The third sprint stage, available once the test environment is confirmed (`requirements_locked`). One plan per confirmed requirement, generated asynchronously on the RQ worker by a single LLM call returning a structured plan — complexity (`low`/`medium`/`high`), summary, and ≥1 test case (title, optional preconditions, newline-joined steps, expected result, type, priority).
+
+Planning is deliberately **code-blind**: it is grounded in the requirement, README, captured file tree, and confirmed test-environment description, but never reads repository files. A plan defines what "correct" means, so reading the implementation is where that judgment drifts into restating what the code already does; the endpoint paths and response shapes a script needs are resolved later by test-script generation, which does have repo access. The prompt instead states what it is planning for — each case becomes one Playwright script, so expected results must be script-checkable, preconditions must be seedable from the confirmed environment, cases must be repeatable, and steps describe _what_ to verify rather than naming endpoints or selectors. Checks no script could make are left to exploratory testing.
+
+Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) → approved` (terminal), plus `failed` (restartable). Poll the list endpoint to observe progress.
 
 #### `POST /api/sprints/{sprint_id}/test-plans/generate`
 
@@ -371,6 +374,8 @@ Restart a `failed` plan (clears the error and retry counter; keeps pending feedb
 
 The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), or `error` (self-heal exhausted, still looks like a script bug). Generated scripts may use Playwright, `requests`, `Faker`, `psycopg2` (Postgres), `sqlite3`, or the standard library — nothing else, since only those are installed in the worker's own venv that scripts execute under.
 
+Both terminal failures also carry a **structured finding** on `TestCaseExecutionResponse.finding`, in the same shape exploratory testing uses (severity, title, reproduction steps, expected vs actual, environment): a `failed` case reports a `bug`, an `error` case reports an `issue` — the product was wrong, versus the testing never got off the ground. The bug report costs no extra LLM call; the diagnosis that classified the failure returns it alongside the classification. A `passed` case reports no finding, and its finding fields are cleared, so a restarted run that now passes stops reporting a fixed bug. Raw `output`, `error`, and the downloadable script are unchanged — the finding is the report, the output is the debugging surface.
+
 > **Unsandboxed execution:** generated test scripts run as a plain subprocess with no sandboxing beyond a wall-clock timeout (`SCRIPT_EXECUTION_TIMEOUT`) — an accepted risk, not an oversight.
 
 #### `POST /api/sprints/{sprint_id}/test-runs`
@@ -414,7 +419,9 @@ Findings are typed, following SBTM's distinction:
 - **bug** — the product behaves differently from what the requirement says
 - **issue** — something obstructed the testing itself (missing credentials, an unreachable page)
 
-Each carries reproduction steps, expected vs actual, and a screenshot captured at the moment it was recorded.
+Each carries a severity, reproduction steps, expected vs actual, the environment it was observed in, and a screenshot captured at the moment it was recorded. The environment names the browser and version, the viewport in effect at that instant, the host OS, and the page URL — a defect that reproduces at 375px wide and not at 1280px is a different defect. It is captured in code rather than asked of the model, which cannot see the browser build or host OS.
+
+**Scripted test runs report findings in this same shape** — see [Test execution](#test-execution). Only the source differs: an exploratory session records one live through a tool, a scripted run derives one from a failed test case.
 
 > **Credentials never reach the transcript.** The agent types secrets via a `fill_secret(ref, env_var_name)` tool whose value is resolved inside the executor, so no literal password or token enters the LLM conversation or the stored action log.
 
@@ -526,13 +533,13 @@ backend/
   services/
     storage.py         # Conditional README/PRD persistence (STORE_OFFLINE)
     queue.py           # RQ queue service (graceful degradation when Redis is down)
-    llm.py             # OpenAI-SDK client: clarity/test-env checks, env-var extraction, PRD split, test-plan + test-script tool loops
+    llm.py             # OpenAI-SDK client: clarity/test-env checks, env-var extraction, PRD split, test plans (code-blind), test-script tool loop
     llm_prompts.py      # System prompts, prompt-assembly helpers, TestCaseLike, read_file tool schema
     script_runner.py    # Subprocess execution of generated test scripts (no sandboxing beyond a timeout)
     reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions)
   tasks/
     analyze_requirement.py  # The analysis task executed by the worker
-    generate_test_plan.py   # The plan-generation task (bounded read_file tool loop)
+    generate_test_plan.py   # The plan-generation task (single LLM call, no repo access)
     execute_test.py         # The test-execution task (per-case self-heal loop)
   scripts/
     clear_queue.py     # Queue maintenance CLI (python -m backend.scripts.clear_queue)
