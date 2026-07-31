@@ -196,6 +196,21 @@ def test_plan_context(
     return parts
 
 
+# ── Findings (shared by scripted and exploratory testing) ─────────────
+
+# Without a bar the model's severity is arbitrary, and high_severity_count
+# is the first number a reader anchors on. Shared rather than inlined so the
+# scripted and exploratory prompts cannot drift on what "high" means — two
+# definitions would make that one count mean two different things at once.
+# Same reasoning as AVAILABLE_TEST_LIBRARIES below.
+FINDING_SEVERITY_BAR = (
+    "'high' if the requirement cannot be met — data loss, a blocked primary "
+    "flow, or a wrong result a user would act on. 'medium' if the "
+    "requirement is still met but materially degraded, or there is a "
+    "workaround. 'low' for cosmetic problems and minor annoyances."
+)
+
+
 # ── Test execution ────────────────────────────────────────────────────
 
 ENV_VARS_SYSTEM_PROMPT = (
@@ -281,9 +296,24 @@ TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT = (
     "os.environ-only, precondition-seeding, try/finally-cleanup contract as "
     "generation — do not drop cleanup the original script had, and add it if "
     "the original script was missing it and that plausibly caused the "
-    'failure. Respond with a JSON object of the shape {"classification": '
+    "failure.\n\n"
+    "For app_bug, also write the bug report, because this run is the only "
+    "time anyone sees the failure with its context: finding_title is a "
+    "one-line summary; finding_severity is "
+    f"{FINDING_SEVERITY_BAR} finding_steps_to_reproduce lists one step per "
+    "line and must not be numbered; finding_expected and finding_actual "
+    "state specifically what should have happened and what did. "
+    "finding_expected comes from the test case and the requirement — never "
+    "from what the code you read appears to intend. If those disagree, that "
+    "disagreement is the bug you are reporting, so restating the code's "
+    "behaviour as the expectation would erase the finding. These five fields "
+    "are ignored for script_bug; omit them there.\n\n"
+    'Respond with a JSON object of the shape {"classification": '
     '"script_bug" or "app_bug", "fixed_script": string or null, '
-    '"explanation": string}.'
+    '"explanation": string, "finding_title": string or null, '
+    '"finding_severity": "high"|"medium"|"low" or null, '
+    '"finding_steps_to_reproduce": string or null, '
+    '"finding_expected": string or null, "finding_actual": string or null}.'
 )
 
 
@@ -630,13 +660,7 @@ BROWSER_TOOLS = [
             "severity": {
                 "type": "string",
                 "enum": ["high", "medium", "low"],
-                # Without a bar the model's severity is arbitrary, and
-                # high_severity_count is the first number a reader anchors on.
-                "description": "'high' if the requirement cannot be met — data "
-                "loss, a blocked primary flow, or a wrong result a user would "
-                "act on. 'medium' if the requirement is still met but "
-                "materially degraded, or there is a workaround. 'low' for "
-                "cosmetic problems and minor annoyances.",
+                "description": FINDING_SEVERITY_BAR,
             },
             "title": {"type": "string", "description": "One-line summary."},
             "steps_to_reproduce": {

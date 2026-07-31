@@ -469,6 +469,18 @@ class ScriptDiagnosisResult(SQLModel):
     classification: Literal["script_bug", "app_bug"]
     fixed_script: str | None = None
     explanation: str
+    # Bug report accompanying an app_bug verdict — the same shape an
+    # exploratory session records. All optional, and deliberately not
+    # validated below: the task normalizes them against the test case
+    # instead. Raising here would route into _record_failure and retry the
+    # entire TestExecution — re-running every remaining case — to punish a
+    # formatting slip in a report whose substance is already in
+    # `explanation`.
+    finding_severity: str | None = None
+    finding_title: str | None = None
+    finding_steps_to_reproduce: str | None = None
+    finding_expected: str | None = None
+    finding_actual: str | None = None
 
 
 def _validate_env_vars(result: EnvVarsResult) -> EnvVarsResult:

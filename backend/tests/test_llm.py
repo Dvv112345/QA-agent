@@ -846,6 +846,51 @@ class TestDiagnoseAndFixScript:
         assert result.classification == "app_bug"
         assert result.fixed_script is None
 
+    def test_app_bug_carries_the_bug_report(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "app_bug",
+                    "fixed_script": None,
+                    "explanation": "Login genuinely fails for valid credentials.",
+                    "finding_severity": "high",
+                    "finding_title": "Valid credentials are rejected",
+                    "finding_steps_to_reproduce": "Open /login\nSubmit valid credentials",
+                    "finding_expected": "The user is signed in",
+                    "finding_actual": "A 401 is returned",
+                }
+            ),
+        )
+
+        result = _diagnose()
+
+        assert result.finding_severity == "high"
+        assert result.finding_title == "Valid credentials are rejected"
+        assert result.finding_steps_to_reproduce == "Open /login\nSubmit valid credentials"
+        assert result.finding_expected == "The user is signed in"
+        assert result.finding_actual == "A 401 is returned"
+
+    def test_omitted_bug_report_parses_as_none(self, monkeypatch):
+        """Not validated here on purpose — the task fills the gaps from the
+        test case rather than retrying the whole execution over a slip."""
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "app_bug",
+                    "fixed_script": None,
+                    "explanation": "The total is wrong.",
+                }
+            ),
+        )
+
+        result = _diagnose()
+
+        assert result.finding_title is None
+        assert result.finding_severity is None
+        assert result.finding_expected is None
+
     def test_script_bug_without_fix_raises(self, monkeypatch):
         _sequence_client(
             monkeypatch,
@@ -936,6 +981,41 @@ class TestScriptPromptsAdvertiseAvailableLibraries:
         from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
 
         assert library in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+
+class TestFindingSeverityBarIsShared:
+    """Both finding-producing prompts must define severity identically.
+
+    Two definitions would make ``high_severity_count`` — the first number a
+    reader anchors on — mean two different things depending on which mode
+    produced the finding.
+    """
+
+    def test_diagnosis_prompt_embeds_the_shared_bar(self):
+        from backend.services.llm_prompts import (
+            FINDING_SEVERITY_BAR,
+            TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
+        )
+
+        assert FINDING_SEVERITY_BAR in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+    def test_record_finding_tool_embeds_the_shared_bar(self):
+        from backend.services.llm_prompts import BROWSER_TOOLS, FINDING_SEVERITY_BAR
+
+        record = next(
+            tool for tool in BROWSER_TOOLS if tool["function"]["name"] == "record_finding"
+        )
+        severity = record["function"]["parameters"]["properties"]["severity"]
+        assert severity["description"] == FINDING_SEVERITY_BAR
+
+    def test_diagnosis_prompt_anchors_expected_to_the_requirement(self):
+        """The prompt hands the model read_file *and* asks it to write down an
+        expected value — the exact shape that produced a real bug before."""
+        from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+        assert "finding_expected comes from the test case and the requirement" in (
+            TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+        )
 
 
 # ── Exploratory testing ───────────────────────────────────────────────
