@@ -313,6 +313,36 @@ class TestCase(SQLModel, table=True):
     test_plan: Optional["TestPlan"] = Relationship(back_populates="cases")
 
 
+# ── Findings (shared by scripted and exploratory testing) ─────────────
+#
+# Defined here rather than in the exploratory section below because both
+# testing modes now report findings in this vocabulary: an exploratory
+# session records them through a tool, a scripted run derives them from a
+# test case's outcome.
+
+
+class FindingType(str, Enum):
+    """SBTM distinguishes product defects from testing obstructions.
+
+    Collapsing these would discard the signal that a session was *blocked*
+    rather than clean.  The same split carries over to scripted runs, where
+    it is derived from the case outcome: a ``failed`` case caught the
+    product being wrong, an ``error`` case means the test itself never got
+    off the ground.
+    """
+
+    BUG = "bug"  # the product is wrong
+    ISSUE = "issue"  # something obstructed the testing itself
+
+
+class FindingSeverity(str, Enum):
+    """Reporter-assigned severity of a finding."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class TestExecutionStatus(str, Enum):
     """Lifecycle status of one requirement's test-case run within a TestRun."""
 
@@ -424,6 +454,12 @@ class TestCaseExecution(SQLModel, table=True):
 
     Stores only the final attempt (script/output/attempts) — intermediate
     failed self-heal attempts aren't user-facing.
+
+    A terminal failure also carries a structured finding, in the same
+    vocabulary an exploratory session uses.  The fields live directly on
+    this row rather than in a child table because a case stops at its first
+    verdict: it produces at most one finding, so a 0..1 relationship would
+    buy a foreign key and cascade for nothing.
     """
 
     __test__ = False  # tell pytest this "Test*" name is not a test class
@@ -436,12 +472,62 @@ class TestCaseExecution(SQLModel, table=True):
     output: str | None = Field(default=None)
     error: str | None = Field(default=None)
     script_snapshot: str | None = Field(default=None)  # credential-free, downloadable as-is
+    # ── structured finding (set on a terminal failure, cleared on pass) ──
+    # Prefixed because `title`/`expected` alone would read as the test
+    # case's own; the `finding` property below maps them back onto the
+    # shared names the API exposes.
+    finding_severity: str | None = Field(default=None)  # FindingSeverity value
+    finding_title: str | None = Field(default=None)
+    finding_steps_to_reproduce: str | None = Field(default=None)  # newline-joined
+    finding_expected: str | None = Field(default=None)
+    finding_actual: str | None = Field(default=None)
+    # Where the script ran (worker host). None on rows written before
+    # findings were structured — normal for old data, not an error.
+    environment: str | None = Field(default=None)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
 
     test_execution: Optional["TestExecution"] = Relationship(back_populates="cases")
     test_case: Optional["TestCase"] = Relationship()
+
+    @property
+    def finding_type(self) -> str | None:
+        """Derived from the outcome — deliberately never stored.
+
+        ``failed`` means the script ran correctly and the product was
+        wrong; ``error`` means self-heal gave up and the testing itself
+        never landed.  Storing this alongside ``status`` would create two
+        sources of truth that a restart could put out of step.
+        """
+        if self.status == TestCaseExecutionStatus.FAILED:
+            return FindingType.BUG
+        if self.status == TestCaseExecutionStatus.ERROR:
+            return FindingType.ISSUE
+        return None
+
+    @property
+    def finding(self) -> dict[str, str | None] | None:
+        """The finding in the shared shape, or None when there isn't one.
+
+        Keyed to match ``FindingBase`` in ``models/types.py`` so FastAPI can
+        validate it straight into the nested response model.
+
+        Gated on ``finding_title`` rather than on status: rows written
+        before this feature are ``failed`` with no finding, and must not
+        surface as an empty card.
+        """
+        if not self.finding_title:
+            return None
+        return {
+            "finding_type": self.finding_type,
+            "severity": self.finding_severity,
+            "title": self.finding_title,
+            "steps_to_reproduce": self.finding_steps_to_reproduce,
+            "expected": self.finding_expected,
+            "actual": self.finding_actual,
+            "environment": self.environment,
+        }
 
 
 # ── Exploratory testing ───────────────────────────────────────────────
@@ -488,25 +574,6 @@ class ExploratorySessionStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
-
-
-class FindingType(str, Enum):
-    """SBTM distinguishes product defects from testing obstructions.
-
-    Collapsing these would discard the signal that a session was *blocked*
-    rather than clean.
-    """
-
-    BUG = "bug"  # the product is wrong
-    ISSUE = "issue"  # something obstructed the testing itself
-
-
-class FindingSeverity(str, Enum):
-    """Reporter-assigned severity of a finding."""
-
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
 
 
 class ExploratoryRun(SQLModel, table=True):
@@ -638,6 +705,10 @@ class ExploratoryFinding(SQLModel, table=True):
     # whenever STORE_OFFLINE is false: the normal case for that setting, not
     # an error.
     screenshot_path: str | None = Field(default=None)
+    # Browser, viewport, OS, and page URL at the moment of recording —
+    # captured in code, never asked of the model. Best-effort: None on rows
+    # written before capture existed, and on a page too broken to answer.
+    environment: str | None = Field(default=None)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
