@@ -175,6 +175,39 @@ class TestPlanEditRequest(SQLModel):
     cases: list[TestCaseInput]
 
 
+# ── Findings (shared by scripted and exploratory testing) ─────────────
+
+
+class FindingBase(SQLModel):
+    """The seven fields every finding carries, whoever found it.
+
+    Shared so a reader — and the one frontend card that renders both — sees
+    the same shape whether an exploratory session recorded it live or a
+    scripted run derived it from a failed test case.
+    """
+
+    finding_type: str
+    severity: str
+    title: str
+    steps_to_reproduce: str
+    expected: str
+    actual: str
+    # Where it was observed. None on findings recorded before capture
+    # existed — normal for old rows, not an error.
+    environment: str | None = None
+
+
+class TestCaseFindingResponse(FindingBase):
+    """A scripted run's finding — the shared fields and nothing else.
+
+    No screenshot: a subprocess has no page to photograph. That absence is
+    already the normal case for exploratory findings under
+    ``STORE_OFFLINE=false``, so the card handles it without special-casing.
+    """
+
+    __test__ = False  # tell pytest this "Test*" name is not a test class
+
+
 # ── Test execution ────────────────────────────────────────────────────
 
 
@@ -185,6 +218,10 @@ class TestCaseExecutionResponse(SQLModel):
     attempts: int
     output: str | None = None
     error: str | None = None
+    # Populated from TestCaseExecution.finding — None unless the case ended
+    # in a terminal failure that recorded one. Raw output above stays put:
+    # it is the debugging surface, this is the report.
+    finding: TestCaseFindingResponse | None = None
     updated_at: datetime
 
 
@@ -226,18 +263,9 @@ class TestRunCreateRequest(SQLModel):
 # ── Exploratory testing ───────────────────────────────────────────────
 
 
-class ExploratoryFindingResponse(SQLModel):
+class ExploratoryFindingResponse(FindingBase):
     id: int
     position: int
-    finding_type: str
-    severity: str
-    title: str
-    steps_to_reproduce: str
-    expected: str
-    actual: str
-    # Where it was observed (browser, viewport, OS, URL). None on findings
-    # recorded before capture existed.
-    environment: str | None = None
     # Whether a screenshot exists — the path itself is never exposed, and
     # None is normal when STORE_OFFLINE is false, not an error.
     has_screenshot: bool = False
