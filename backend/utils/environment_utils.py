@@ -25,11 +25,12 @@ _SEPARATOR = " · "
 
 
 def os_environment() -> str:
-    """Host OS and build, e.g. ``Windows-10-10.0.26200-SP0``.
+    """Host OS and build, e.g. ``Windows-11-10.0.26200-SP0``.
 
-    ``platform.platform()`` reports Windows 11 as ``Windows-10-…`` — the
-    build number is the real discriminator, and inventing the marketing
-    name would be guessing at something we cannot actually read.
+    Whatever ``platform.platform()`` reports, verbatim.  Older Pythons name
+    Windows 11 builds ``Windows-10-…``; the build number is the real
+    discriminator either way, and rewriting the string to a marketing name
+    would be inventing something we cannot actually read.
     """
     try:
         return platform.platform()
@@ -72,19 +73,28 @@ def browser_environment(
     browser handle may not have been opened, and a closed or crashed page
     answers neither for its viewport nor its URL.  With all of them missing
     this still returns the OS, so the field is never blank.
+
+    Guarded as a whole rather than statement by statement: every argument
+    comes from a live browser via ``BrowserSession._environment``, which
+    calls this *outside* its own suppress blocks, and an exception here
+    would propagate through ``record_finding`` into the exploration loop —
+    ending the session and discarding the action log of a charter that had
+    already spent its budget.  The OS is always available as a floor.
     """
     parts: list[str] = []
-    if browser_label:
-        parts.append(browser_label)
-    # Guarded rather than trusted: the viewport comes straight back from
-    # Playwright, and a value that isn't a mapping would otherwise raise
-    # AttributeError out of a function callers use unguarded.
-    with contextlib.suppress(Exception):
-        if viewport:
-            width, height = viewport.get("width"), viewport.get("height")
-            if width and height:
-                parts.append(f"viewport {width}x{height}")
-    parts.append(os_environment())
-    if url:
-        parts.append(url)
-    return _SEPARATOR.join(parts)
+    try:
+        if browser_label:
+            parts.append(str(browser_label))
+        # Guarded on its own so a viewport that isn't a mapping costs only
+        # the viewport — the browser and URL are still worth reporting.
+        with contextlib.suppress(Exception):
+            if viewport:
+                width, height = viewport.get("width"), viewport.get("height")
+                if width and height:
+                    parts.append(f"viewport {width}x{height}")
+        parts.append(os_environment())
+        if url:
+            parts.append(str(url))
+        return _SEPARATOR.join(parts)
+    except Exception:  # pragma: no cover — the floor, not a known path
+        return os_environment()

@@ -334,6 +334,21 @@ class FindingType(str, Enum):
     BUG = "bug"  # the product is wrong
     ISSUE = "issue"  # something obstructed the testing itself
 
+    @classmethod
+    def normalize(cls, value: str | None) -> str:
+        """Coerce a reported type to a usable one, defaulting to ``bug``.
+
+        An unrecognised type is worse than a wrong one: a finding counted
+        toward neither ``bug_count`` nor ``issue_count`` while still
+        counting toward ``finding_count`` makes the run page show numbers
+        that do not add up.
+
+        ``bug`` matches what ``BrowserSession.record_finding`` already
+        defaults to when the model omits the field — this closes the same
+        gap for a value it got wrong.
+        """
+        return value if value in {member.value for member in cls} else cls.BUG.value
+
 
 class FindingSeverity(str, Enum):
     """Reporter-assigned severity of a finding."""
@@ -353,8 +368,12 @@ class FindingSeverity(str, Enum):
 
         Medium is the neutral choice: it neither inflates the headline
         number nor buries something that might matter.
+
+        Returns the plain string, never the enum member: on Python 3.12 an
+        f-string of a member renders as ``FindingSeverity.MEDIUM``, and
+        these values reach both prompt text and stored columns.
         """
-        return value if value in {member.value for member in cls} else cls.MEDIUM
+        return value if value in {member.value for member in cls} else cls.MEDIUM.value
 
 
 class TestExecutionStatus(str, Enum):
@@ -495,8 +514,9 @@ class TestCaseExecution(SQLModel, table=True):
     finding_steps_to_reproduce: str | None = Field(default=None)  # newline-joined
     finding_expected: str | None = Field(default=None)
     finding_actual: str | None = Field(default=None)
-    # Where the script ran (worker host). None on rows written before
-    # findings were structured — normal for old data, not an error.
+    # Where the script ran (worker host). Part of the finding above, so it
+    # is None on every case that has no finding — a pass, a row still in
+    # flight, or a row written before findings were structured.
     environment: str | None = Field(default=None)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -513,11 +533,14 @@ class TestCaseExecution(SQLModel, table=True):
         wrong; ``error`` means self-heal gave up and the testing itself
         never landed.  Storing this alongside ``status`` would create two
         sources of truth that a restart could put out of step.
+
+        Plain strings, not enum members, for the same reason
+        ``FindingSeverity.normalize`` returns one.
         """
         if self.status == TestCaseExecutionStatus.FAILED:
-            return FindingType.BUG
+            return FindingType.BUG.value
         if self.status == TestCaseExecutionStatus.ERROR:
-            return FindingType.ISSUE
+            return FindingType.ISSUE.value
         return None
 
     @property
@@ -531,10 +554,10 @@ class TestCaseExecution(SQLModel, table=True):
         before this feature are ``failed`` with no finding, and must not
         surface as an empty card.
 
-        The six required fields are coalesced because ``FindingBase``
-        declares them non-optional over nullable columns: a single ``None``
-        would fail response validation and 500 the *whole* run detail
-        response rather than just this card.  The task always writes them as
+        The five required fields below the title are coalesced because
+        ``FindingBase`` declares them non-optional over nullable columns: a
+        single ``None`` would fail response validation and 500 the *whole*
+        run detail response rather than just this card.  The task always writes them as
         a group, so this should be unreachable — but the blast radius is far
         out of proportion to the cost of a fallback.  ``environment`` is
         left alone: the response model already allows it to be null.

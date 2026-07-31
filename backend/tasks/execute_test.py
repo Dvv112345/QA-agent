@@ -161,7 +161,7 @@ def _issue_finding(test_case: TestCaseLike, attempts: int) -> dict[str, str]:
     perfectly well met, and nobody has been able to look.
     """
     return {
-        "finding_severity": FindingSeverity.MEDIUM,
+        "finding_severity": FindingSeverity.MEDIUM.value,
         "finding_title": f"Could not verify: {test_case.title}"[:_FINDING_TITLE_MAX_CHARS],
         "finding_steps_to_reproduce": test_case.steps[:_OUTPUT_MAX_CHARS],
         "finding_expected": test_case.expected_result[:_OUTPUT_MAX_CHARS],

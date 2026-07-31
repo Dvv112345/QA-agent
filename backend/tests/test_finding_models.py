@@ -112,3 +112,41 @@ class TestSeverityNormalization:
     def test_missing_value_becomes_medium(self):
         assert FindingSeverity.normalize(None) == FindingSeverity.MEDIUM
         assert FindingSeverity.normalize("") == FindingSeverity.MEDIUM
+
+    def test_returns_a_plain_string_never_an_enum_member(self):
+        """An enum member f-strings as 'FindingSeverity.MEDIUM' on 3.12, and
+        these values reach both prompt text and stored columns."""
+        assert f"{FindingSeverity.normalize('nonsense')}" == "medium"
+        assert f"{FindingSeverity.normalize('high')}" == "high"
+
+
+class TestFindingTypeNormalization:
+    """Same treatment as severity, for the same reason.
+
+    An unrecognised type counts toward neither ``bug_count`` nor
+    ``issue_count`` while still counting toward ``finding_count``, so the
+    run page would show numbers that do not add up.
+    """
+
+    def test_valid_values_pass_through(self):
+        for value in ("bug", "issue"):
+            assert FindingType.normalize(value) == value
+
+    def test_unknown_value_becomes_bug(self):
+        """Matches what record_finding already defaults to when the model
+        omits the field entirely."""
+        assert FindingType.normalize("defect") == FindingType.BUG
+
+    def test_missing_value_becomes_bug(self):
+        assert FindingType.normalize(None) == FindingType.BUG
+        assert FindingType.normalize("") == FindingType.BUG
+
+    def test_returns_a_plain_string_never_an_enum_member(self):
+        assert f"{FindingType.normalize('nonsense')}" == "bug"
+        assert f"{FindingType.normalize('issue')}" == "issue"
+
+
+class TestDerivedFindingTypeIsAPlainString:
+    def test_property_returns_plain_strings(self):
+        assert f"{_finished(TestCaseExecutionStatus.FAILED).finding_type}" == "bug"
+        assert f"{_finished(TestCaseExecutionStatus.ERROR).finding_type}" == "issue"
