@@ -15,12 +15,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from backend.config import MAX_AUTO_RETRIES, TEST_PLAN_FILE_MAX_CHARS
+from backend.config import MAX_AUTO_RETRIES
 from backend.database import new_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
@@ -29,16 +28,12 @@ from backend.models.database import (
     TestPlanStatus,
 )
 from backend.services import llm
-from backend.utils import github_utils
-from backend.utils.crypto import decrypt_token
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
 
 # Cap for the user-facing error summary stored on failed rows.
 _ERROR_SUMMARY_MAX_CHARS = 300
-
-_FILE_TRUNCATION_MARKER = "\n… (truncated)"
 
 
 def _now() -> datetime:
@@ -67,30 +62,6 @@ def _record_failure(session: Session, test_plan_id: int, exc: Exception) -> None
     plan.updated_at = _now()
     session.add(plan)
     session.commit()
-
-
-def _build_read_file(
-    file_tree: str, owner: str, repo: str, token: str | None
-) -> Callable[[str], str]:
-    """Executor for the LLM's read_file tool: path-validated, truncating,
-    never raising — errors go back to the model as strings it can react to."""
-    allowed_paths = set(file_tree.splitlines())
-
-    def read_file(path: str) -> str:
-        requested = (path or "").strip().lstrip("/")
-        if requested not in allowed_paths:
-            return f"ERROR: could not read '{requested}': path is not in the repository file tree."
-        try:
-            content = asyncio.run(github_utils.fetch_file(owner, repo, requested, token))
-        except github_utils.GitHubError as exc:
-            return f"ERROR: could not read '{requested}': {exc}"
-        if content is None:
-            return f"ERROR: could not read '{requested}': file not found."
-        if len(content) > TEST_PLAN_FILE_MAX_CHARS:
-            content = content[:TEST_PLAN_FILE_MAX_CHARS] + _FILE_TRUNCATION_MARKER
-        return content
-
-    return read_file
 
 
 def _serialize_plan(plan: TestPlan) -> str:
@@ -159,23 +130,15 @@ def generate_test_plan_task(test_plan_id: int) -> None:
                 )
             ]
 
-            read_file: Callable[[str], str] | None = None
-            if file_tree and sprint.repo:
-                owner, repo_name = github_utils.parse_github_url(sprint.repo.github_link)
-                token = (
-                    decrypt_token(sprint.repo.github_token) if sprint.repo.github_token else None
-                )
-                read_file = _build_read_file(file_tree, owner, repo_name, token)
-
-            def on_round() -> None:
-                # Heartbeat between LLM rounds so a live tool loop is never
-                # swept as a crashed worker.
-                plan.last_heartbeat = _now()
-                session.add(plan)
-                session.commit()
-
-            # Work-unit boundary before the (long) LLM loop.
-            on_round()
+            # Heartbeat immediately before the LLM call. Generation is a
+            # single completion now, so the gap from here to the write below
+            # is one request bounded by OPENAI_TIMEOUT — well inside
+            # HEARTBEAT_STALE_SECONDS. That is why no per-round callback is
+            # passed any more: there are no rounds, and a second stamp
+            # microseconds after this one would report nothing new.
+            plan.last_heartbeat = _now()
+            session.add(plan)
+            session.commit()
 
             is_revision = bool(plan.pending_feedback)
             if is_revision:
@@ -188,8 +151,6 @@ def generate_test_plan_task(test_plan_id: int) -> None:
                     file_tree=file_tree,
                     current_plan_json=_serialize_plan(plan),
                     feedback=plan.pending_feedback,
-                    read_file=read_file,
-                    on_round=on_round,
                 )
             else:
                 result = llm.generate_test_plan(
@@ -199,8 +160,6 @@ def generate_test_plan_task(test_plan_id: int) -> None:
                     test_env_content=test_env_content,
                     readme=readme,
                     file_tree=file_tree,
-                    read_file=read_file,
-                    on_round=on_round,
                 )
 
             # The LLM loop is the long wait — the row may have been failed

@@ -97,15 +97,12 @@ MAX_TEST_ENV_REVISION_ROUNDS: int = _get_int("MAX_TEST_ENV_REVISION_ROUNDS", 3)
 
 # ── Test planning ─────────────────────────────────────────────────────
 MAX_TEST_PLAN_FEEDBACK_ROUNDS: int = _get_int("MAX_TEST_PLAN_FEEDBACK_ROUNDS", 3)
-# Max read_file tool rounds per plan generation before a forced final answer.
-TEST_PLAN_TOOL_ROUNDS: int = _get_int("TEST_PLAN_TOOL_ROUNDS", 2)
-# Per-file character cap for repo files fetched by the tool loop.
-TEST_PLAN_FILE_MAX_CHARS: int = _get_int("TEST_PLAN_FILE_MAX_CHARS", 20000)
-# RQ job_timeout for plan jobs. Must cover a worst-case tool loop (up to
-# TEST_PLAN_TOOL_ROUNDS + 1 LLM calls × OPENAI_TIMEOUT plus GitHub fetches).
-# Generous at the default round count, which fits inside JOB_TIMEOUT on its
-# own — kept separate and roomy so raising TEST_PLAN_TOOL_ROUNDS does not
-# silently start timing plan jobs out.
+# Plan generation deliberately has no read_file tool and so no round budget:
+# a plan defines what "correct" means, and reading the implementation is
+# where that judgment drifts into describing what the code already does.
+# RQ job_timeout for plan jobs. Generation is a single LLM call bounded by
+# OPENAI_TIMEOUT, so this is vestigial headroom rather than a sized budget —
+# kept because it costs nothing and plan jobs may grow again.
 TEST_PLAN_JOB_TIMEOUT: int = _get_int("TEST_PLAN_JOB_TIMEOUT", 900)
 
 # ── Exploratory testing ───────────────────────────────────────────────
@@ -166,10 +163,13 @@ PENDING_JOB_STALE_SECONDS: int = _get_int("PENDING_JOB_STALE_SECONDS", 30)
 # script-bug verdict is given up on (marked "error", not "failed").
 MAX_SCRIPT_FIX_ROUNDS: int = _get_int("MAX_SCRIPT_FIX_ROUNDS", 3)
 # Max read_file tool rounds per test-script generation/diagnosis call
-# before a forced final answer. Sized independently of TEST_PLAN_TOOL_ROUNDS:
-# a script targets one concrete test case, and diagnosing a failing one is
-# the call that most needs room to look around.
+# before a forced final answer. This is the only stage with repo access:
+# it resolves the endpoint paths, parameters, and response shapes a script
+# needs, which is also why diagnosing a failing script gets room to look
+# around.
 TEST_EXECUTION_TOOL_ROUNDS: int = _get_int("TEST_EXECUTION_TOOL_ROUNDS", 5)
+# Per-file character cap for repo files fetched by that tool loop.
+TEST_EXECUTION_FILE_MAX_CHARS: int = _get_int("TEST_EXECUTION_FILE_MAX_CHARS", 20000)
 # Wall-clock timeout (seconds) for a single test-script subprocess run.
 SCRIPT_EXECUTION_TIMEOUT: int = _get_int("SCRIPT_EXECUTION_TIMEOUT", 60)
 # RQ job_timeout for test-execution jobs. Must cover many cases, each with

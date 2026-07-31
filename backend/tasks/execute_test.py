@@ -27,7 +27,7 @@ from backend.config import (
     MAX_AUTO_RETRIES,
     MAX_SCRIPT_FIX_ROUNDS,
     SCRIPT_EXECUTION_TIMEOUT,
-    TEST_PLAN_FILE_MAX_CHARS,
+    TEST_EXECUTION_FILE_MAX_CHARS,
 )
 from backend.database import new_session
 from backend.models.database import (
@@ -96,8 +96,10 @@ def _build_read_file(
     """Executor for the LLM's read_file tool: path-validated, truncating,
     never raising — errors go back to the model as strings it can react to.
 
-    Duplicated from ``tasks/generate_test_plan.py`` rather than shared
-    (Decision 4) — one file per task type, self-contained.
+    The only repo access in the pipeline. Test planning deliberately has
+    none, so the interface details a script needs — real endpoint paths,
+    parameters, response shapes — are resolved here, at the point of use and
+    against a snapshot refreshed when the run was created.
     """
     allowed_paths = set(file_tree.splitlines())
 
@@ -111,8 +113,8 @@ def _build_read_file(
             return f"ERROR: could not read '{requested}': {exc}"
         if content is None:
             return f"ERROR: could not read '{requested}': file not found."
-        if len(content) > TEST_PLAN_FILE_MAX_CHARS:
-            content = content[:TEST_PLAN_FILE_MAX_CHARS] + _FILE_TRUNCATION_MARKER
+        if len(content) > TEST_EXECUTION_FILE_MAX_CHARS:
+            content = content[:TEST_EXECUTION_FILE_MAX_CHARS] + _FILE_TRUNCATION_MARKER
         return content
 
     return read_file

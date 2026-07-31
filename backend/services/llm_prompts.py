@@ -117,41 +117,42 @@ def requirements_section(requirements: list[tuple[str, str]]) -> str:
 
 # ── Test plans ────────────────────────────────────────────────────────
 
-# OpenAI function schema for the repo file-reading tool offered to the model.
-READ_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "Read a file from the repository under test. The path must be one "
-            "of the paths listed in the provided repository file tree."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Repository-relative file path."}
-            },
-            "required": ["path"],
-        },
-    },
-}
-
-
 TEST_PLAN_BAR = (
     "Rate the requirement's testing complexity as low, medium, or high and "
     "scale the plan accordingly: a trivial requirement needs only a few "
     "focused checks, while a complex one needs thorough coverage including "
     "edge and negative cases. Base every case's steps and expected result on "
     "what the requirement itself says should happen — the requirement is the "
-    "source of truth, not the current implementation. Do not base expected "
-    "result on the code returned by read_file. Write steps a QA engineer can execute "
-    "concretely against the described test environment. The other "
+    "source of truth, not the current implementation. The other "
     "requirements listed are scope boundaries only — do not write test "
-    "cases for them. Use the read_file tool with paths taken from the "
-    "provided file tree only to confirm the real endpoint paths, "
-    "request/response shapes, and parameter names needed to phrase concrete "
-    "steps — never to decide what the correct or expected behavior should "
-    "be. "
+    "cases for them.\n\n"
+    "EACH TEST CASE BECOMES ONE AUTOMATED SCRIPT. A later step turns every "
+    "case you write into a single self-contained Playwright (Python) script "
+    "and runs it against the test environment, so write cases that can "
+    "actually be executed that way:\n"
+    "- expected_result must be something a script can check — a specific "
+    "value, message, state, status, or record — never a subjective judgment "
+    "like 'the page looks right' or 'performance is acceptable'.\n"
+    "- preconditions must be establishable by the script itself using only "
+    "the test environment access described above. Never assume data someone "
+    "set up by hand, and never require manual or out-of-band steps.\n"
+    "- cases must be repeatable: the same case will be run more than once "
+    "against the same environment, and the script seeds and cleans up its "
+    "own data, so avoid cases that only work once or depend on a pristine "
+    "database.\n"
+    "- do not write cases needing access the test environment description "
+    "does not provide.\n"
+    "Skip checks that no script could make. Exploratory testing covers that "
+    "ground separately, and a case that cannot be automated becomes a script "
+    "that only ever errors.\n\n"
+    "SAY WHAT TO VERIFY, NOT HOW TO REACH IT. Write steps behaviourally — "
+    "'sign in as a standard user', 'submit the form with an empty required "
+    "field'. Do not name endpoint paths, URLs, CSS selectors, database "
+    "tables, or other implementation details: you have not seen the code, "
+    "and the step that generates the script reads the repository to resolve "
+    "them against what is actually there. A path you guess here would be "
+    "wrong more often than not, and would pin the plan to an implementation "
+    "the requirement never mentioned. "
 )
 
 TEST_PLAN_JSON_SHAPE = (
@@ -212,6 +213,32 @@ FINDING_SEVERITY_BAR = (
 
 
 # ── Test execution ────────────────────────────────────────────────────
+
+# OpenAI function schema for the repo file-reading tool offered to the model.
+#
+# Script generation and diagnosis are its only consumers. Test planning
+# deliberately has no tool access: a plan defines what "correct" means, and
+# handing the model the implementation is exactly where that judgment gets
+# anchored to what the code already does. The interface details a script
+# needs are resolved here instead, against a fresher snapshot and with a
+# larger round budget.
+READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": (
+            "Read a file from the repository under test. The path must be one "
+            "of the paths listed in the provided repository file tree."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Repository-relative file path."}
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 ENV_VARS_SYSTEM_PROMPT = (
     "You are a senior QA engineer extracting environment access details from a "
