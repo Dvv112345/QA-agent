@@ -286,11 +286,10 @@ class TestFeedback:
         [
             TestPlanStatus.PENDING,
             TestPlanStatus.GENERATING,
-            TestPlanStatus.APPROVED,
             TestPlanStatus.FAILED,
         ],
     )
-    async def test_422_unless_draft(self, async_client, db_session, stub_queue, status):
+    async def test_422_unless_draft_or_approved(self, async_client, db_session, stub_queue, status):
         sprint, requirements = _seed_locked_sprint(db_session)
         plan = _seed_test_plan(db_session, requirements[0], status=status)
 
@@ -299,7 +298,7 @@ class TestFeedback:
         )
 
         assert resp.status_code == 422
-        assert "Only draft plans can receive feedback." in resp.json()["detail"]
+        assert "Only draft or approved plans can receive feedback." in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_422_past_feedback_cap(self, async_client, db_session, stub_queue):
@@ -373,18 +372,17 @@ class TestEdit:
         [
             TestPlanStatus.PENDING,
             TestPlanStatus.GENERATING,
-            TestPlanStatus.APPROVED,
             TestPlanStatus.FAILED,
         ],
     )
-    async def test_422_unless_draft(self, async_client, db_session, stub_queue, status):
+    async def test_422_unless_draft_or_approved(self, async_client, db_session, stub_queue, status):
         sprint, requirements = _seed_locked_sprint(db_session)
         plan = _seed_test_plan(db_session, requirements[0], status=status)
 
         resp = await async_client.patch(f"/api/test-plans/{plan.id}", json=_edit_body())
 
         assert resp.status_code == 422
-        assert "Only draft plans can be edited." in resp.json()["detail"]
+        assert "Only draft or approved plans can be edited." in resp.json()["detail"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -510,11 +508,10 @@ class TestApprove:
         [
             TestPlanStatus.PENDING,
             TestPlanStatus.GENERATING,
-            TestPlanStatus.APPROVED,
             TestPlanStatus.FAILED,
         ],
     )
-    async def test_422_unless_draft(self, async_client, db_session, status):
+    async def test_422_unless_draft_or_approved(self, async_client, db_session, status):
         sprint, requirements = _seed_locked_sprint(db_session)
         plan = _seed_test_plan(db_session, requirements[0], status=status)
 
@@ -524,7 +521,8 @@ class TestApprove:
         assert "Only draft plans can be approved." in resp.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_draft_to_approved_is_terminal(self, async_client, db_session, stub_queue):
+    async def test_approved_plan_stays_editable(self, async_client, db_session, stub_queue):
+        """Approval gates *running*, not editing — a reviewer can still fix it."""
         sprint, requirements = _seed_locked_sprint(db_session)
         plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.DRAFT)
 
@@ -534,16 +532,62 @@ class TestApprove:
         assert resp.json()["status"] == "approved"
         assert _reload(db_session, plan.id).status == TestPlanStatus.APPROVED
 
-        # terminal: second approve, feedback, and edit all 422
+        # Approving twice is still meaningless.
         assert (await async_client.post(f"/api/test-plans/{plan.id}/approve")).status_code == 422
-        assert (
-            await async_client.post(
-                f"/api/test-plans/{plan.id}/feedback", json={"feedback": "More."}
-            )
-        ).status_code == 422
+        # Editing and feedback are open again, and both return it to draft.
         assert (
             await async_client.patch(f"/api/test-plans/{plan.id}", json=_edit_body())
-        ).status_code == 422
+        ).status_code == 200
+        assert _reload(db_session, plan.id).status == TestPlanStatus.DRAFT
+
+    @pytest.mark.asyncio
+    async def test_editing_an_approved_plan_requires_reapproval(
+        self, async_client, db_session, stub_queue
+    ):
+        sprint, requirements = _seed_locked_sprint(db_session)
+        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.APPROVED)
+        _seed_test_case(db_session, plan, position=0, title="Original")
+
+        resp = await async_client.patch(f"/api/test-plans/{plan.id}", json=_edit_body())
+
+        assert resp.status_code == 200
+        row = _reload(db_session, plan.id)
+        assert row.status == TestPlanStatus.DRAFT
+        assert row.content_revision == 1  # runs against the old cases are now outdated
+        assert row.revision_count == 0  # direct edits never count as LLM rounds
+
+    @pytest.mark.asyncio
+    async def test_feedback_on_an_approved_plan_is_queued(
+        self, async_client, db_session, stub_queue
+    ):
+        sprint, requirements = _seed_locked_sprint(db_session)
+        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.APPROVED)
+
+        resp = await async_client.post(
+            f"/api/test-plans/{plan.id}/feedback", json={"feedback": "Add negative cases."}
+        )
+
+        assert resp.status_code == 200
+        assert _reload(db_session, plan.id).status == TestPlanStatus.PENDING
+        assert stub_queue.enqueued_plans == [plan.id]
+
+    @pytest.mark.asyncio
+    async def test_edit_blocked_while_a_run_is_in_flight(
+        self, async_client, db_session, stub_queue
+    ):
+        from backend.models.database import TestExecutionStatus
+        from backend.tests.test_sprints import _seed_test_execution, _seed_test_run
+
+        sprint, requirements = _seed_locked_sprint(db_session)
+        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.APPROVED)
+        run = _seed_test_run(db_session, sprint)
+        _seed_test_execution(db_session, run, requirements[0], status=TestExecutionStatus.RUNNING)
+
+        resp = await async_client.patch(f"/api/test-plans/{plan.id}", json=_edit_body())
+
+        assert resp.status_code == 422
+        assert "in progress" in resp.json()["detail"]
+        assert _reload(db_session, plan.id).status == TestPlanStatus.APPROVED
 
 
 # ── POST /api/sprints/{id}/test-plans/approve-all ────────────────────

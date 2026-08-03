@@ -185,6 +185,10 @@ def generate_test_plan_task(test_plan_id: int) -> None:
 
             plan.complexity = result.complexity
             plan.summary = result.summary
+            # The case set is being rewritten, so any run grounded in the
+            # old one is outdated. Harmless on initial generation (nothing
+            # can have run against an empty plan yet).
+            plan.content_revision += 1
             # Archive the superseded cases instead of deleting them — an
             # earlier run's TestCaseExecution rows still read from them.
             for existing in plan.cases:

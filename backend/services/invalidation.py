@@ -141,6 +141,21 @@ def invalidate_for_requirement_add(session: Session, sprint: Sprint) -> None:
     unconfirm_environment(session, sprint)
 
 
+def invalidate_for_environment_change(session: Session, sprint: Sprint) -> None:
+    """The access description (or its variables) changed: every plan goes.
+
+    Sprint-wide rather than per-requirement because every plan in the sprint
+    was generated with the old description in its prompt.
+
+    Callers bump ``content_revision`` themselves rather than having it done
+    here: the variables edit must bump it *without* stamping ``updated_at``,
+    which on this row means "last LLM check" and is what
+    ``requirements_stale`` compares against.
+    """
+    for requirement in sprint.requirements:
+        remove_test_plan(session, requirement.test_plan)
+
+
 def invalidate_for_requirement_delete(session: Session, requirement: Requirement) -> None:
     """Remove a requirement, preserving any run that already used it.
 

@@ -242,7 +242,8 @@ class TestSubmitTestEnvironment:
         assert llm_stub.check_calls == []
 
     @pytest.mark.asyncio
-    async def test_422_once_confirmed(self, async_client, db_session, llm_stub):
+    async def test_resubmit_allowed_once_confirmed(self, async_client, db_session, llm_stub):
+        """Confirmation is no longer terminal — a resubmit re-runs the check."""
         sprint = _seed_complete_sprint(db_session)
         _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
 
@@ -250,8 +251,52 @@ class TestSubmitTestEnvironment:
             f"/api/sprints/{sprint.id}/test-environment", json={"content": "New text."}
         )
 
-        assert resp.status_code == 422
-        assert "confirmed" in resp.json()["detail"]
+        assert resp.status_code == 200
+        assert resp.json()["status"] != TestEnvironmentStatus.CONFIRMED
+        assert llm_stub.check_calls  # the check actually ran
+
+    @pytest.mark.asyncio
+    async def test_content_change_removes_every_plan(self, async_client, db_session, llm_stub):
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        plan_ids = [
+            _seed_test_plan(db_session, requirement, status=TestPlanStatus.APPROVED).id
+            for requirement in sprint.requirements
+        ]
+        assert plan_ids
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": "Different access."}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert all(db_session.get(TestPlan, plan_id) is None for plan_id in plan_ids)
+
+    @pytest.mark.asyncio
+    async def test_rechecking_the_same_text_keeps_the_plans(
+        self, async_client, db_session, llm_stub
+    ):
+        """The Re-check button resubmits unchanged text — not a content change."""
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is not None
 
     @pytest.mark.asyncio
     async def test_422_on_blank_content(self, async_client, db_session, llm_stub):
@@ -683,7 +728,9 @@ class TestEditTestEnvironmentVars:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_422_once_confirmed(self, async_client, db_session):
+    async def test_edit_allowed_once_confirmed_and_reopens_for_confirmation(
+        self, async_client, db_session
+    ):
         sprint = _seed_complete_sprint(db_session)
         row = _seed_test_env(
             db_session,
@@ -695,8 +742,65 @@ class TestEditTestEnvironmentVars:
         resp = await async_client.patch(
             f"/api/test-environment/{row.id}/env-vars", json={"variables": {"A": "b"}}
         )
-        assert resp.status_code == 422
-        assert "locked" in resp.json()["detail"].lower()
+
+        assert resp.status_code == 200
+        # READY, never needs_info: no LLM call ran, so there is no question.
+        assert resp.json()["status"] == TestEnvironmentStatus.READY
+
+    @pytest.mark.asyncio
+    async def test_edit_removes_plans_but_does_not_touch_updated_at(self, async_client, db_session):
+        """`updated_at` means "last LLM check" here — stamping it on a direct
+        edit would silently clear a real `requirements_stale` flag."""
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps({"BASE_URL": "x"}),
+        )
+        before = row.updated_at
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": {"A": "b"}}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is None
+        assert db_session.get(type(row), row.id).updated_at == before
+        assert db_session.get(type(row), row.id).content_revision == 1
+
+    @pytest.mark.asyncio
+    async def test_identical_variables_change_nothing(self, async_client, db_session):
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        variables = {"BASE_URL": "x"}
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps(variables),
+        )
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+
+        resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": variables}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == TestEnvironmentStatus.CONFIRMED
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is not None
 
     @pytest.mark.asyncio
     async def test_422_on_empty_variables(self, async_client, db_session):

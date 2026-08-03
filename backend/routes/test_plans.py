@@ -20,6 +20,7 @@ from backend.models.types import (
     TestPlanFeedbackRequest,
     TestPlanResponse,
 )
+from backend.services import invalidation
 from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
 
@@ -49,6 +50,22 @@ def _ensure_sprint_active(sprint: Sprint | None) -> None:
         raise HTTPException(
             status_code=422,
             detail="Sprint is finished — test plans can no longer be modified.",
+        )
+
+
+def _ensure_no_work_in_flight(plan: TestPlan) -> None:
+    """Refuse a plan edit while its own requirement has work in progress."""
+    requirement = plan.requirement
+    if requirement is None:
+        return
+    blocked = invalidation.work_in_flight([requirement])
+    if blocked:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This requirement has a test run in progress — "
+                "wait for it to finish before editing the plan."
+            ),
         )
 
 
@@ -162,8 +179,10 @@ async def submit_feedback(
     plan = _get_plan_or_404(session, plan_id)
     _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
 
-    if plan.status != TestPlanStatus.DRAFT:
-        raise HTTPException(status_code=422, detail="Only draft plans can receive feedback.")
+    if plan.status not in (TestPlanStatus.DRAFT, TestPlanStatus.APPROVED):
+        raise HTTPException(
+            status_code=422, detail="Only draft or approved plans can receive feedback."
+        )
     if plan.feedback_cap_reached:
         raise HTTPException(
             status_code=422,
@@ -172,6 +191,8 @@ async def submit_feedback(
     feedback = body.feedback.strip()
     if not feedback:
         raise HTTPException(status_code=422, detail="Feedback cannot be empty.")
+
+    _ensure_no_work_in_flight(plan)
 
     plan.pending_feedback = feedback
     plan.status = TestPlanStatus.PENDING
@@ -193,8 +214,8 @@ async def edit_test_plan(
     plan = _get_plan_or_404(session, plan_id)
     _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
 
-    if plan.status != TestPlanStatus.DRAFT:
-        raise HTTPException(status_code=422, detail="Only draft plans can be edited.")
+    if plan.status not in (TestPlanStatus.DRAFT, TestPlanStatus.APPROVED):
+        raise HTTPException(status_code=422, detail="Only draft or approved plans can be edited.")
 
     if body.complexity not in _VALID_COMPLEXITIES:
         raise HTTPException(status_code=422, detail="complexity must be one of: low, medium, high.")
@@ -214,8 +235,14 @@ async def edit_test_plan(
         if not case.case_type.strip():
             raise HTTPException(status_code=422, detail="Every test case needs a non-empty type.")
 
+    _ensure_no_work_in_flight(plan)
+
     plan.complexity = body.complexity
     plan.summary = body.summary
+    # The case set changed, so any run grounded in the old one is outdated.
+    plan.content_revision += 1
+    # An edited plan needs approving again before it can be run.
+    plan.status = TestPlanStatus.DRAFT
     # Supersede rather than delete: a run that already executed these cases
     # reads its titles and steps straight off these rows.
     for existing in plan.cases:

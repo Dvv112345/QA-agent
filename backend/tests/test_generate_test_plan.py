@@ -210,6 +210,8 @@ class TestRevision:
         assert old_case_row.archived is True
         assert [c.title for c in row.cases] == ["Valid login", "Invalid login"]
         assert old_case_id not in {c.id for c in row.cases}
+        # A rewritten case set makes any run against the old one outdated.
+        assert row.content_revision == 1
         assert llm_stub.generate_calls == []
 
     def test_current_plan_json_and_feedback_passed(self, db_session, llm_stub, fetch_stub):

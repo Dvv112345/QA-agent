@@ -26,7 +26,7 @@ from backend.models.types import (
     TestEnvironmentSubmitRequest,
     TestEnvironmentVarsEditRequest,
 )
-from backend.services import llm
+from backend.services import invalidation, llm
 from backend.services.llm import LLMError
 from backend.utils.auth import verify_auth
 from backend.utils.readme_utils import resolve_readme
@@ -66,6 +66,23 @@ def _ensure_sprint_active(sprint: Sprint) -> None:
 def _ensure_requirements_complete(sprint: Sprint) -> None:
     if not sprint.requirements_complete:
         raise HTTPException(status_code=422, detail=_REQUIREMENTS_INCOMPLETE_ERROR)
+
+
+def _ensure_no_work_in_flight(sprint: Sprint) -> None:
+    """Refuse an environment edit while any worker holds a plan or run.
+
+    Sprint-wide, unlike the requirement guard: this cascade removes *every*
+    plan in the sprint.
+    """
+    blocked = invalidation.work_in_flight(list(sprint.requirements))
+    if blocked:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "These requirements have work in progress — wait for it to "
+                f"finish before changing the environment: {', '.join(blocked)}."
+            ),
+        )
 
 
 def _touch(test_env: TestEnvironmentAccess) -> None:
@@ -134,11 +151,6 @@ async def submit_test_environment(
     _ensure_requirements_complete(sprint)
 
     test_env = sprint.test_environment
-    if test_env is not None and test_env.status == TestEnvironmentStatus.CONFIRMED:
-        raise HTTPException(
-            status_code=422,
-            detail="The test environment has been confirmed and can no longer be edited.",
-        )
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
@@ -159,8 +171,13 @@ async def submit_test_environment(
             content=content,
             original_content=content,
         )
-    else:
+    elif test_env.content != content:
+        # Re-checking the same text (the "Re-check" button) is not a content
+        # change and must not destroy the sprint's plans.
         test_env.content = content
+        test_env.content_revision += 1
+        _ensure_no_work_in_flight(sprint)
+        invalidation.invalidate_for_environment_change(session, sprint)
 
     if result.sufficient:
         test_env.status = TestEnvironmentStatus.READY
@@ -251,11 +268,6 @@ async def edit_test_environment_vars(
     sprint = test_env.sprint
     _ensure_sprint_active(sprint)
 
-    if test_env.status == TestEnvironmentStatus.CONFIRMED:
-        raise HTTPException(
-            status_code=422,
-            detail="Environment variables are locked once the test environment is confirmed.",
-        )
     if not body.variables:
         raise HTTPException(status_code=422, detail="At least one variable is required.")
     for key, value in body.variables.items():
@@ -264,7 +276,23 @@ async def edit_test_environment_vars(
                 status_code=422, detail="Variable names and values cannot be blank."
             )
 
-    test_env.env_vars_json = json.dumps(body.variables)
+    new_json = json.dumps(body.variables)
+    if new_json != test_env.env_vars_json:
+        _ensure_no_work_in_flight(sprint)
+        test_env.env_vars_json = new_json
+        # A variables edit changes what a run executes against, so it is a
+        # content change for staleness purposes and every plan goes.
+        test_env.content_revision += 1
+        invalidation.invalidate_for_environment_change(session, sprint)
+        if test_env.status == TestEnvironmentStatus.CONFIRMED:
+            # Back for re-confirmation, but never to needs_info: no LLM call
+            # ran, so there is no clarifying question to answer.
+            test_env.status = TestEnvironmentStatus.READY
+
+    # Deliberately no _touch(): `updated_at` on this row means "last LLM
+    # check", and that is what `requirements_stale` compares against.
+    # Stamping it here would silently clear a real staleness flag when no
+    # check has actually happened.
     session.add(test_env)
     session.commit()
     session.refresh(test_env)
