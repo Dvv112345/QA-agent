@@ -144,6 +144,19 @@ export default function TestEnvironmentPage() {
 
   const startEditing = () => {
     if (!testEnv) return
+    // Resubmitting a confirmed description removes every plan in the sprint,
+    // so say so before the textarea opens. Frontend-only: the API stays
+    // permissive, and this app is its only client.
+    if (
+      testEnv.status === 'confirmed' &&
+      !window.confirm(
+        'Changing the confirmed access description will delete every test plan in this ' +
+          'sprint and require re-confirming. Existing test runs are kept, but marked as ' +
+          'out of date. Continue?',
+      )
+    ) {
+      return
+    }
     setDraft(testEnv.content)
     setEditing(true)
   }
@@ -154,7 +167,11 @@ export default function TestEnvironmentPage() {
 
   const active = sprint.active
   const guarded = !testEnv && (!active || !sprint.requirements_complete)
-  const readOnly = testEnv !== null && (testEnv.status === 'confirmed' || !active)
+  // Only a finished sprint makes this read-only now. Confirmation used to
+  // as well, but a confirmed environment is editable — resubmitting re-runs
+  // the check and removes the sprint's plans.
+  const readOnly = testEnv !== null && !active
+  const confirmed = testEnv?.status === 'confirmed'
   const wasRewritten = testEnv !== null && testEnv.content !== testEnv.original_content
 
   return (
@@ -292,6 +309,12 @@ export default function TestEnvironmentPage() {
               </button>
             </div>
           )}
+          {confirmed && active && (
+            <p className="test-env-cascade-notice">
+              Editing this description will delete every test plan in the sprint and require
+              re-confirming. Existing test runs are kept, but marked as out of date.
+            </p>
+          )}
         </>
       )}
 
@@ -373,7 +396,7 @@ export default function TestEnvironmentPage() {
                   </li>
                 ))}
               </ul>
-              {testEnv.status !== 'confirmed' && (
+              {!readOnly && (
                 <button
                   type="button"
                   className="btn btn-secondary"

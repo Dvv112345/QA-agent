@@ -21,8 +21,10 @@ const STATUS_LABELS: Record<RequirementStatus, string> = {
 interface Props {
   requirement: RequirementResponse
   sprintActive: boolean
-  /** Requirement set frozen (test environment confirmed) — hides Remove. */
-  locked?: boolean
+  /** Whether editing or removing this requirement will destroy a test plan
+      and send the test environment back for re-checking. Drives the
+      confirmation copy — the cascade itself is the backend's decision. */
+  cascades?: boolean
   onUpdated: (requirement: RequirementResponse) => void
   onRemoved: (id: number) => void
 }
@@ -30,7 +32,7 @@ interface Props {
 export default function RequirementCard({
   requirement,
   sprintActive,
-  locked = false,
+  cascades = false,
   onUpdated,
   onRemoved,
 }: Props) {
@@ -72,6 +74,20 @@ export default function RequirementCard({
   const handleRestart = () => runAction(restartRequirement(requirement.id))
 
   const startEditing = () => {
+    // Editing a confirmed requirement discards work downstream of it, so
+    // say what will be lost before the textarea opens rather than after
+    // the save. Frontend-only by design: the API stays permissive.
+    if (
+      cascades &&
+      status === 'confirmed' &&
+      !window.confirm(
+        `Editing "${requirement.name}" will delete its test plan and send the test ` +
+          'environment back for re-checking. Existing test runs are kept, but marked ' +
+          'as out of date. Continue?',
+      )
+    ) {
+      return
+    }
     setDraft(requirement.description)
     setEditing(true)
   }
@@ -83,7 +99,11 @@ export default function RequirementCard({
   }
 
   const handleRemove = () => {
-    if (!window.confirm(`Remove requirement "${requirement.name}"?`)) return
+    const warning = cascades
+      ? `Remove requirement "${requirement.name}"? Its test plan will be deleted. ` +
+        'Existing test runs are kept and marked as out of date.'
+      : `Remove requirement "${requirement.name}"?`
+    if (!window.confirm(warning)) return
     setBusy(true)
     setError(null)
     deleteRequirement(requirement.id)
@@ -194,7 +214,9 @@ export default function RequirementCard({
                   Confirm
                 </button>
               )}
-              {(status === 'needs_clarification' || status === 'ready') && (
+              {(status === 'needs_clarification' ||
+                status === 'ready' ||
+                status === 'confirmed') && (
                 <button className="btn btn-secondary" onClick={startEditing} disabled={busy}>
                   Edit
                 </button>
@@ -204,17 +226,15 @@ export default function RequirementCard({
                   Restart
                 </button>
               )}
-              {!locked && (
-                <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
-                  Remove
-                </button>
-              )}
+              <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
+                Remove
+              </button>
             </div>
           )}
         </>
       )}
 
-      {sprintActive && inProgress && !locked && (
+      {sprintActive && inProgress && (
         <div className="requirement-card-actions">
           <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
             Remove

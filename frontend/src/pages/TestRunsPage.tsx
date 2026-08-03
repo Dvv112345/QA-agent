@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
+import OutdatedBadge from '../components/OutdatedBadge'
 import RunTestModal from '../components/RunTestModal'
 import { fetchExploratoryRuns, fetchSprint, fetchTestRuns } from '../services/api'
 import type { ExploratoryRunResponse, SprintResponse, TestRunResponse } from '../types'
@@ -138,7 +139,7 @@ export default function TestRunsPage() {
           <section className="test-runs-section">
             <div className="test-runs-section-header">
               <h2>Exploratory Sessions</h2>
-              {active && (
+              {active && sprint.test_plans_complete && (
                 <button className="btn btn-primary" onClick={() => setShowCharterModal(true)}>
                   Start exploratory testing
                 </button>
@@ -160,6 +161,7 @@ export default function TestRunsPage() {
                         <span className={`run-badge run-badge-${run.status}`}>
                           {EXPLORATORY_STATUS_LABELS[run.status] ?? run.status}
                         </span>
+                        <OutdatedBadge run={run} />
                       </div>
                       <div className="test-run-row-meta">
                         <time>{new Date(run.created_at).toLocaleString()}</time>
@@ -175,7 +177,7 @@ export default function TestRunsPage() {
           <section className="test-runs-section">
             <div className="test-runs-section-header">
               <h2>Scripted Test Runs</h2>
-              {active && (
+              {active && sprint.test_plans_complete && (
                 <button className="btn btn-primary" onClick={() => setShowRunModal(true)}>
                   Run new test
                 </button>
@@ -196,6 +198,7 @@ export default function TestRunsPage() {
                         <span className={`run-badge run-badge-${run.status}`}>
                           {STATUS_LABELS[run.status] ?? run.status}
                         </span>
+                        <OutdatedBadge run={run} />
                       </div>
                       <div className="test-run-row-meta">
                         <time>{new Date(run.created_at).toLocaleString()}</time>

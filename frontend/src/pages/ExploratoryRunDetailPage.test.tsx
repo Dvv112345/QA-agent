@@ -35,6 +35,8 @@ function makeRun(
     status: 'completed',
     summary: 'Export is broadly sound.',
     error: null,
+    outdated_reasons: [],
+    requirement_deleted: false,
     base_url_env_vars: ['APP_URL'],
     sessions: [
       {

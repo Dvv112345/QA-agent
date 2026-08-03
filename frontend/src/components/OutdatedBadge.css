@@ -1,0 +1,27 @@
+.outdated-badge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.outdated-chip {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  border: 1px solid #d9a441;
+  background: #fdf6e6;
+  color: #7a5300;
+}
+
+/* A deleted or rewritten requirement is the most consequential of the
+   three — the run may no longer be testing anything that exists. */
+.outdated-chip-requirement {
+  border-color: #c98a8a;
+  background: #fbeceb;
+  color: #8a2b23;
+}

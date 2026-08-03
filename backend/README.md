@@ -1,6 +1,6 @@
 # QA Agent Backend
 
-FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM, which also extracts the access details into structured, editable environment variables — and confirming it locks the sprint's requirement set. Next, an LLM generates a test plan per requirement on the same worker infrastructure — grounded in the requirement rather than the implementation, and written for automated execution; each draft plan goes through a capped feedback loop or uncapped direct edit until approved. Finally, running the approved plans generates (or reuses) a Playwright script per test case, reading repository files through a bounded tool loop to get real endpoints and response shapes right, executes it in a subprocess against the confirmed environment, and self-heals script bugs via an LLM diagnosis loop — stopping as soon as a failure looks like a genuine application bug and reporting it as a structured finding, in the same shape exploratory testing produces.
+FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM, which also extracts the access details into structured, editable environment variables — and confirming it opens the test-planning stage. Next, an LLM generates a test plan per requirement on the same worker infrastructure — grounded in the requirement rather than the implementation, and written for automated execution; each draft plan goes through a capped feedback loop or uncapped direct edit until approved. Finally, running the approved plans generates (or reuses) a Playwright script per test case, reading repository files through a bounded tool loop to get real endpoints and response shapes right, executes it in a subprocess against the confirmed environment, and self-heals script bugs via an LLM diagnosis loop — stopping as soon as a failure looks like a genuine application bug and reporting it as a structured finding, in the same shape exploratory testing produces. Every confirmed artifact stays editable: correcting a requirement removes its test plan and sends the environment back for re-checking, changing the environment removes the sprint's plans, and editing an approved plan returns it to draft. Test runs that already executed are never deleted — they are kept and marked as out of date, naming which artifact moved.
 
 ## Quick Start
 
@@ -168,14 +168,14 @@ Create a sprint linked to a repo. Refreshes repo metadata from GitHub and captur
   "repo": { "id": 1, "name": "owner/repo", "...": "..." },
   "requirements_complete": false,
   "has_test_environment_submission": false,
-  "requirements_locked": false,
+  "environment_confirmed": false,
   "has_test_plans": false,
   "test_plans_complete": false,
   "has_test_runs": false
 }
 ```
 
-The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `requirements_locked` (the test environment is confirmed, freezing the requirement set), `has_test_plans` (≥1 requirement has a test-plan row), `test_plans_complete` (every requirement has an `approved` plan), and `has_test_runs` (≥1 test run has been submitted).
+The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `environment_confirmed` (the test environment is confirmed — the precondition for generating test plans), `has_test_plans` (≥1 requirement has a test-plan row), `test_plans_complete` (every requirement has an `approved` plan), and `has_test_runs` (≥1 test run has been submitted).
 
 **Errors:** 404 (repo not found), 422 (empty name, deactivated repo, invalid README, or no README available), 502 (GitHub API failure).
 
@@ -199,7 +199,7 @@ Requirements belong to a sprint and carry a lifecycle status: `pending → analy
 
 #### `POST /api/sprints/{sprint_id}/requirements`
 
-Create a batch of requirements (JSON body: `[{ "name": "...", "description": "..." }, …]`). Rows start `pending` and are enqueued for analysis. **Errors:** 404 (sprint), 422 (empty list, blank fields, finished sprint, or requirements locked by a confirmed test environment).
+Create a batch of requirements (JSON body: `[{ "name": "...", "description": "..." }, …]`). Rows start `pending` and are enqueued for analysis. Adding a requirement to a sprint whose test environment is already `confirmed` sends that environment back to `ready` for re-checking — a new requirement may need access the confirmed description never covered. **Errors:** 404 (sprint), 422 (empty list, blank fields, finished sprint).
 
 #### `POST /api/sprints/{sprint_id}/requirements/from-prd`
 
@@ -215,7 +215,7 @@ Upload a PRD document and have an LLM split it into requirements — the alterna
 
 Re-uploading a PRD **replaces** the previous upload's `from_prd` rows (in the same transaction as the new inserts); manually entered requirements are never touched. Every failure — invalid file, unreadable/empty document, text over `PRD_MAX_CHARS`, zero or more than `MAX_PRD_REQUIREMENTS` extracted requirements, LLM failure — happens before that transaction, so a failed upload never destroys existing requirements. When `STORE_OFFLINE=true` the original file is saved to the sprint directory as `PRD<ext>` (best-effort).
 
-**Errors:** 404 (sprint), 422 (finished sprint, requirements locked, unsupported/corrupt/empty/oversized file, no requirements found, too many requirements), 502 (LLM failure — nothing persisted).
+A re-upload is simultaneously a bulk delete and a bulk add, so both cascades apply: the superseded rows lose their test plans, and the test environment goes back for re-checking. **Errors:** 404 (sprint), 422 (finished sprint, work in progress, unsupported/corrupt/empty/oversized file, no requirements found, too many requirements), 502 (LLM failure — nothing persisted).
 
 #### `GET /api/sprints/{sprint_id}/requirements`
 
@@ -243,7 +243,7 @@ Restart a `failed` requirement (clears the error; uncapped).
 
 #### `DELETE /api/requirements/{id}`
 
-Remove a requirement (204). Allowed in **every** status, including `confirmed` and mid-analysis — until the sprint's test environment is confirmed (then 422, the requirement set is locked). Also 422 on finished sprints.
+Remove a requirement (204). Allowed in **every** status, including `confirmed`, and after the test environment is confirmed. Removes that requirement's test plan but leaves the environment `confirmed` — removal can only shrink what needs access. A requirement referenced by a test run or exploratory run is _archived_ rather than deleted so those runs stay readable; one with no runs behind it is deleted outright. 422 on finished sprints, or while that requirement has analysis, plan generation, or a run in progress.
 
 ### Test Environment
 
@@ -302,7 +302,7 @@ Finalize the access description. Terminal — and it **locks the sprint's requir
 
 ### Test Plans
 
-The third sprint stage, available once the test environment is confirmed (`requirements_locked`). One plan per confirmed requirement, generated asynchronously on the RQ worker by a single LLM call returning a structured plan — complexity (`low`/`medium`/`high`), summary, and ≥1 test case (title, optional preconditions, newline-joined steps, expected result, type, priority).
+The third sprint stage, available once the test environment is confirmed (`environment_confirmed`). One plan per confirmed requirement, generated asynchronously on the RQ worker by a single LLM call returning a structured plan — complexity (`low`/`medium`/`high`), summary, and ≥1 test case (title, optional preconditions, newline-joined steps, expected result, type, priority).
 
 Planning is deliberately **code-blind**: it is grounded in the requirement, README, captured file tree, and confirmed test-environment description, but never reads repository files. A plan defines what "correct" means, so reading the implementation is where that judgment drifts into restating what the code already does; the endpoint paths and response shapes a script needs are resolved later by test-script generation, which does have repo access. The prompt instead states what it is planning for — each case becomes one Playwright script, so expected results must be script-checkable, preconditions must be seedable from the confirmed environment, cases must be repeatable, and steps describe _what_ to verify rather than naming endpoints or selectors. Checks no script could make are left to exploratory testing.
 

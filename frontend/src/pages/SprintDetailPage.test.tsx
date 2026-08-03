@@ -416,8 +416,8 @@ describe('SprintDetailPage', () => {
     })
   })
 
-  describe('requirement lock', () => {
-    it('hides the form and Remove buttons when requirements are locked', async () => {
+  describe('after the environment is confirmed', () => {
+    it('keeps the forms and Remove buttons available', async () => {
       mockFetchSprint.mockResolvedValue({
         ...fakeSprint,
         requirements_complete: true,
@@ -429,9 +429,11 @@ describe('SprintDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Login')).toBeInTheDocument()
       })
-      expect(screen.queryByText('Add Requirements')).not.toBeInTheDocument()
-      expect(screen.queryByText('Upload a PRD')).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+      // The set is no longer frozen: adding sends the environment back for
+      // re-checking, and deleting leaves it confirmed.
+      expect(screen.getByText('Add Requirements')).toBeInTheDocument()
+      expect(screen.getByText('Upload a PRD')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
     })
   })
 

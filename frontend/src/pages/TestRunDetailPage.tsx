@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import OutdatedBadge from '../components/OutdatedBadge'
+import { isOutdated } from '../outdated'
 import TestCaseExecutionRow from '../components/TestCaseExecutionRow'
 import { fetchSprint, fetchTestRun, restartTestExecution } from '../services/api'
 import type { SprintResponse, TestExecutionResponse, TestRunDetailResponse } from '../types'
@@ -110,6 +112,7 @@ export default function TestRunDetailPage() {
         <span className={`run-badge run-badge-${run.status}`}>
           {STATUS_LABELS[run.status] ?? run.status}
         </span>
+        <OutdatedBadge run={run} />
       </header>
 
       <p className="test-run-detail-meta">{new Date(run.created_at).toLocaleString()}</p>
@@ -124,7 +127,11 @@ export default function TestRunDetailPage() {
               <span className={`run-badge run-badge-${execution.status}`}>
                 {STATUS_LABELS[execution.status] ?? execution.status}
               </span>
-              {execution.status === 'failed' && sprint.active && (
+              <OutdatedBadge run={execution} />
+              {/* Restart re-runs against current content, so an outdated
+                  execution cannot be restarted — the backend refuses it too.
+                  Starting a new run is the way to retest. */}
+              {execution.status === 'failed' && sprint.active && !isOutdated(execution) && (
                 <button
                   className="btn btn-secondary btn-small"
                   onClick={() => handleRestart(execution)}
@@ -132,6 +139,11 @@ export default function TestRunDetailPage() {
                 >
                   {restarting === execution.id ? 'Restarting…' : 'Restart'}
                 </button>
+              )}
+              {execution.status === 'failed' && sprint.active && isOutdated(execution) && (
+                <span className="test-execution-outdated-note">
+                  Start a new run to retest — this one used earlier content.
+                </span>
               )}
             </div>
           </header>

@@ -207,7 +207,9 @@ describe('TestEnvironmentPage', () => {
     })
     expect(await screen.findByText('Confirmed')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    // Editing stays available — a resubmit re-runs the check and clears the
+    // sprint's plans, which the page warns about before opening the form.
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
   })
 
   it('stale requirements disable Confirm and Re-check re-submits current content', async () => {
@@ -439,7 +441,7 @@ describe('TestEnvironmentPage', () => {
       })
     })
 
-    it('is read-only once confirmed', async () => {
+    it('stays editable once confirmed', async () => {
       mockFetchSprint.mockResolvedValue(
         makeSprint({ has_test_environment_submission: true, environment_confirmed: true }),
       )
@@ -454,7 +456,9 @@ describe('TestEnvironmentPage', () => {
 
       await screen.findByText('Detected environment variables')
       expect(screen.getByText('BASE_URL')).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Edit variables' })).not.toBeInTheDocument()
+      // Correctable after confirmation too — the edit removes the sprint's
+      // plans and sends the environment back for re-confirming.
+      expect(screen.getByRole('button', { name: 'Edit variables' })).toBeInTheDocument()
     })
   })
 })

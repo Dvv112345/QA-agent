@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import OutdatedBadge from '../components/OutdatedBadge'
+import { isOutdated } from '../outdated'
 import {
   fetchExploratoryRun,
   restartExploratoryRun,
@@ -103,6 +105,7 @@ export default function ExploratoryRunDetailPage() {
         <span className={`run-badge run-badge-${run.status}`}>
           {RUN_STATUS_LABELS[run.status] ?? run.status}
         </span>
+        <OutdatedBadge run={run} />
       </header>
 
       <p className="exp-run-counts">
@@ -141,7 +144,9 @@ export default function ExploratoryRunDetailPage() {
         )}
       </section>
 
-      {run.status === 'failed' && (
+      {/* An outdated run cannot be restarted — it would re-explore against
+          content it was never chartered for. The backend refuses it too. */}
+      {run.status === 'failed' && !isOutdated(run) && (
         <button
           className="btn btn-primary"
           onClick={() => runAction(restartExploratoryRun)}
@@ -149,6 +154,11 @@ export default function ExploratoryRunDetailPage() {
         >
           {busy ? 'Restarting…' : 'Restart run'}
         </button>
+      )}
+      {run.status === 'failed' && isOutdated(run) && (
+        <p className="exp-run-muted">
+          Start a new exploratory run to retest — this one used earlier content.
+        </p>
       )}
 
       {actionError && <p className="exp-run-error">{actionError}</p>}

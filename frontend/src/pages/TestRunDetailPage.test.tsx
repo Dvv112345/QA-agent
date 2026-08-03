@@ -77,6 +77,8 @@ function makeExecution(overrides: Partial<TestExecutionResponse> = {}): TestExec
     requirement_name: 'Login',
     status: 'running',
     error: null,
+    outdated_reasons: [],
+    requirement_deleted: false,
     cases: [makeCaseExecution()],
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
@@ -90,6 +92,8 @@ function makeRun(overrides: Partial<TestRunDetailResponse> = {}): TestRunDetailR
     sprint_id: 1,
     created_at: '2026-01-01T00:00:00Z',
     status: 'running',
+    outdated_reasons: [],
+    requirement_deleted: false,
     executions: [makeExecution()],
     ...overrides,
   }
