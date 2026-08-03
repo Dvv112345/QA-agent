@@ -53,6 +53,36 @@ def test_noop_on_fresh_schema(db_session):
     assert _test_case_execution_columns(engine) >= _FINDING_COLUMNS
     assert "archived" in _requirement_columns(engine)
     assert "archived" in _testcase_columns(engine)
+    assert "content_revision" in _requirement_columns(engine)
+    assert "content_revision" in _test_environment_access_columns(engine)
+
+
+def _test_execution_columns(engine) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns("testexecution")}
+
+
+_RUN_REVISION_COLUMNS = {"requirement_revision", "plan_revision", "env_revision"}
+
+
+def test_adds_missing_content_revision_columns():
+    """A database predating the counters gets them, defaulting to 0.
+
+    The default is what makes existing runs read as current without any
+    backfill: both sides of every comparison start at 0.
+    """
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE requirement DROP COLUMN content_revision"))
+        for name in _RUN_REVISION_COLUMNS:
+            connection.execute(text(f"ALTER TABLE testexecution DROP COLUMN {name}"))
+    assert "content_revision" not in _requirement_columns(engine)
+
+    run_migrations(engine)
+    assert "content_revision" in _requirement_columns(engine)
+    assert _test_execution_columns(engine) >= _RUN_REVISION_COLUMNS
+    run_migrations(engine)  # idempotent on the migrated schema too
+    assert _test_execution_columns(engine) >= _RUN_REVISION_COLUMNS
 
 
 def test_adds_missing_requirement_archived_column():

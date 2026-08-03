@@ -22,6 +22,7 @@ from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprin
 from backend.tests.test_sprints import (
     _seed_test_case,
     _seed_test_case_execution,
+    _seed_test_env,
     _seed_test_execution,
     _seed_test_plan,
     _seed_test_run,
@@ -598,6 +599,195 @@ class TestRestartTestExecution:
         resp = await async_client.post(f"/api/test-executions/{execution.id}/restart")
 
         assert resp.status_code == 422
+
+
+# ── Outdated runs ──────────────────────────────────────────────────────
+
+
+def _seed_stamped_execution(db_session, sprint, requirement, status=None):
+    """A run + execution stamped exactly as the create route would stamp it."""
+    run = _seed_test_run(db_session, sprint)
+    execution = _seed_test_execution(
+        db_session,
+        run,
+        requirement,
+        status=status or TestExecutionStatus.FAILED,
+        requirement_revision=requirement.content_revision,
+        plan_revision=requirement.test_plan.content_revision,
+        env_revision=(sprint.test_environment.content_revision if sprint.test_environment else 0),
+    )
+    return run, execution
+
+
+class TestOutdatedRuns:
+    """A run records the revisions it executed against; a later upstream edit
+    is what makes it read as outdated."""
+
+    def test_fresh_run_is_current(self, db_session):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        assert execution.outdated_reasons == []
+        assert execution.outdated is False
+        assert execution.requirement_deleted is False
+
+    @pytest.mark.parametrize("artifact", ["requirement", "test_plan", "test_environment"])
+    def test_each_edit_is_attributed_alone(self, db_session, artifact):
+        sprint = _seed_sprint(db_session)
+        test_env = _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        target = {
+            "requirement": requirement,
+            "test_plan": requirement.test_plan,
+            "test_environment": test_env,
+        }[artifact]
+        target.content_revision += 1
+        db_session.add(target)
+        db_session.commit()
+
+        assert execution.outdated_reasons == [artifact]
+
+    def test_removing_the_plan_counts_as_outdated(self, db_session):
+        """Not only an edit — a plan removed by a cascade is changed content too."""
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        db_session.delete(requirement.test_plan)
+        db_session.commit()
+        db_session.refresh(requirement)
+
+        assert execution.outdated_reasons == ["test_plan"]
+
+    def test_archived_requirement_reports_requirement_not_plan(self, db_session):
+        """The plan went with the requirement, so reporting it too is noise."""
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        requirement.archived = True
+        db_session.add(requirement)
+        db_session.commit()
+
+        assert execution.outdated_reasons == ["requirement"]
+        assert execution.requirement_deleted is True
+        assert execution.outdated is True
+
+    def test_archived_requirement_plus_environment_edit_reports_both(self, db_session):
+        """The environment comparison survives the deletion — independent facts."""
+        sprint = _seed_sprint(db_session)
+        test_env = _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        requirement.archived = True
+        test_env.content_revision += 1
+        db_session.add_all([requirement, test_env])
+        db_session.commit()
+
+        assert execution.outdated_reasons == ["requirement", "test_environment"]
+
+    def test_missing_environment_row_is_not_a_reason(self, db_session):
+        """Absent is evidence of nothing — unlike a plan, it cannot be deleted."""
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        assert execution.outdated_reasons == []
+
+    def test_run_unions_reasons_without_duplicates(self, db_session):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        first = _seed_runnable_requirement(db_session, sprint, name="Login")
+        second = _seed_runnable_requirement(db_session, sprint, name="Search")
+        run = _seed_test_run(db_session, sprint)
+        for requirement in (first, second):
+            _seed_test_execution(
+                db_session,
+                run,
+                requirement,
+                status=TestExecutionStatus.COMPLETED,
+                requirement_revision=requirement.content_revision,
+                plan_revision=requirement.test_plan.content_revision,
+            )
+        first.content_revision += 1
+        second.content_revision += 1
+        db_session.add_all([first, second])
+        db_session.commit()
+        db_session.refresh(run)
+
+        assert run.outdated_reasons == ["requirement"]  # unioned, not repeated
+        assert run.outdated is True
+
+    def test_preexisting_rows_read_as_current(self, db_session):
+        """Every revision defaults to 0 on both sides — hence no backfill."""
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(
+            db_session, run, requirement, status=TestExecutionStatus.FAILED
+        )
+
+        assert execution.outdated_reasons == []
+
+
+class TestRestartRefusedWhenOutdated:
+    @pytest.mark.asyncio
+    async def test_outdated_execution_cannot_restart(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        resp = await async_client.post(f"/api/test-executions/{execution.id}/restart")
+
+        assert resp.status_code == 422
+        assert "out of date" in resp.json()["detail"]
+        assert "the requirement changed" in resp.json()["detail"]
+        assert stub_queue.enqueued_executions == []
+
+    @pytest.mark.asyncio
+    async def test_deleted_requirement_says_deleted(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+        requirement.archived = True
+        db_session.add(requirement)
+        db_session.commit()
+
+        resp = await async_client.post(f"/api/test-executions/{execution.id}/restart")
+
+        assert resp.status_code == 422
+        assert "the requirement was deleted" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_reasons_serialized_on_the_list_endpoint(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _seed_stamped_execution(
+            db_session, sprint, requirement, status=TestExecutionStatus.COMPLETED
+        )
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        resp = await async_client.get(f"/api/sprints/{sprint.id}/test-runs")
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["outdated_reasons"] == ["requirement"]
+        assert resp.json()[0]["requirement_deleted"] is False
 
 
 # ── Auth spot-check ────────────────────────────────────────────────────

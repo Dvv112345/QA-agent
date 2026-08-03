@@ -819,3 +819,68 @@ class TestSummarize:
 
         assert resp.status_code == 422
         assert "Only completed" in resp.json()["detail"]
+
+
+class TestExploratoryOutdated:
+    """Same staleness vocabulary as scripted runs — one meaning across modes."""
+
+    @pytest.mark.asyncio
+    async def test_reasons_serialized_and_default_empty(self, async_client, db_session):
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(
+            db_session,
+            sprint,
+            requirement,
+            status=ExploratoryRunStatus.COMPLETED,
+            requirement_revision=requirement.content_revision,
+            plan_revision=requirement.test_plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+
+        resp = await async_client.get(f"/api/exploratory-runs/{run.id}")
+
+        assert resp.status_code == 200
+        assert resp.json()["outdated_reasons"] == []
+        assert resp.json()["requirement_deleted"] is False
+
+    @pytest.mark.asyncio
+    async def test_plan_edit_marks_the_run_outdated(self, async_client, db_session):
+        """Charter generation is shown the approved cases, so the plan counts."""
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(
+            db_session,
+            sprint,
+            requirement,
+            status=ExploratoryRunStatus.COMPLETED,
+            requirement_revision=requirement.content_revision,
+            plan_revision=requirement.test_plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+        requirement.test_plan.content_revision += 1
+        db_session.add(requirement.test_plan)
+        db_session.commit()
+
+        resp = await async_client.get(f"/api/exploratory-runs/{run.id}")
+
+        assert resp.json()["outdated_reasons"] == ["test_plan"]
+
+    @pytest.mark.asyncio
+    async def test_outdated_run_cannot_restart(self, async_client, db_session):
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(
+            db_session,
+            sprint,
+            requirement,
+            status=ExploratoryRunStatus.FAILED,
+            requirement_revision=requirement.content_revision,
+            plan_revision=requirement.test_plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        resp = await async_client.post(f"/api/exploratory-runs/{run.id}/restart")
+
+        assert resp.status_code == 422
+        assert "out of date" in resp.json()["detail"]

@@ -179,6 +179,37 @@ def _relax_testcase_test_plan_id(engine: Engine) -> None:
     logger.info("Migration applied: testcase.test_plan_id NOT NULL dropped")
 
 
+# Content-revision counters: three sources and the copies each run takes of
+# them. Every column defaults to 0, so existing rows compare equal on both
+# sides and no backfill is needed — pre-existing runs read as current.
+_CONTENT_REVISION_COLUMNS = (
+    ("requirement", ("content_revision",)),
+    ("testenvironmentaccess", ("content_revision",)),
+    ("testplan", ("content_revision",)),
+    ("testexecution", ("requirement_revision", "plan_revision", "env_revision")),
+    ("exploratoryrun", ("requirement_revision", "plan_revision", "env_revision")),
+)
+
+
+def _add_content_revisions(engine: Engine) -> None:
+    """Add the content-revision counters and their per-run copies when missing."""
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    for table, column_names in _CONTENT_REVISION_COLUMNS:
+        if table not in table_names:
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table)}
+        missing = [name for name in column_names if name not in columns]
+        if not missing:
+            continue
+        with engine.begin() as connection:
+            for name in missing:
+                connection.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
+                )
+        logger.info("Migration applied: %s revision columns added (%s)", table, ", ".join(missing))
+
+
 _MIGRATIONS = [
     _add_requirement_from_prd,
     _add_testcase_script,
@@ -189,6 +220,7 @@ _MIGRATIONS = [
     _add_requirement_archived,
     _add_testcase_archived,
     _relax_testcase_test_plan_id,
+    _add_content_revisions,
 ]
 
 

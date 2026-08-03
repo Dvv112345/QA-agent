@@ -38,6 +38,7 @@ from backend.models.database import (
     Sprint,
     TestEnvironmentStatus,
     TestPlanStatus,
+    outdated_restart_error,
 )
 from backend.models.types import (
     CharterDraft,
@@ -226,6 +227,8 @@ def _run_response(run: ExploratoryRun) -> ExploratoryRunResponse:
         status=run.status,
         summary=run.summary,
         error=run.error,
+        outdated_reasons=run.outdated_reasons,
+        requirement_deleted=run.requirement_deleted,
         session_count=len(run.sessions),
         bug_count=bugs,
         issue_count=issues,
@@ -245,6 +248,8 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
         status=run.status,
         summary=run.summary,
         error=run.error,
+        outdated_reasons=run.outdated_reasons,
+        requirement_deleted=run.requirement_deleted,
         base_url_env_vars=run.base_url_env_vars,
         sessions=[_session_summary(s) for s in run.sessions],
         bug_count=bugs,
@@ -395,6 +400,10 @@ async def create_exploratory_run(
     run = ExploratoryRun(
         sprint_id=sprint_id,
         requirement_id=requirement.id,
+        # Recorded so a later edit upstream marks this run outdated.
+        requirement_revision=requirement.content_revision,
+        plan_revision=requirement.test_plan.content_revision,
+        env_revision=sprint.test_environment.content_revision,
         base_url_env_vars_csv=",".join(body.base_url_env_vars),
     )
     for position, charter in enumerate(body.charters):
@@ -508,6 +517,11 @@ async def restart_exploratory_run(
     if run.status != ExploratoryRunStatus.FAILED:
         raise HTTPException(
             status_code=422, detail="Only failed exploratory runs can be restarted."
+        )
+    if run.outdated:
+        raise HTTPException(
+            status_code=422,
+            detail=outdated_restart_error(run.outdated_reasons, run.requirement_deleted),
         )
 
     run.status = ExploratoryRunStatus.PENDING

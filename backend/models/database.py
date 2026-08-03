@@ -144,6 +144,11 @@ class Requirement(SQLModel, table=True):
     # instead and every live view filters it out (see Sprint.requirements).
     # Requirements with no such history are still deleted outright.
     archived: bool = Field(default=False)
+    # Bumped only when the *substance* changes (the description text), never
+    # on a status transition. A test run copies this at creation; the two
+    # differing later is what makes the run outdated. Deliberately not
+    # `updated_at`, which confirm/restart/confirm-all all stamp.
+    content_revision: int = Field(default=0)
     status: str = Field(default=RequirementStatus.PENDING)
     clarifying_question: str | None = Field(default=None)
     pending_answer: str | None = Field(default=None)  # user answer awaiting the revise job
@@ -203,6 +208,10 @@ class TestEnvironmentAccess(SQLModel, table=True):
     # resubmission comes back insufficient (never left describing stale
     # content). The only artifact in this feature holding literal secrets.
     env_vars_json: str | None = Field(default=None)
+    # See Requirement.content_revision. Bumped by a content resubmission and
+    # by a direct edit of the extracted variables — the latter deliberately
+    # *without* touching updated_at, which means "last LLM check" here.
+    content_revision: int = Field(default=0)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -267,6 +276,10 @@ class TestPlan(SQLModel, table=True):
     status: str = Field(default=TestPlanStatus.PENDING)
     pending_feedback: str | None = Field(default=None)  # user feedback awaiting the revise job
     revision_count: int = Field(default=0)  # LLM feedback revisions only (direct edits don't count)
+    # See Requirement.content_revision. Distinct from `revision_count`
+    # above: that counts LLM feedback rounds against a cap, this tracks any
+    # change to the case set — direct edits included.
+    content_revision: int = Field(default=0)
     retry_count: int = Field(default=0)  # automatic re-enqueues (reconciler/task)
     job_id: str | None = Field(default=None)  # RQ job id — reconciler dedup guard
     last_heartbeat: datetime | None = Field(default=None)  # worker liveness while generating
@@ -423,6 +436,86 @@ class FindingSeverity(str, Enum):
         return value if value in {member.value for member in cls} else cls.MEDIUM.value
 
 
+# ── Run staleness (shared by scripted and exploratory runs) ───────────
+
+
+def outdated_reasons(
+    requirement: Optional["Requirement"],
+    test_env: Optional["TestEnvironmentAccess"],
+    *,
+    requirement_revision: int,
+    plan_revision: int,
+    env_revision: int,
+) -> list[str]:
+    """Which upstream artifacts have moved since a run executed.
+
+    A run copies the three ``content_revision`` values it ran against; an
+    inequality here means the run no longer describes the current sprint.
+    Revisions rather than timestamps because ``updated_at`` is stamped by
+    confirm, approve, restart, and confirm-all — none of which change what
+    a run was testing.
+
+    Shared by both run types so "outdated" cannot come to mean two
+    different things depending on which mode produced the run.
+    """
+    reasons: list[str] = []
+
+    if requirement is None or requirement.archived:
+        # Deletion is change taken to its limit: the requirement this run
+        # used is not the requirement that exists now.
+        reasons.append("requirement")
+        # The plan went with it, so reporting it too would be noise rather
+        # than a second fact — and there is nothing left to compare against.
+    else:
+        if requirement.content_revision != requirement_revision:
+            reasons.append("requirement")
+        plan = requirement.test_plan
+        if plan is None or plan.content_revision != plan_revision:
+            reasons.append("test_plan")
+
+    # Evaluated even for a deleted requirement: the sprint is still
+    # reachable, and an environment change is genuinely independent.
+    #
+    # A *missing* environment row is deliberately not a reason, unlike a
+    # missing plan above. The asymmetry is real: plans are removed by the
+    # cascade precisely when upstream content changed, so their absence is
+    # evidence. An absent environment row is evidence of nothing — it
+    # cannot be deleted through any flow — so claiming "the test
+    # environment changed" would be a guess dressed up as a finding.
+    if test_env is not None and test_env.content_revision != env_revision:
+        reasons.append("test_environment")
+
+    return reasons
+
+
+_REASON_LABELS = {
+    "requirement": "the requirement changed",
+    "test_plan": "the test plan changed",
+    "test_environment": "the test environment changed",
+}
+
+
+def outdated_restart_error(reasons: list[str], requirement_deleted: bool) -> str:
+    """Why a restart was refused, naming what moved.
+
+    Lives here beside ``outdated_reasons`` so the two share one vocabulary,
+    following ``SPRINT_FINISHED_ERROR``'s precedent of keeping a user-facing
+    string next to the state it describes.  Both run types raise it, so the
+    wording cannot drift between them.
+    """
+    labels = [
+        "the requirement was deleted"
+        if reason == "requirement" and requirement_deleted
+        else _REASON_LABELS.get(reason, reason)
+        for reason in reasons
+    ]
+    joined = ", ".join(labels)
+    return (
+        f"This run is out of date ({joined}) and can no longer be restarted — "
+        "start a new run to test the current state."
+    )
+
+
 class TestExecutionStatus(str, Enum):
     """Lifecycle status of one requirement's test-case run within a TestRun."""
 
@@ -486,6 +579,25 @@ class TestRun(SQLModel, table=True):
         """Names of the requirements covered by this run, in execution order."""
         return [e.requirement_name for e in self.executions]
 
+    @property
+    def outdated_reasons(self) -> list[str]:
+        """Union of its executions' reasons, de-duplicated, order preserved."""
+        seen: list[str] = []
+        for execution in self.executions:
+            for reason in execution.outdated_reasons:
+                if reason not in seen:
+                    seen.append(reason)
+        return seen
+
+    @property
+    def outdated(self) -> bool:
+        return bool(self.outdated_reasons)
+
+    @property
+    def requirement_deleted(self) -> bool:
+        """Whether *any* of this run's requirements has since been deleted."""
+        return any(e.requirement_deleted for e in self.executions)
+
 
 class TestExecution(SQLModel, table=True):
     """The row an RQ job operates on: one requirement's cases within a run.
@@ -501,6 +613,12 @@ class TestExecution(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     test_run_id: int = Field(foreign_key="testrun.id", index=True)
     requirement_id: int = Field(foreign_key="requirement.id", index=True)
+    # The content this run actually executed against, copied at creation.
+    # Compared with the live values to tell whether the run still describes
+    # the current state of the sprint (see `outdated_reasons`).
+    requirement_revision: int = Field(default=0)
+    plan_revision: int = Field(default=0)
+    env_revision: int = Field(default=0)
     status: str = Field(default=TestExecutionStatus.PENDING)
     retry_count: int = Field(default=0)  # automatic re-enqueues (reconciler/task)
     job_id: str | None = Field(default=None)  # RQ job id — reconciler dedup guard
@@ -527,6 +645,39 @@ class TestExecution(SQLModel, table=True):
     def requirement_name(self) -> str:
         """Name of the requirement this execution covers (serialized for cards)."""
         return self.requirement.name if self.requirement is not None else ""
+
+    @property
+    def requirement_deleted(self) -> bool:
+        """Whether the requirement this run covered has since been deleted.
+
+        A label refinement for the badge, not a parallel state: it selects
+        the wording for the ``requirement`` reason. Nothing branches on it
+        for correctness — use ``outdated``.
+        """
+        return self.requirement is None or self.requirement.archived
+
+    @property
+    def outdated_reasons(self) -> list[str]:
+        """Upstream artifacts that changed since this execution ran."""
+        sprint = self.test_run.sprint if self.test_run is not None else None
+        return outdated_reasons(
+            self.requirement,
+            sprint.test_environment if sprint is not None else None,
+            requirement_revision=self.requirement_revision,
+            plan_revision=self.plan_revision,
+            env_revision=self.env_revision,
+        )
+
+    @property
+    def outdated(self) -> bool:
+        """Exactly ``bool(outdated_reasons)`` — one flag, one meaning.
+
+        Backend-only, deliberately not serialized: shipping it alongside
+        ``outdated_reasons`` would put two fields in the payload that must
+        agree when one is derivable from the other. Its consumer is the
+        restart guard.
+        """
+        return bool(self.outdated_reasons)
 
 
 class TestCaseExecution(SQLModel, table=True):
@@ -684,6 +835,12 @@ class ExploratoryRun(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     sprint_id: int = Field(foreign_key="sprint.id", index=True)
     requirement_id: int = Field(foreign_key="requirement.id", index=True)
+    # The content this run explored against, copied at creation — see
+    # TestExecution's identical trio. Charter generation is shown the
+    # requirement's approved cases, so the plan revision matters here too.
+    requirement_revision: int = Field(default=0)
+    plan_revision: int = Field(default=0)
+    env_revision: int = Field(default=0)
     # Comma-joined keys of TestEnvironmentAccess.env_vars holding application
     # URLs this run may reach (frontend, API, …), nominated by the
     # charter-generation call and validated there. Persisted so the task never
@@ -732,6 +889,27 @@ class ExploratoryRun(SQLModel, table=True):
     def requirement_name(self) -> str:
         """Name of the requirement this run explores (serialized for run cards)."""
         return self.requirement.name if self.requirement is not None else ""
+
+    @property
+    def requirement_deleted(self) -> bool:
+        """See ``TestExecution.requirement_deleted`` — badge wording only."""
+        return self.requirement is None or self.requirement.archived
+
+    @property
+    def outdated_reasons(self) -> list[str]:
+        """Upstream artifacts that changed since this run explored."""
+        return outdated_reasons(
+            self.requirement,
+            self.sprint.test_environment if self.sprint is not None else None,
+            requirement_revision=self.requirement_revision,
+            plan_revision=self.plan_revision,
+            env_revision=self.env_revision,
+        )
+
+    @property
+    def outdated(self) -> bool:
+        """See ``TestExecution.outdated`` — backend-only, gates restart."""
+        return bool(self.outdated_reasons)
 
 
 class ExploratorySession(SQLModel, table=True):
