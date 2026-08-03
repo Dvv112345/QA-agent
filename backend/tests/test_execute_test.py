@@ -460,6 +460,20 @@ class TestFinishedSprintGuard:
         assert row.error == SPRINT_FINISHED_ERROR
         assert llm_stub.generate_calls == []
 
+    def test_archived_requirement_marks_failed(self, db_session, llm_stub, script_runner_stub):
+        """A deleted requirement must never have scripts generated or run."""
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        requirement.archived = True
+        db_session.add(requirement)
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        row = _reload_execution(db_session, execution.id)
+        assert row.status == TestExecutionStatus.FAILED
+        assert llm_stub.generate_calls == []
+
 
 class TestPlanNotApprovedGuard:
     def test_marks_failed(self, db_session, llm_stub, script_runner_stub):

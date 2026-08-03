@@ -549,6 +549,40 @@ class TestDeleteRequirement:
         assert resp.status_code == 404
 
 
+class TestArchivedRequirementIsGone:
+    """An archived row is still in the table; every route must treat it as absent.
+
+    Without this, deleting a requirement would leave its id fully mutable
+    through the per-requirement endpoints.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "path_suffix", "body"),
+        [
+            ("get", "", None),
+            ("patch", "", {"description": "Rewritten."}),
+            ("post", "/confirm", None),
+            ("post", "/restart", None),
+            ("post", "/answer", {"answer": "Yes."}),
+            ("delete", "", None),
+        ],
+    )
+    async def test_every_route_404s(self, async_client, db_session, method, path_suffix, body):
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, status=RequirementStatus.READY)
+        req.archived = True
+        db_session.add(req)
+        db_session.commit()
+
+        url = f"/api/requirements/{req.id}{path_suffix}"
+        call = getattr(async_client, method)
+        resp = await (call(url, json=body) if body is not None else call(url))
+
+        # GET has no such route at all; the rest must 404 rather than act.
+        assert resp.status_code in (404, 405)
+
+
 # ── Finished sprint blocks all mutations ─────────────────────────────
 
 

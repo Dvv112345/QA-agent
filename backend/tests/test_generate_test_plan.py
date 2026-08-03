@@ -280,6 +280,20 @@ class TestFinishedSprintGuards:
         assert row.last_heartbeat is None
         assert llm_stub.generate_calls == []
 
+    def test_archived_requirement_marks_plan_failed(self, db_session, llm_stub, fetch_stub):
+        """A deleted requirement gets the same disposition as a vanished one —
+        never generate a plan for something the user removed."""
+        _, requirement, plan = _seed_setup(db_session)
+        requirement.archived = True
+        db_session.add(requirement)
+        db_session.commit()
+
+        generate_test_plan_task(plan.id)
+
+        row = _reload(db_session, plan.id)
+        assert row.status == TestPlanStatus.FAILED
+        assert llm_stub.generate_calls == []
+
     def test_discards_result_when_status_changed_mid_run(self, db_session, fetch_stub, monkeypatch):
         """A plan failed/reset while the LLM loop was in flight keeps that state."""
         import backend.services.llm as llm_module

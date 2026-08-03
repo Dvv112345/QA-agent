@@ -62,7 +62,10 @@ def analyze_requirement_task(requirement_id: int) -> None:
     """Analyze one requirement's clarity (initial check or revision)."""
     with new_session() as session:
         requirement = session.get(Requirement, requirement_id)
-        if requirement is None:
+        if requirement is None or requirement.archived:
+            # Archived counts as gone: the user deleted this requirement
+            # while the job was queued, and analyzing it would spend an LLM
+            # call on a row nothing can display.
             logger.info("Requirement %d no longer exists — skipping", requirement_id)
             return
         if requirement.status not in (RequirementStatus.PENDING, RequirementStatus.ANALYZING):
@@ -121,11 +124,16 @@ def analyze_requirement_task(requirement_id: int) -> None:
             # The LLM call is the long wait — the row may have been failed
             # (sprint finished), deleted, or reset meanwhile. Re-read the
             # status and discard a stale result rather than overwrite it.
+            # `archived` rides along: deleting a requirement mid-analysis
+            # leaves its status untouched, so status alone would not notice.
             with session.no_autoflush:
-                current_status = session.exec(
-                    select(Requirement.status).where(Requirement.id == requirement_id)
+                current = session.exec(
+                    select(Requirement.status, Requirement.archived).where(
+                        Requirement.id == requirement_id
+                    )
                 ).one_or_none()
-            if current_status != RequirementStatus.ANALYZING:
+            current_status = current[0] if current else None
+            if current is None or current[1] or current_status != RequirementStatus.ANALYZING:
                 logger.info(
                     "Requirement %d changed to '%s' mid-analysis — discarding result",
                     requirement_id,

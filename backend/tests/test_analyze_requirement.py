@@ -188,6 +188,52 @@ class TestIdempotencyGuards:
         analyze_requirement_task(99999)
         assert llm_stub.check_calls == []
 
+    def test_archived_row_is_noop(self, db_session, llm_stub):
+        """Deleted while queued — analyzing it would spend an LLM call on a
+        row nothing can display."""
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint)
+        req.archived = True
+        db_session.add(req)
+        db_session.commit()
+
+        analyze_requirement_task(req.id)
+
+        assert llm_stub.check_calls == []
+        assert _reload(db_session, req.id).status == RequirementStatus.PENDING
+
+    def test_archived_mid_analysis_discards_the_result(self, db_session, llm_stub, monkeypatch):
+        """Deleting during the LLM call must not write the answer back.
+
+        Archiving leaves `status` untouched, so the mid-flight re-check has
+        to look at `archived` too or it would see ANALYZING and proceed.
+        """
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint)
+        requirement_id = req.id
+
+        original = llm_stub.check_clarity
+
+        def _archive_then_check(*args, **kwargs):
+            from backend.database import new_session
+
+            with new_session() as other:
+                row = other.get(Requirement, requirement_id)
+                row.archived = True
+                other.add(row)
+                other.commit()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(llm_stub, "check_clarity", _archive_then_check)
+        import backend.services.llm as llm_module
+
+        monkeypatch.setattr(llm_module, "check_clarity", _archive_then_check)
+
+        analyze_requirement_task(requirement_id)
+
+        row = _reload(db_session, requirement_id)
+        assert row.status == RequirementStatus.ANALYZING  # result discarded, not written
+
 
 class TestFinishedSprintGuards:
     def test_inactive_sprint_marks_row_failed(self, db_session, llm_stub):

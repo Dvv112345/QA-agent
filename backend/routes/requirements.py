@@ -37,8 +37,15 @@ def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
 
 
 def _get_requirement_or_404(session: Session, requirement_id: int) -> Requirement:
+    """Fetch a live requirement, 404ing on one the user has deleted.
+
+    An archived row is still in the table, so a bare ``session.get`` would
+    happily hand back a requirement the user removed and let every
+    per-requirement route mutate it. Deleted means gone to every caller
+    except the archive machinery itself.
+    """
     requirement = session.get(Requirement, requirement_id)
-    if requirement is None:
+    if requirement is None or requirement.archived:
         raise HTTPException(status_code=404, detail="Requirement not found.")
     return requirement
 
@@ -203,6 +210,9 @@ async def create_requirements_from_prd(
         delete(Requirement).where(
             Requirement.sprint_id == sprint_id,
             Requirement.from_prd == True,  # noqa: E712
+            # Rows the user already deleted stay deleted — a re-upload
+            # replaces the live PRD set, not the archive.
+            Requirement.archived == False,  # noqa: E712
         )
     )
     rows = [

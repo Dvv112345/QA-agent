@@ -99,6 +99,11 @@ def generate_test_plan_task(test_plan_id: int) -> None:
 
         requirement = plan.requirement
         sprint = requirement.sprint if requirement is not None else None
+        # An archived requirement is one the user deleted; treat it exactly
+        # like a vanished one rather than planning tests for it.
+        if requirement is not None and requirement.archived:
+            requirement = None
+            sprint = None
         if sprint is None or not sprint.active:
             # Sprint finished (or vanished) after this job was enqueued —
             # mirror the finish-sprint sweep instead of generating.

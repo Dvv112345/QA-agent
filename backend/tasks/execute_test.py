@@ -218,6 +218,11 @@ def execute_test_task(test_execution_id: int) -> None:
 
         requirement = execution.requirement
         sprint = requirement.sprint if requirement is not None else None
+        # Archived means the user deleted it — same disposition as a
+        # vanished requirement, never run tests against it.
+        if requirement is not None and requirement.archived:
+            requirement = None
+            sprint = None
         if sprint is None or not sprint.active:
             _fail_execution(session, execution, SPRINT_FINISHED_ERROR)
             logger.info("Test execution %d: sprint inactive — marked failed", test_execution_id)

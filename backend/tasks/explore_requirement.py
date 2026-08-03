@@ -205,6 +205,11 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
 
         requirement = run.requirement
         sprint = requirement.sprint if requirement is not None else None
+        # Archived means the user deleted it — same disposition as a
+        # vanished requirement, never drive a browser on its behalf.
+        if requirement is not None and requirement.archived:
+            requirement = None
+            sprint = None
         if sprint is None or not sprint.active:
             _fail_run(session, run, SPRINT_FINISHED_ERROR)
             logger.info("Exploratory run %d: sprint inactive — marked failed", exploratory_run_id)
