@@ -81,9 +81,9 @@ export default function RequirementCard({
       cascades &&
       status === 'confirmed' &&
       !window.confirm(
-        `Editing "${requirement.name}" will delete its test plan and send the test ` +
+        `Changing "${requirement.name}" will delete its test plan and send the test ` +
           'environment back for re-checking. Existing test runs are kept, but marked ' +
-          'as out of date. Continue?',
+          'as out of date. Saving it unchanged does nothing. Continue?',
       )
     ) {
       return

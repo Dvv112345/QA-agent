@@ -25,7 +25,7 @@ from backend.models.database import (
     Requirement,
     RequirementStatus,
 )
-from backend.services import llm
+from backend.services import invalidation, llm
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,8 @@ def analyze_requirement_task(requirement_id: int) -> None:
             session.add(requirement)
             session.commit()
 
-            if requirement.clarifying_question and requirement.pending_answer:
+            is_revision = bool(requirement.clarifying_question and requirement.pending_answer)
+            if is_revision:
                 result = llm.revise_requirement(
                     requirement.name,
                     requirement.description,
@@ -113,12 +114,6 @@ def analyze_requirement_task(requirement_id: int) -> None:
                     readme,
                     file_tree,
                 )
-                requirement.description = result.rewritten_description
-                requirement.revision_count += 1
-                # A rewrite is a content change even though no user typed
-                # it — any run grounded in the old text is now outdated.
-                requirement.content_revision += 1
-                requirement.pending_answer = None
             else:
                 result = llm.check_clarity(
                     requirement.name, requirement.description, readme, file_tree
@@ -144,6 +139,19 @@ def analyze_requirement_task(requirement_id: int) -> None:
                 )
                 session.rollback()
                 return
+
+            if is_revision:
+                # A rewrite is a content change like any the user could make,
+                # so it takes the same cascade. Bumping the revision alone
+                # would leave the plan approved and the environment confirmed
+                # against text that no longer exists — and a run started from
+                # there would stamp the unchanged plan revision and report as
+                # current. Applied after the staleness check above so a
+                # discarded result never stages a destructive cascade.
+                invalidation.invalidate_for_requirement_change(session, requirement)
+                requirement.description = result.rewritten_description
+                requirement.revision_count += 1
+                requirement.pending_answer = None
 
             if result.clear:
                 requirement.status = RequirementStatus.READY

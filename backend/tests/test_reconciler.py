@@ -166,10 +166,15 @@ class TestPendingSweep:
 
         assert stub_queue.enqueued == [req.id]
 
-    def test_skips_archived_requirement(self, db_session, stub_queue):
-        """An archived requirement has been deleted as far as the user is
-        concerned — re-enqueuing it would spend an LLM call on a row nothing
-        can display."""
+    def test_enqueues_an_archived_requirement_so_it_can_converge(self, db_session, stub_queue):
+        """Deliberately *not* filtered out.
+
+        Skipping it left the row swept by nothing — never enqueued, so never
+        picked up by the task that fails it, and never failed by the other
+        sweeps either. The task refuses an archived requirement before
+        spending any LLM call, so this costs a no-op job and reaches a
+        terminal state, which is the cheaper mistake.
+        """
         sprint = _seed_sprint(db_session)
         req = _seed_requirement(db_session, sprint)
         req.archived = True
@@ -178,7 +183,7 @@ class TestPendingSweep:
 
         reconcile_once()
 
-        assert stub_queue.enqueued == []
+        assert stub_queue.enqueued == [req.id]
 
 
 class TestInactiveSprintSweep:

@@ -81,10 +81,16 @@ class _SweepSpec:
     clear_field: str | None
     enqueue_name: str  # QueueService method used to (re-)enqueue
     stale_error: str  # user-facing error once retries are exhausted
-    # Joins the row type to Sprint (so sprint activity can be filtered on)
-    # and excludes rows belonging to an archived requirement. An archived
-    # requirement has been deleted as far as the user is concerned; nothing
-    # of its should be re-enqueued, re-pended, or spend an LLM call.
+    # Joins the row type to Sprint so sprint activity can be filtered on.
+    #
+    # Deliberately does *not* exclude rows belonging to an archived
+    # requirement. That filter was here and caused a row on a deleted
+    # requirement to be swept by nothing: never re-enqueued, so never picked
+    # up by the task that would fail it, and never failed by these sweeps
+    # either — leaving a `pending` execution forever and a run page polling
+    # `running` with nothing behind it. The tasks already refuse an archived
+    # requirement before spending any LLM call, so enqueuing one costs a
+    # no-op job and converges, which is the cheaper mistake.
     scope_query: Callable[[SelectOfScalar], SelectOfScalar]
 
 
@@ -101,7 +107,7 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Analysis worker died repeatedly while processing this requirement. "
             "Use Restart to try again."
         ),
-        scope_query=lambda stmt: stmt.join(Sprint).where(Requirement.archived == False),  # noqa: E712
+        scope_query=lambda stmt: stmt.join(Sprint),
     ),
     _SweepSpec(
         model=TestPlan,
@@ -115,9 +121,9 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Generation worker died repeatedly while processing this test plan. "
             "Use Restart to try again."
         ),
-        scope_query=lambda stmt: stmt.join(Requirement, TestPlan.requirement_id == Requirement.id)
-        .join(Sprint, Requirement.sprint_id == Sprint.id)
-        .where(Requirement.archived == False),  # noqa: E712
+        scope_query=lambda stmt: stmt.join(
+            Requirement, TestPlan.requirement_id == Requirement.id
+        ).join(Sprint, Requirement.sprint_id == Sprint.id),
     ),
     _SweepSpec(
         model=TestExecution,
@@ -133,9 +139,7 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
         ),
         scope_query=lambda stmt: stmt.join(
             Requirement, TestExecution.requirement_id == Requirement.id
-        )
-        .join(Sprint, Requirement.sprint_id == Sprint.id)
-        .where(Requirement.archived == False),  # noqa: E712
+        ).join(Sprint, Requirement.sprint_id == Sprint.id),
     ),
     _SweepSpec(
         model=ExploratoryRun,
@@ -150,11 +154,8 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Use Restart to try again."
         ),
         # Joins straight to Sprint — unlike plans and executions, an
-        # exploratory run carries its own sprint_id. The Requirement join is
-        # only here for the archived filter.
-        scope_query=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id)
-        .join(Requirement, ExploratoryRun.requirement_id == Requirement.id)
-        .where(Requirement.archived == False),  # noqa: E712
+        # exploratory run carries its own sprint_id.
+        scope_query=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
     ),
 )
 

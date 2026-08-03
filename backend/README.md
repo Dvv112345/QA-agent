@@ -243,7 +243,7 @@ Restart a `failed` requirement (clears the error; uncapped).
 
 #### `DELETE /api/requirements/{id}`
 
-Remove a requirement (204). Allowed in **every** status, including `confirmed`, and after the test environment is confirmed. Removes that requirement's test plan but leaves the environment `confirmed` — removal can only shrink what needs access. A requirement referenced by a test run or exploratory run is _archived_ rather than deleted so those runs stay readable; one with no runs behind it is deleted outright. 422 on finished sprints, or while that requirement has analysis, plan generation, or a run in progress.
+Remove a requirement (204). Allowed in **every** status, including `confirmed`, and after the test environment is confirmed. Removes that requirement's test plan but leaves the environment `confirmed` — removal can only shrink what needs access. A requirement referenced by a test run or exploratory run is _archived_ rather than deleted so those runs stay readable; one with no runs behind it is deleted outright. 422 on finished sprints. Work already in flight does not block the removal — the worker stops itself instead (see the run-staleness note under test runs).
 
 ### Test Environment
 

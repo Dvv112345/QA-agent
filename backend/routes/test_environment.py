@@ -93,7 +93,12 @@ def _apply_check_result(
     No-ops when both are unchanged: the Re-check button re-POSTs the current
     content, and pressing it must not destroy the sprint's plans.
     """
-    if test_env.content == content and test_env.env_vars_json == env_vars_json:
+    # Compared as decoded values, not as JSON text: `json.dumps` preserves
+    # whatever key order the model happened to emit, so identical variables
+    # would otherwise read as a change and destroy every plan in the sprint
+    # on a Re-check — the exact thing this guard exists to prevent.
+    new_vars = json.loads(env_vars_json) if env_vars_json else None
+    if test_env.content == content and test_env.env_vars == new_vars:
         return
     test_env.content = content
     test_env.env_vars_json = env_vars_json
@@ -132,7 +137,9 @@ async def _extract_env_vars_json(
         vars_result = await asyncio.to_thread(llm.generate_env_vars, content, readme, file_tree)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return json.dumps(vars_result.variables)
+    # Sorted so the stored text is stable across calls; the
+    # comparison in `_apply_check_result` decodes anyway.
+    return json.dumps(vars_result.variables, sort_keys=True)
 
 
 @router.get(
@@ -291,8 +298,8 @@ async def edit_test_environment_vars(
                 status_code=422, detail="Variable names and values cannot be blank."
             )
 
-    new_json = json.dumps(body.variables)
-    if new_json != test_env.env_vars_json:
+    new_json = json.dumps(body.variables, sort_keys=True)
+    if body.variables != test_env.env_vars:
         test_env.env_vars_json = new_json
         # A variables edit changes what a run executes against, so it is a
         # content change for staleness purposes and every plan goes.

@@ -1070,3 +1070,68 @@ class TestConfirmTestEnvironment:
 
         resp = await async_client.post(f"/api/test-environment/{row.id}/confirm")
         assert resp.status_code == 200
+
+
+class TestVariableComparisonIgnoresKeyOrder:
+    """`env_vars_json` is compared as decoded values, not as JSON text.
+
+    `json.dumps` preserves whatever order the model emitted, so comparing
+    the serialized form made identical variables read as a change — and a
+    Re-check of unchanged text would then delete every plan in the sprint,
+    the exact outcome the guard exists to prevent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reordered_variables_are_not_a_change(self, async_client, db_session, llm_stub):
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps({"A": "1", "B": "2"}),
+        )
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+        # Same pairs, opposite order.
+        llm_stub.env_vars_result = EnvVarsResult(variables={"B": "2", "A": "1"})
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestEnvironmentAccess, row.id).content_revision == 0
+        assert db_session.get(TestPlan, plan_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_variable_change_still_cascades(
+        self, async_client, db_session, llm_stub
+    ):
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps({"A": "1"}),
+        )
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+        llm_stub.env_vars_result = EnvVarsResult(variables={"A": "CHANGED"})
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestEnvironmentAccess, row.id).content_revision == 1
+        assert db_session.get(TestPlan, plan_id) is None

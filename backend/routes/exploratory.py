@@ -526,10 +526,15 @@ async def restart_exploratory_run(
         raise HTTPException(
             status_code=422, detail="Only failed exploratory runs can be restarted."
         )
-    if run.outdated:
+    # A plan edit does not stop a session already under way (see
+    # tasks/explore_requirement.py) and must not block a restart either —
+    # a charter's cases were consumed once, at generation time. The run is
+    # still *badged* for it; this only decides whether it can run again.
+    blocking = [reason for reason in run.outdated_reasons if reason != "test_plan"]
+    if blocking:
         raise HTTPException(
             status_code=422,
-            detail=outdated_restart_error(run.outdated_reasons, run.requirement_deleted),
+            detail=outdated_restart_error(blocking, run.requirement_deleted),
         )
 
     run.status = ExploratoryRunStatus.PENDING

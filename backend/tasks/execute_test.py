@@ -58,8 +58,10 @@ _OUTPUT_MAX_CHARS = 5000
 
 _FILE_TRUNCATION_MARKER = "\n… (truncated)"
 
-# Should be unreachable via normal flow — guarded per this codebase's
-# convention of never trusting a supposedly-impossible state blindly.
+# Both are reachable now that confirmed artifacts are editable: a job can
+# sit queued while the user edits the plan or re-opens the environment.
+# They were unreachable when the pipeline was a one-way ratchet, and the
+# comment here used to say so.
 _PLAN_NOT_APPROVED_ERROR = "Test plan is no longer approved."
 _ENV_VARS_MISSING_ERROR = "Test environment access variables have not been established."
 
@@ -243,9 +245,9 @@ def execute_test_task(test_execution_id: int) -> None:
             return
 
         # No LLM call happens here at all — env vars are generated exactly
-        # once, synchronously, inside the test-environment stage. This is a
-        # pure read with a defensive guard (should be unreachable: reaching
-        # this task already implies the test environment was confirmed).
+        # once, synchronously, inside the test-environment stage. Reachable:
+        # the route checks the environment is confirmed, but the user can
+        # re-open it while this job waits in the queue.
         test_env = sprint.test_environment
         env_vars = test_env.env_vars if test_env else None
         if not env_vars:
@@ -323,7 +325,13 @@ def execute_test_task(test_execution_id: int) -> None:
                 # changes.
                 session.expire_all()
                 if execution.outdated:
-                    _fail_execution(session, execution, SUPERSEDED_ERROR)
+                    _fail_execution(
+                        session,
+                        execution,
+                        REQUIREMENT_DELETED_ERROR
+                        if execution.requirement_deleted
+                        else SUPERSEDED_ERROR,
+                    )
                     logger.info(
                         "Test execution %d superseded mid-run (%s) — stopping",
                         test_execution_id,
