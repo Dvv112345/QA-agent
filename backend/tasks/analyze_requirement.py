@@ -115,6 +115,9 @@ def analyze_requirement_task(requirement_id: int) -> None:
                 )
                 requirement.description = result.rewritten_description
                 requirement.revision_count += 1
+                # A rewrite is a content change even though no user typed
+                # it — any run grounded in the old text is now outdated.
+                requirement.content_revision += 1
                 requirement.pending_answer = None
             else:
                 result = llm.check_clarity(

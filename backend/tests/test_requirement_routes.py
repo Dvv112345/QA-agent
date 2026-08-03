@@ -499,8 +499,11 @@ class TestRestartRequirement:
 
 
 class TestConfirmedTerminal:
+    """Confirmation is no longer terminal for *content* — only for the
+    lifecycle transitions that presuppose an unconfirmed row."""
+
     @pytest.mark.asyncio
-    async def test_all_mutations_rejected(self, async_client, db_session):
+    async def test_lifecycle_transitions_still_rejected(self, async_client, db_session):
         sprint = _seed_sprint(db_session)
         req = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
 
@@ -508,13 +511,26 @@ class TestConfirmedTerminal:
             f"/api/requirements/{req.id}/answer", json={"answer": "hi"}
         )
         confirm = await async_client.post(f"/api/requirements/{req.id}/confirm")
-        edit = await async_client.patch(f"/api/requirements/{req.id}", json={"description": "New."})
         restart = await async_client.post(f"/api/requirements/{req.id}/restart")
 
         assert answer.status_code == 422
         assert confirm.status_code == 422
-        assert edit.status_code == 422
         assert restart.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_edit_is_allowed_and_reanalyzes(self, async_client, db_session, stub_queue):
+        """The point of the feature: a confirmed requirement can be corrected."""
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+
+        resp = await async_client.patch(
+            f"/api/requirements/{req.id}", json={"description": "Corrected text."}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["description"] == "Corrected text."
+        assert resp.json()["status"] == "pending"
+        assert stub_queue.enqueued == [req.id]
 
 
 # ── DELETE /api/requirements/{id} ────────────────────────────────────
@@ -547,6 +563,101 @@ class TestDeleteRequirement:
     async def test_unknown_404(self, async_client, db_session):
         resp = await async_client.delete("/api/requirements/99999")
         assert resp.status_code == 404
+
+
+class TestEditCascadeThroughTheApi:
+    """The edit and its cascade must land in one transaction."""
+
+    def _seed_full_sprint(self, db_session):
+        from backend.models.database import TestEnvironmentStatus, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_case, _seed_test_env, _seed_test_plan
+
+        sprint = _seed_sprint(db_session)
+        test_env = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        plan = _seed_test_plan(db_session, requirement, status=TestPlanStatus.APPROVED)
+        _seed_test_case(db_session, plan, position=0, title="Original case")
+        db_session.refresh(requirement)
+        return sprint, requirement, plan, test_env
+
+    @pytest.mark.asyncio
+    async def test_edit_removes_plan_and_reopens_environment(
+        self, async_client, db_session, stub_queue
+    ):
+        from backend.models.database import TestEnvironmentStatus, TestPlan
+
+        sprint, requirement, plan, test_env = self._seed_full_sprint(db_session)
+        plan_id = plan.id
+
+        resp = await async_client.patch(
+            f"/api/requirements/{requirement.id}", json={"description": "Reworded."}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is None
+        assert db_session.get(type(test_env), test_env.id).status == TestEnvironmentStatus.READY
+        assert db_session.get(Requirement, requirement.id).content_revision == 1
+
+    @pytest.mark.asyncio
+    async def test_edit_blocked_while_a_run_is_in_flight(
+        self, async_client, db_session, stub_queue
+    ):
+        """The cascade deletes the plan row a running job is reading."""
+        from backend.models.database import TestExecutionStatus, TestPlan
+        from backend.tests.test_sprints import _seed_test_execution, _seed_test_run
+
+        sprint, requirement, plan, _ = self._seed_full_sprint(db_session)
+        plan_id = plan.id
+        run = _seed_test_run(db_session, sprint)
+        _seed_test_execution(db_session, run, requirement, status=TestExecutionStatus.RUNNING)
+        db_session.refresh(requirement)
+
+        resp = await async_client.patch(
+            f"/api/requirements/{requirement.id}", json={"description": "Reworded."}
+        )
+
+        assert resp.status_code == 422
+        assert "in progress" in resp.json()["detail"]
+        # Nothing was destroyed on the way to the refusal.
+        assert db_session.get(TestPlan, plan_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_delete_preserves_the_run_and_its_case_content(
+        self, async_client, db_session, stub_queue
+    ):
+        """The whole point of archiving: history survives the deletion."""
+        from backend.models.database import TestCaseExecution, TestExecutionStatus
+        from backend.tests.test_sprints import (
+            _seed_test_case_execution,
+            _seed_test_execution,
+            _seed_test_run,
+        )
+
+        sprint, requirement, plan, _ = self._seed_full_sprint(db_session)
+        case = plan.cases[0]
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(
+            db_session, run, requirement, status=TestExecutionStatus.COMPLETED
+        )
+        case_execution = _seed_test_case_execution(db_session, execution, case)
+        case_execution_id = case_execution.id
+        db_session.refresh(requirement)
+
+        resp = await async_client.delete(f"/api/requirements/{requirement.id}")
+        assert resp.status_code == 204
+
+        db_session.expire_all()
+        surviving = db_session.get(TestCaseExecution, case_execution_id)
+        assert surviving is not None
+        assert surviving.test_case.title == "Original case"
+
+        detail = await async_client.get(f"/api/test-runs/{run.id}")
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body["executions"][0]["cases"][0]["test_case"]["title"] == "Original case"
+        assert body["outdated_reasons"] == ["requirement"]
+        assert body["requirement_deleted"] is True
 
 
 class TestArchivedRequirementIsGone:
@@ -730,7 +841,11 @@ class TestEnqueueWiring:
 
 
 class TestRequirementsLock:
-    """Once the test environment is confirmed, the requirement set is frozen."""
+    """The set is no longer frozen by a confirmed environment.
+
+    Adding sends the environment back for re-checking; deleting leaves it
+    confirmed, because removal can only shrink what needs access.
+    """
 
     def _seed_locked_sprint(self, db_session):
         from backend.models.database import TestEnvironmentStatus
@@ -742,7 +857,11 @@ class TestRequirementsLock:
         return sprint
 
     @pytest.mark.asyncio
-    async def test_create_422_when_locked(self, async_client, db_session):
+    async def test_create_allowed_and_unconfirms_the_environment(
+        self, async_client, db_session, stub_queue
+    ):
+        from backend.models.database import TestEnvironmentStatus
+
         sprint = self._seed_locked_sprint(db_session)
 
         resp = await async_client.post(
@@ -750,18 +869,25 @@ class TestRequirementsLock:
             json=[{"name": "New", "description": "New requirement."}],
         )
 
-        assert resp.status_code == 422
-        assert "locked" in resp.json()["detail"]
+        assert resp.status_code == 201
+        db_session.refresh(sprint)
+        assert sprint.test_environment.status == TestEnvironmentStatus.READY
+        assert sprint.environment_confirmed is False
 
     @pytest.mark.asyncio
-    async def test_delete_422_when_locked(self, async_client, db_session):
+    async def test_delete_allowed_and_leaves_the_environment_confirmed(
+        self, async_client, db_session
+    ):
+        from backend.models.database import TestEnvironmentStatus
+
         sprint = self._seed_locked_sprint(db_session)
         confirmed = sprint.requirements[0]
 
         resp = await async_client.delete(f"/api/requirements/{confirmed.id}")
 
-        assert resp.status_code == 422
-        assert "locked" in resp.json()["detail"]
+        assert resp.status_code == 204
+        db_session.refresh(sprint)
+        assert sprint.test_environment.status == TestEnvironmentStatus.CONFIRMED
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("te_status", ["needs_info", "ready"])

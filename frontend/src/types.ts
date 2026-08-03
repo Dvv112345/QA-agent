@@ -25,7 +25,7 @@ export interface SprintResponse {
   repo: RepoResponse | null
   requirements_complete: boolean
   has_test_environment_submission: boolean
-  requirements_locked: boolean
+  environment_confirmed: boolean
   has_test_plans: boolean
   test_plans_complete: boolean
   has_test_runs: boolean

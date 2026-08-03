@@ -105,7 +105,7 @@ async def generate_test_plans(
     """
     sprint = _get_sprint_or_404(session, sprint_id)
     _ensure_sprint_active(sprint)
-    if not sprint.requirements_locked:
+    if not sprint.environment_confirmed:
         raise HTTPException(
             status_code=422,
             detail="Confirm the test environment before generating test plans.",

@@ -47,7 +47,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     repo: null,
     requirements_complete: true,
     has_test_environment_submission: false,
-    requirements_locked: false,
+    environment_confirmed: false,
     has_test_plans: false,
     test_plans_complete: false,
     has_test_runs: false,
@@ -311,7 +311,7 @@ describe('TestEnvironmentPage', () => {
 
   it('shows the Continue to Test Plans link when confirmed', async () => {
     mockFetchSprint.mockResolvedValue(
-      makeSprint({ has_test_environment_submission: true, requirements_locked: true }),
+      makeSprint({ has_test_environment_submission: true, environment_confirmed: true }),
     )
     mockFetchTestEnvironment.mockResolvedValue(
       makeTestEnv({ status: 'confirmed', clarifying_question: null }),
@@ -441,7 +441,7 @@ describe('TestEnvironmentPage', () => {
 
     it('is read-only once confirmed', async () => {
       mockFetchSprint.mockResolvedValue(
-        makeSprint({ has_test_environment_submission: true, requirements_locked: true }),
+        makeSprint({ has_test_environment_submission: true, environment_confirmed: true }),
       )
       mockFetchTestEnvironment.mockResolvedValue(
         makeTestEnv({

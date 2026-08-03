@@ -53,7 +53,7 @@ class SprintResponse(SQLModel):
     repo: RepoResponse | None = None
     requirements_complete: bool = False
     has_test_environment_submission: bool = False
-    requirements_locked: bool = False
+    environment_confirmed: bool = False
     has_test_plans: bool = False
     test_plans_complete: bool = False
     has_test_runs: bool = False

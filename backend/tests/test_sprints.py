@@ -692,7 +692,7 @@ class TestSprintFlags:
             row = data[0] if isinstance(data, list) else data
             assert row["requirements_complete"] is False
             assert row["has_test_environment_submission"] is False
-            assert row["requirements_locked"] is False
+            assert row["environment_confirmed"] is False
 
     @pytest.mark.asyncio
     async def test_requirements_complete_when_all_confirmed(self, async_client, db_session):
@@ -733,7 +733,7 @@ class TestSprintFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_environment_submission"] is True
-            assert row["requirements_locked"] is False
+            assert row["environment_confirmed"] is False
 
     @pytest.mark.asyncio
     async def test_locked_when_test_env_confirmed(self, async_client, db_session):
@@ -748,7 +748,7 @@ class TestSprintFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_environment_submission"] is True
-            assert row["requirements_locked"] is True
+            assert row["environment_confirmed"] is True
 
 
 class TestTestEnvironmentModelProperties:

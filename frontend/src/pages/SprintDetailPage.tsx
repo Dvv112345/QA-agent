@@ -228,13 +228,13 @@ export default function SprintDetailPage() {
             key={requirement.id}
             requirement={requirement}
             sprintActive={sprint.active}
-            locked={sprint.requirements_locked}
+            locked={sprint.environment_confirmed}
             onUpdated={handleUpdated}
             onRemoved={handleRemoved}
           />
         ))}
 
-        {sprint.active && !sprint.requirements_locked && (
+        {sprint.active && !sprint.environment_confirmed && (
           <>
             <PrdUploadForm
               sprintId={sprintId}

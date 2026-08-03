@@ -35,7 +35,7 @@ const fakeSprint: SprintResponse = {
   },
   requirements_complete: false,
   has_test_environment_submission: false,
-  requirements_locked: false,
+  environment_confirmed: false,
   has_test_plans: false,
   test_plans_complete: false,
   has_test_runs: false,

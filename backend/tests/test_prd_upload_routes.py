@@ -325,15 +325,19 @@ class TestPrdUploadValidation:
         assert split_stub.calls == []
 
     @pytest.mark.asyncio
-    async def test_locked_requirements(self, async_client, db_session, split_stub):
+    async def test_upload_allowed_after_environment_confirmed(
+        self, async_client, db_session, split_stub
+    ):
+        """A confirmed environment no longer freezes the set — the upload is
+        an add, so it sends the environment back for re-checking instead."""
         sprint = _seed_sprint(db_session)
         _lock_requirements(db_session, sprint)
 
         resp = await _upload(async_client, sprint.id, _md_upload())
 
-        assert resp.status_code == 422
-        assert "locked" in resp.json()["detail"]
-        assert split_stub.calls == []
+        assert resp.status_code == 201
+        db_session.refresh(sprint)
+        assert sprint.test_environment.status == TestEnvironmentStatus.READY
 
     @pytest.mark.asyncio
     async def test_unknown_sprint(self, async_client, split_stub):

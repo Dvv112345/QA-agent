@@ -83,8 +83,16 @@ class Sprint(SQLModel, table=True):
         return self.test_environment is not None
 
     @property
-    def requirements_locked(self) -> bool:
-        """Whether the requirement set is frozen (test environment confirmed)."""
+    def environment_confirmed(self) -> bool:
+        """Whether the test environment has been confirmed.
+
+        Named for what it reports rather than what it used to enforce: this
+        was ``requirements_locked`` back when confirming the environment
+        froze the requirement set. Requirements are editable now — adding
+        one simply sends the environment back for re-checking — so the only
+        thing left hanging off this flag is the plan-generation gate, which
+        is a genuine precondition rather than a freeze.
+        """
         return (
             self.test_environment is not None
             and self.test_environment.status == TestEnvironmentStatus.CONFIRMED

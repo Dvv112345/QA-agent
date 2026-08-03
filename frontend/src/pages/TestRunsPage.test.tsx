@@ -41,7 +41,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     repo: null,
     requirements_complete: true,
     has_test_environment_submission: true,
-    requirements_locked: true,
+    environment_confirmed: true,
     has_test_plans: true,
     test_plans_complete: true,
     has_test_runs: false,

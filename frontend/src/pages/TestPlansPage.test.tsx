@@ -41,7 +41,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     repo: null,
     requirements_complete: true,
     has_test_environment_submission: true,
-    requirements_locked: true,
+    environment_confirmed: true,
     has_test_plans: false,
     test_plans_complete: false,
     has_test_runs: false,
@@ -95,7 +95,7 @@ describe('TestPlansPage', () => {
   })
 
   it('shows guard notice when the test environment is not confirmed', async () => {
-    mockFetchSprint.mockResolvedValue(makeSprint({ requirements_locked: false }))
+    mockFetchSprint.mockResolvedValue(makeSprint({ environment_confirmed: false }))
     renderPage()
 
     await waitFor(() => {

@@ -115,7 +115,7 @@ export default function TestPlansPage() {
 
   const active = sprint.active
   // Plans can outlive the lock state (finished sprint stays readable).
-  const guarded = plans.length === 0 && (!active || !sprint.requirements_locked)
+  const guarded = plans.length === 0 && (!active || !sprint.environment_confirmed)
   const draftedCount = plans.filter((plan) => !isInProgress(plan)).length
   const approvedCount = plans.filter((plan) => plan.status === 'approved').length
   const allApproved = plans.length > 0 && approvedCount === plans.length

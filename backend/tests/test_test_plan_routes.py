@@ -105,7 +105,7 @@ class TestGenerate:
         assert "finished" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_422_unless_requirements_locked(self, async_client, db_session, stub_queue):
+    async def test_422_unless_environment_confirmed(self, async_client, db_session, stub_queue):
         sprint = _seed_sprint(db_session)
         _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
         # test env submitted but not confirmed → not locked
