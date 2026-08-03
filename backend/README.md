@@ -280,7 +280,7 @@ Create or update the access description (`{ "content": "..." }`) and run a fresh
 }
 ```
 
-**Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, already confirmed, or empty content), 502 (LLM failure — nothing is persisted).
+Resubmitting a **confirmed** description is allowed and re-runs the check. If the description or the re-extracted variables differ from what is stored, every test plan in the sprint is removed and existing runs are marked out of date; re-checking identical text changes nothing. **Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, empty content, or work in progress), 502 (LLM failure — nothing is persisted).
 
 #### `POST /api/test-environment/{te_id}/answer`
 
@@ -292,11 +292,11 @@ Answer the clarifying question (`{ "answer": "..." }`); the LLM rewrites the des
 
 Directly correct the LLM-extracted variables — no LLM call, uncapped, doesn't touch `content`/`status`/`revision_count`. Body: `{ "variables": { "NAME": "value", … } }`.
 
-**Errors:** 404, 422 (finished sprint, already confirmed, empty `variables`, or a blank name/value).
+Editable after confirmation: changing the variables removes every test plan in the sprint, returns the row to `ready` for re-confirmation, and marks existing runs out of date. `updated_at` is deliberately _not_ stamped — on this row it means "last LLM check" and drives `requirements_stale`. **Errors:** 404, 422 (finished sprint, empty `variables`, a blank name/value, or work in progress).
 
 #### `POST /api/test-environment/{te_id}/confirm`
 
-Finalize the access description. Terminal — and it **locks the sprint's requirement set** (requirement create/delete return 422 afterwards).
+Finalize the access description. This is the precondition for generating test plans (`SprintResponse.environment_confirmed`). Not terminal: the description and its variables stay editable, and adding a requirement returns the row to `ready` for re-checking.
 
 **Errors:** 404, 422 (not `ready`, finished sprint, requirements incomplete, `requirements_stale` — a confirmed requirement changed since the last check; re-POST the current content to re-check first — or environment variables not yet extracted, which should be unreachable).
 
@@ -306,7 +306,7 @@ The third sprint stage, available once the test environment is confirmed (`envir
 
 Planning is deliberately **code-blind**: it is grounded in the requirement, README, captured file tree, and confirmed test-environment description, but never reads repository files. A plan defines what "correct" means, so reading the implementation is where that judgment drifts into restating what the code already does; the endpoint paths and response shapes a script needs are resolved later by test-script generation, which does have repo access. The prompt instead states what it is planning for — each case becomes one Playwright script, so expected results must be script-checkable, preconditions must be seedable from the confirmed environment, cases must be repeatable, and steps describe _what_ to verify rather than naming endpoints or selectors. Checks no script could make are left to exploratory testing.
 
-Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) → approved` (terminal), plus `failed` (restartable). Poll the list endpoint to observe progress.
+Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) → approved`, plus `failed` (restartable). Approval gates _running_, not editing — an approved plan can still be edited or given feedback, which returns it to `draft`. Poll the list endpoint to observe progress.
 
 #### `POST /api/sprints/{sprint_id}/test-plans/generate`
 
@@ -346,19 +346,19 @@ List a sprint's plans, ordered by requirement creation — the polling endpoint 
 
 Send free-text feedback on a `draft` plan (`{ "feedback": "..." }`); the plan re-enters generation and the LLM produces a full revised plan. Capped at `MAX_TEST_PLAN_FEEDBACK_ROUNDS` (default 3) per plan — past the cap this returns 422 and the plan must be edited directly (uncapped).
 
-**Errors:** 404, 422 (not `draft`, cap reached, empty feedback, finished sprint).
+**Errors:** 404, 422 (not `draft` or `approved`, cap reached, empty feedback, finished sprint, work in progress).
 
 #### `PATCH /api/test-plans/{plan_id}`
 
 Directly edit a `draft` plan — no LLM involved, uncapped, never increments `revision_count`, stays `draft`. Body: `{ "complexity": "low|medium|high", "summary": "...", "cases": [{ "title": "...", "preconditions": null, "steps": "one step per line", "expected_result": "...", "case_type": "...", "priority": "high|medium|low" }, …] }`. Cases are replaced wholesale.
 
-**Errors:** 404, 422 (not `draft`, finished sprint, or field validation: no cases, blank title/steps/expected result/type, invalid priority/complexity).
+**Errors:** 404, 422 (not `draft` or `approved`, finished sprint, work in progress, or field validation: no cases, blank title/steps/expected result/type, invalid priority/complexity).
 
 #### `POST /api/test-plans/{plan_id}/approve`
 
-Approve a `draft` plan. Terminal — no unapprove, no regenerate; feedback/edit return 422 afterwards. When every requirement's plan is approved, `SprintResponse.test_plans_complete` flips to `true`.
+Approve a `draft` plan. There is no unapprove, but editing an approved plan returns it to `draft` and requires approving again. When every requirement's plan is approved, `SprintResponse.test_plans_complete` flips to `true`.
 
-**Errors:** 404, 422 (not `draft`, finished sprint).
+**Errors:** 404, 422 (already approved, not `draft`, finished sprint).
 
 #### `POST /api/sprints/{sprint_id}/test-plans/approve-all`
 
@@ -389,6 +389,7 @@ Create a run covering the selected requirements. Body: `{ "requirement_ids": [1,
 #### `GET /api/sprints/{sprint_id}/test-runs`
 
 List a sprint's runs, newest first. Each row includes rolled-up `status`, `requirement_names`, and case counts (`total_cases`, `passed_cases`, `failed_cases`, `error_cases`). 404 on unknown sprint.
+Every run — scripted and exploratory — also carries `outdated_reasons` and `requirement_deleted`. A run records the content revisions of the requirement, test plan, and test environment it executed against; if any has since changed, the corresponding reason (`requirement`, `test_plan`, `test_environment`) appears. An empty list means the run still reflects the current sprint — there is no separate `outdated` boolean, since it would just be `outdated_reasons.length > 0`. `requirement_deleted` only selects the wording for the `requirement` reason (deletion is one of the ways a requirement can differ, not a separate state). **An outdated run cannot be restarted** — start a new one to test the current state.
 
 #### `GET /api/test-runs/{run_id}`
 
@@ -397,6 +398,8 @@ Fetch one run's full detail (same shape as the create response). 404 if not foun
 #### `GET /api/test-case-executions/{id}/script`
 
 Download the exact script that produced this case's result as a `.py` file attachment — credential-free by construction (scripts only ever read `os.environ["NAME"]`). 404 if the row or its script doesn't exist yet.
+
+Refused (422) when the execution is outdated — restarting would re-run against content it was never planned for.
 
 #### `POST /api/test-executions/{execution_id}/restart`
 
@@ -463,7 +466,7 @@ Serve the PNG captured when the finding was recorded. 404 when the finding has n
 
 #### `POST /api/exploratory-runs/{run_id}/restart`
 
-Restart a `failed` run (uncapped). Charter-level resumability is automatic: already-`completed` sessions are skipped and the in-flight charter restarts from scratch, since a half-explored browser died with the worker. Findings already recorded are kept — they were real observations regardless.
+Restart a `failed` run (uncapped), provided it is not outdated. Charter-level resumability is automatic: already-`completed` sessions are skipped and the in-flight charter restarts from scratch, since a half-explored browser died with the worker. Findings already recorded are kept — they were real observations regardless.
 
 **Errors:** 404, 422 (not `failed`, finished sprint).
 

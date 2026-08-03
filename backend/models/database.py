@@ -137,6 +137,11 @@ class RequirementStatus(str, Enum):
 # (shared by the finish-sprint sweep and the worker task's guard).
 SPRINT_FINISHED_ERROR = "Sprint was finished before analysis completed."
 
+# Same disposition as the above (fail the row, stop working on it) but a
+# different cause — reporting "sprint finished" for a deleted requirement
+# sends a reader looking at the wrong thing entirely.
+REQUIREMENT_DELETED_ERROR = "The requirement was deleted before this finished."
+
 
 class Requirement(SQLModel, table=True):
     """A single requirement attached to a sprint, analyzed for QA clarity."""

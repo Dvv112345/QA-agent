@@ -22,6 +22,7 @@ from sqlmodel import Session, select
 from backend.config import MAX_AUTO_RETRIES
 from backend.database import new_session
 from backend.models.database import (
+    REQUIREMENT_DELETED_ERROR,
     SPRINT_FINISHED_ERROR,
     TestCase,
     TestPlan,
@@ -99,22 +100,23 @@ def generate_test_plan_task(test_plan_id: int) -> None:
 
         requirement = plan.requirement
         sprint = requirement.sprint if requirement is not None else None
-        # An archived requirement is one the user deleted; treat it exactly
-        # like a vanished one rather than planning tests for it.
-        if requirement is not None and requirement.archived:
-            requirement = None
-            sprint = None
-        if sprint is None or not sprint.active:
-            # Sprint finished (or vanished) after this job was enqueued —
-            # mirror the finish-sprint sweep instead of generating.
+        # Deleted requirement and finished sprint get the same disposition
+        # but different reasons — reporting "sprint finished" for a deleted
+        # requirement sends a reader looking at the wrong thing.
+        deleted = requirement is not None and requirement.archived
+        if deleted or sprint is None or not sprint.active:
             plan.status = TestPlanStatus.FAILED
-            plan.error = SPRINT_FINISHED_ERROR
+            plan.error = REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR
             plan.last_heartbeat = None
             plan.pending_feedback = None
             plan.updated_at = _now()
             session.add(plan)
             session.commit()
-            logger.info("Test plan %d: sprint inactive — marked failed", test_plan_id)
+            logger.info(
+                "Test plan %d: %s — marked failed",
+                test_plan_id,
+                "requirement deleted" if deleted else "sprint inactive",
+            )
             return
 
         plan.status = TestPlanStatus.GENERATING

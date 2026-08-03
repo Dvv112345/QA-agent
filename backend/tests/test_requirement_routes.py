@@ -600,6 +600,27 @@ class TestEditCascadeThroughTheApi:
         assert db_session.get(Requirement, requirement.id).content_revision == 1
 
     @pytest.mark.asyncio
+    async def test_resubmitting_identical_text_does_not_cascade(
+        self, async_client, db_session, stub_queue
+    ):
+        """Symmetric with the environment path — an unchanged description must
+        not destroy an approved plan."""
+        from backend.models.database import TestEnvironmentStatus, TestPlan
+
+        sprint, requirement, plan, test_env = self._seed_full_sprint(db_session)
+        plan_id = plan.id
+
+        resp = await async_client.patch(
+            f"/api/requirements/{requirement.id}", json={"description": requirement.description}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is not None
+        assert db_session.get(Requirement, requirement.id).content_revision == 0
+        assert db_session.get(type(test_env), test_env.id).status == TestEnvironmentStatus.CONFIRMED
+
+    @pytest.mark.asyncio
     async def test_edit_blocked_while_a_run_is_in_flight(
         self, async_client, db_session, stub_queue
     ):

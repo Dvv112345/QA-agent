@@ -131,6 +131,17 @@ def _reload_execution(db_session, execution_id) -> TestExecution:
 # ── POST /api/sprints/{id}/test-runs ──────────────────────────────────
 
 
+def _seed_run_ready_sprint(db_session, active=True, readme_user_provided=False):
+    """A sprint whose test environment is confirmed — a precondition for
+    creating a run, mirroring the exploratory route."""
+    from backend.models.database import TestEnvironmentStatus
+
+    sprint = _seed_sprint(db_session, active=active, readme_user_provided=readme_user_provided)
+    _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+    db_session.refresh(sprint)
+    return sprint
+
+
 class TestCreateTestRun:
     @pytest.mark.asyncio
     async def test_404_unknown_sprint(self, async_client, stub_queue):
@@ -141,7 +152,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_finished_sprint(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session, active=False)
+        sprint = _seed_run_ready_sprint(db_session, active=False)
         requirement = _seed_runnable_requirement(db_session, sprint)
 
         resp = await async_client.post(
@@ -151,8 +162,53 @@ class TestCreateTestRun:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_422_empty_requirement_ids(self, async_client, db_session, stub_queue):
+    async def test_422_when_environment_not_confirmed(self, async_client, db_session, stub_queue):
+        """Scripted runs need a confirmed environment as much as exploratory
+        ones do — the worker injects its variables into every subprocess.
+
+        Newly reachable: adding a requirement un-confirms the environment
+        without removing plans, so an approved plan can outlive confirmation.
+        Without this the run is created and every case fails on missing
+        variables.
+        """
+        from backend.models.database import TestEnvironmentStatus
+
         sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.READY)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id]},
+        )
+
+        assert resp.status_code == 422
+        assert "Confirm the test environment" in resp.json()["detail"]
+        assert stub_queue.enqueued_executions == []
+
+    @pytest.mark.asyncio
+    async def test_422_when_environment_has_no_variables(
+        self, async_client, db_session, stub_queue
+    ):
+        from backend.models.database import TestEnvironmentStatus
+
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(
+            db_session, sprint, status=TestEnvironmentStatus.CONFIRMED, env_vars_json=None
+        )
+        requirement = _seed_runnable_requirement(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id]},
+        )
+
+        assert resp.status_code == 422
+        assert "variables" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_422_empty_requirement_ids(self, async_client, db_session, stub_queue):
+        sprint = _seed_run_ready_sprint(db_session)
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/test-runs", json={"requirement_ids": []}
@@ -164,7 +220,7 @@ class TestCreateTestRun:
     async def test_422_foreign_or_unconfirmed_requirement(
         self, async_client, db_session, stub_queue
     ):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         not_confirmed = _seed_requirement(db_session, sprint, status=RequirementStatus.READY)
 
         resp = await async_client.post(
@@ -177,7 +233,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_plan_not_approved(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_requirement(
             db_session, sprint, status=RequirementStatus.CONFIRMED, name="No Plan"
         )
@@ -191,7 +247,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_plan_draft_not_approved(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_requirement(
             db_session, sprint, status=RequirementStatus.CONFIRMED, name="Draft Plan"
         )
@@ -206,7 +262,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_already_in_progress(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_runnable_requirement(db_session, sprint)
         run = _seed_test_run(db_session, sprint)
         _seed_test_execution(db_session, run, requirement, status=TestExecutionStatus.RUNNING)
@@ -222,7 +278,7 @@ class TestCreateTestRun:
     async def test_creates_run_with_executions_and_cases_in_position_order(
         self, async_client, db_session, stub_queue
     ):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         login = _seed_runnable_requirement(db_session, sprint, name="Login", case_count=2)
         search = _seed_runnable_requirement(db_session, sprint, name="Search", case_count=1)
 
@@ -246,7 +302,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_enqueues_and_persists_job_id(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(
@@ -267,7 +323,7 @@ class TestCreateTestRun:
         self, async_client, db_session, stub_queue
     ):
         stub_queue.available = False
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(
@@ -285,7 +341,7 @@ class TestCreateTestRun:
     async def test_refreshes_readme_and_file_tree_once_for_multiple_requirements(
         self, async_client, db_session, stub_queue, refresh_stub
     ):
-        sprint = _seed_sprint(db_session, readme_user_provided=False)
+        sprint = _seed_run_ready_sprint(db_session, readme_user_provided=False)
         login = _seed_runnable_requirement(db_session, sprint, name="Login", case_count=1)
         search = _seed_runnable_requirement(db_session, sprint, name="Search", case_count=1)
 
@@ -303,7 +359,7 @@ class TestCreateTestRun:
     async def test_skips_readme_refresh_when_user_provided(
         self, async_client, db_session, stub_queue, refresh_stub
     ):
-        sprint = _seed_sprint(db_session, readme_user_provided=True)
+        sprint = _seed_run_ready_sprint(db_session, readme_user_provided=True)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(
@@ -320,7 +376,7 @@ class TestCreateTestRun:
         self, async_client, db_session, stub_queue, refresh_stub
     ):
         refresh_stub.raise_on_readme = True
-        sprint = _seed_sprint(db_session, readme_user_provided=False)
+        sprint = _seed_run_ready_sprint(db_session, readme_user_provided=False)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(

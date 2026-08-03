@@ -37,6 +37,7 @@ from backend.config import (
 )
 from backend.database import new_session
 from backend.models.database import (
+    REQUIREMENT_DELETED_ERROR,
     SPRINT_FINISHED_ERROR,
     ExploratoryFinding,
     ExploratoryRun,
@@ -205,14 +206,16 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
 
         requirement = run.requirement
         sprint = requirement.sprint if requirement is not None else None
-        # Archived means the user deleted it — same disposition as a
-        # vanished requirement, never drive a browser on its behalf.
-        if requirement is not None and requirement.archived:
-            requirement = None
-            sprint = None
-        if sprint is None or not sprint.active:
-            _fail_run(session, run, SPRINT_FINISHED_ERROR)
-            logger.info("Exploratory run %d: sprint inactive — marked failed", exploratory_run_id)
+        # Deleted requirement and finished sprint share a disposition but
+        # not a cause — name the right one.
+        deleted = requirement is not None and requirement.archived
+        if deleted or sprint is None or not sprint.active:
+            _fail_run(session, run, REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR)
+            logger.info(
+                "Exploratory run %d: %s — marked failed",
+                exploratory_run_id,
+                "requirement deleted" if deleted else "sprint inactive",
+            )
             return
 
         test_env = sprint.test_environment

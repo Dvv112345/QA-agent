@@ -15,6 +15,7 @@ from backend.models.database import (
     Sprint,
     TestCaseExecution,
     TestCaseExecutionStatus,
+    TestEnvironmentStatus,
     TestExecution,
     TestExecutionStatus,
     TestPlanStatus,
@@ -140,6 +141,25 @@ async def create_test_run(
     if not body.requirement_ids:
         raise HTTPException(status_code=422, detail="At least one requirement must be selected.")
 
+    # Scripted runs need this as much as exploratory ones do — the worker
+    # injects `env_vars` into every script's subprocess. It went unchecked
+    # while a confirmed environment was permanent; now that adding a
+    # requirement un-confirms it without removing plans, a run can be started
+    # against an environment that is no longer confirmed, and every case
+    # fails on missing variables. Mirrors `_resolve_env_vars` in
+    # routes/exploratory.py.
+    test_env = sprint.test_environment
+    if test_env is None or test_env.status != TestEnvironmentStatus.CONFIRMED:
+        raise HTTPException(
+            status_code=422,
+            detail="Confirm the test environment before running tests.",
+        )
+    if not test_env.env_vars:
+        raise HTTPException(
+            status_code=422,
+            detail="No test environment variables are available for this sprint.",
+        )
+
     requirements_by_id = {r.id: r for r in sprint.requirements}
     selected = []
     invalid_ids = []
@@ -199,7 +219,7 @@ async def create_test_run(
 
     # Each execution records the content revisions it is about to run
     # against; a later edit upstream is what makes it read as outdated.
-    env_revision = sprint.test_environment.content_revision if sprint.test_environment else 0
+    env_revision = test_env.content_revision
     run = TestRun(sprint_id=sprint_id)
     executions: list[TestExecution] = []
     for requirement in selected:

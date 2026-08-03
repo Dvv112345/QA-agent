@@ -587,8 +587,14 @@ class TestSprintFileTreeCapture:
 
 
 def _seed_test_env(db_session, sprint, status=None, **kwargs):
+    import json as _json
+
     from backend.models.database import TestEnvironmentAccess, TestEnvironmentStatus
 
+    # A confirmed row always has extracted variables — confirm() refuses
+    # without them — so seed a realistic one unless the test says otherwise.
+    if status == TestEnvironmentStatus.CONFIRMED:
+        kwargs.setdefault("env_vars_json", _json.dumps({"BASE_URL": "https://staging.example.com"}))
     row = TestEnvironmentAccess(
         sprint_id=sprint.id,
         content=kwargs.pop("content", "SSH into staging as qa@staging."),

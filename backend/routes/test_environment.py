@@ -85,25 +85,40 @@ def _ensure_no_work_in_flight(sprint: Sprint) -> None:
         )
 
 
-def _apply_content_change(
+def _apply_check_result(
     session: Session,
     sprint: Sprint,
     test_env: TestEnvironmentAccess,
     content: str,
+    env_vars_json: str | None,
 ) -> None:
-    """Store new access text and invalidate everything written against the old.
+    """Store a checked description with its variables, invalidating the old pair.
 
-    Both paths that can change this text — a resubmission and an LLM rewrite
-    from answering a clarifying question — go through here. They were
-    hand-rolled separately at first and the answer path silently omitted the
-    invalidation, so the rule lives in one place now.
+    **Both fields move together and neither may be written past this
+    function.** The description is what plans were generated against; the
+    variables are what runs actually execute against. Changing either without
+    invalidating leaves plans describing an environment that no longer exists
+    and runs reporting as current — and the variables are the easier one to
+    miss, because a re-check of *unchanged* text still re-extracts them and
+    the LLM need not return the same values.
 
-    No-ops when the text is unchanged: the Re-check button re-POSTs the
-    current content, and pressing it must not destroy the sprint's plans.
+    Every path that can change either — a resubmission, and an LLM rewrite
+    from answering a clarifying question — goes through here. They were
+    hand-rolled separately at first, and each hand-rolled version omitted a
+    different half of the rule.
+
+    No-ops when both are unchanged: the Re-check button re-POSTs the current
+    content, and pressing it must not destroy the sprint's plans.
     """
-    if test_env.content == content:
+    if test_env.content == content and test_env.env_vars_json == env_vars_json:
         return
+    # Re-checked here rather than trusting the caller's earlier guard: up to
+    # two LLM calls (2 x OPENAI_TIMEOUT) sit between them, and a run can start
+    # in that window. The earlier check only exists to avoid spending those
+    # calls on a request already destined to 422.
+    _ensure_no_work_in_flight(sprint)
     test_env.content = content
+    test_env.env_vars_json = env_vars_json
     test_env.content_revision += 1
     invalidation.invalidate_for_environment_change(session, sprint)
 
@@ -178,10 +193,11 @@ async def submit_test_environment(
     if not content:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
 
-    # Guard before the LLM calls, not after: only a *changed* description
-    # cascades, and that comparison needs no LLM. Checking afterwards would
-    # spend two calls on a request already destined to 422.
-    if test_env is not None and test_env.content != content:
+    # Cheap pre-check so a request destined to 422 does not first spend two
+    # LLM calls. Unconditional for an existing row: the re-extracted variables
+    # can differ even when the text does not, so any resubmission may cascade.
+    # `_apply_check_result` re-checks authoritatively once it knows.
+    if test_env is not None:
         _ensure_no_work_in_flight(sprint)
 
     requirements, readme, file_tree = await _gather_context(sprint)
@@ -199,9 +215,10 @@ async def submit_test_environment(
             sprint_id=sprint_id,
             content=content,
             original_content=content,
+            env_vars_json=env_vars_json,
         )
     else:
-        _apply_content_change(session, sprint, test_env, content)
+        _apply_check_result(session, sprint, test_env, content, env_vars_json)
 
     if result.sufficient:
         test_env.status = TestEnvironmentStatus.READY
@@ -209,7 +226,6 @@ async def submit_test_environment(
     else:
         test_env.status = TestEnvironmentStatus.NEEDS_INFO
         test_env.clarifying_question = result.clarifying_question
-    test_env.env_vars_json = env_vars_json
 
     _touch(test_env)
     session.add(test_env)
@@ -273,7 +289,7 @@ async def answer_test_environment(
     # Reachable with plans intact — a Re-check that comes back insufficient
     # leaves them in place (correctly, nothing changed yet), and answering
     # from there is what changes the text.
-    _apply_content_change(session, sprint, test_env, result.rewritten_content)
+    _apply_check_result(session, sprint, test_env, result.rewritten_content, env_vars_json)
     test_env.revision_count += 1
     if result.sufficient:
         test_env.status = TestEnvironmentStatus.READY
@@ -281,7 +297,6 @@ async def answer_test_environment(
     else:
         test_env.status = TestEnvironmentStatus.NEEDS_INFO
         test_env.clarifying_question = result.clarifying_question
-    test_env.env_vars_json = env_vars_json
 
     _touch(test_env)
     session.add(test_env)

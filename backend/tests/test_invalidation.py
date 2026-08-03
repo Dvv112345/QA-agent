@@ -199,6 +199,82 @@ class TestRequirementDelete:
         assert db_session.get(TestPlan, sibling_plan_id) is not None
 
 
+class TestHardDeleteLeavesNoOrphans:
+    def test_cases_are_deleted_not_archived_when_no_run_references_them(self, db_session):
+        """Archiving only protects rows a run points at.
+
+        On the hard-delete branch there is no run by definition, so archived
+        cases would be detached from every parent and reachable from nothing.
+        """
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_planned(db_session, sprint)
+        case_id = requirement.test_plan.cases[0].id
+
+        invalidation.invalidate_for_requirement_delete(db_session, requirement)
+        db_session.commit()
+
+        assert db_session.exec(select(TestCase.id).where(TestCase.id == case_id)).all() == []
+
+    def test_cases_survive_when_a_run_references_the_requirement(self, db_session):
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_planned(db_session, sprint)
+        case_id = requirement.test_plan.cases[0].id
+        run = _seed_test_run(db_session, sprint)
+        _seed_test_execution(db_session, run, requirement, status=TestExecutionStatus.COMPLETED)
+        db_session.refresh(requirement)
+
+        invalidation.invalidate_for_requirement_delete(db_session, requirement)
+        db_session.commit()
+
+        case = db_session.exec(select(TestCase).where(TestCase.id == case_id)).one()
+        assert case.archived is True
+        assert case.test_plan_id is None
+
+
+class TestPlanRevisionRestartInvariant:
+    """`TestPlan.content_revision` restarts at 0 on a regenerated plan.
+
+    That is only safe because every path which removes a plan also bumps
+    something else the run compares — otherwise a run could compare equal
+    against a completely different plan and read as current. Nothing in the
+    code enforces it, so it is pinned here.
+    """
+
+    def test_regenerated_plan_still_leaves_the_old_run_outdated(self, db_session):
+        sprint = _seed_sprint(db_session)
+        test_env = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        requirement = _seed_planned(db_session, sprint)
+        requirement.test_plan.content_revision = 1
+        db_session.add(requirement.test_plan)
+        db_session.commit()
+
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(
+            db_session,
+            run,
+            requirement,
+            status=TestExecutionStatus.COMPLETED,
+            requirement_revision=requirement.content_revision,
+            plan_revision=1,
+            env_revision=test_env.content_revision,
+        )
+        assert execution.outdated_reasons == []
+
+        # Edit the requirement: its plan goes and a fresh one is generated,
+        # landing back on content_revision 1 — equal to what the run recorded.
+        invalidation.invalidate_for_requirement_change(db_session, requirement)
+        db_session.commit()
+        new_plan = _seed_test_plan(db_session, requirement, status=TestPlanStatus.APPROVED)
+        new_plan.content_revision = 1
+        db_session.add(new_plan)
+        db_session.commit()
+        db_session.expire_all()
+
+        # plan_revision now collides, so the requirement bump is the only
+        # thing keeping this honest.
+        assert execution.outdated_reasons == ["requirement"]
+
+
 class TestWorkInFlight:
     def test_reports_nothing_when_idle(self, db_session):
         sprint = _seed_sprint(db_session)

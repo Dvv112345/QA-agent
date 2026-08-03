@@ -70,8 +70,8 @@ def _ensure_no_work_in_flight(requirements: list[Requirement]) -> None:
         raise HTTPException(
             status_code=422,
             detail=(
-                "These requirements have analysis or a test run in progress — "
-                f"wait for it to finish: {', '.join(blocked)}."
+                "These requirements have test-plan generation or a test run in "
+                f"progress — wait for it to finish: {', '.join(blocked)}."
             ),
         )
 
@@ -407,12 +407,14 @@ async def edit_requirement(
     description = body.description.strip()
     if not description:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
-    _ensure_no_work_in_flight([requirement])
-
-    # Editing the text invalidates everything written against the old text:
-    # the plan goes, and the environment returns for re-checking. Staged on
-    # this session so the edit and its cascade commit together.
-    invalidation.invalidate_for_requirement_change(session, requirement)
+    if description != requirement.description:
+        _ensure_no_work_in_flight([requirement])
+        # Editing the text invalidates everything written against the old
+        # text: the plan goes, and the environment returns for re-checking.
+        # Staged on this session so the edit and its cascade commit together.
+        # Skipped when the text is unchanged, matching the environment path —
+        # resubmitting identical text must not destroy an approved plan.
+        invalidation.invalidate_for_requirement_change(session, requirement)
 
     requirement.description = description
     requirement.clarifying_question = None

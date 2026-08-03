@@ -31,6 +31,7 @@ from backend.config import (
 )
 from backend.database import new_session
 from backend.models.database import (
+    REQUIREMENT_DELETED_ERROR,
     SPRINT_FINISHED_ERROR,
     FindingSeverity,
     TestCaseExecution,
@@ -218,14 +219,18 @@ def execute_test_task(test_execution_id: int) -> None:
 
         requirement = execution.requirement
         sprint = requirement.sprint if requirement is not None else None
-        # Archived means the user deleted it — same disposition as a
-        # vanished requirement, never run tests against it.
-        if requirement is not None and requirement.archived:
-            requirement = None
-            sprint = None
-        if sprint is None or not sprint.active:
-            _fail_execution(session, execution, SPRINT_FINISHED_ERROR)
-            logger.info("Test execution %d: sprint inactive — marked failed", test_execution_id)
+        # Deleted requirement and finished sprint share a disposition but
+        # not a cause — name the right one.
+        deleted = requirement is not None and requirement.archived
+        if deleted or sprint is None or not sprint.active:
+            _fail_execution(
+                session, execution, REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR
+            )
+            logger.info(
+                "Test execution %d: %s — marked failed",
+                test_execution_id,
+                "requirement deleted" if deleted else "sprint inactive",
+            )
             return
 
         plan = requirement.test_plan

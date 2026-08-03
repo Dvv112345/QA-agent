@@ -256,39 +256,72 @@ class TestSubmitTestEnvironment:
         assert llm_stub.check_calls  # the check actually ran
 
     @pytest.mark.asyncio
-    async def test_answering_removes_plans_that_survived_a_recheck(
+    async def test_insufficient_recheck_clears_variables_and_cascades(
         self, async_client, db_session, llm_stub
     ):
-        """The rewrite from an answer is a content change like any other.
+        """Clearing the extracted variables is itself a content change.
 
-        Reachable with plans intact: a Re-check re-POSTs unchanged text and
-        correctly preserves them, but if that check comes back insufficient
-        the following answer rewrites the description — and the plans would
-        otherwise be left describing text that no longer exists.
+        Re-checking unchanged text does not cascade on the *text* — but an
+        insufficient verdict nulls `env_vars_json`, and those are what runs
+        execute against. Leaving the plans approved and the runs reporting
+        current while the variables vanish is the state this guards.
         """
         from backend.models.database import TestPlan, TestPlanStatus
         from backend.tests.test_sprints import _seed_test_plan
 
         sprint = _seed_complete_sprint(db_session)
-        row = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps(DEFAULT_ENV_VARS.variables),
+        )
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+        llm_stub.check_result = INSUFFICIENT
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        reloaded = db_session.get(TestEnvironmentAccess, row.id)
+        assert reloaded.env_vars_json is None
+        assert reloaded.content_revision == 1
+        assert db_session.get(TestPlan, plan_id) is None
+
+    @pytest.mark.asyncio
+    async def test_answer_rewrite_cascades(self, async_client, db_session, llm_stub):
+        """The rewrite from an answer is a content change like any other.
+
+        Seeded directly into `needs_info`-with-plans: reaching that state
+        through the API is no longer possible, because whatever put the row
+        into `needs_info` already cleared the variables and cascaded. This
+        keeps the rule pinned in the one place it lives rather than relying
+        on that remaining true.
+        """
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.NEEDS_INFO,
+            clarifying_question="Which host?",
+            env_vars_json=json.dumps(DEFAULT_ENV_VARS.variables),
+        )
         plan_id = _seed_test_plan(
             db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
         ).id
 
-        # Re-check with the identical text; the LLM now wants more detail.
-        llm_stub.check_result = INSUFFICIENT
-        recheck = await async_client.post(
-            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
-        )
-        assert recheck.status_code == 200
-        db_session.expire_all()
-        assert db_session.get(TestPlan, plan_id) is not None  # nothing changed yet
-
-        answer = await async_client.post(
+        resp = await async_client.post(
             f"/api/test-environment/{row.id}/answer", json={"answer": "Creds are in vault."}
         )
 
-        assert answer.status_code == 200
+        assert resp.status_code == 200
         db_session.expire_all()
         assert db_session.get(TestPlan, plan_id) is None
         assert db_session.get(TestEnvironmentAccess, row.id).content_revision == 1
@@ -306,7 +339,9 @@ class TestSubmitTestEnvironment:
             db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
         ).id
         llm_stub.revise_result = TestEnvironmentResult(
-            sufficient=True, clarifying_question=None, rewritten_content=row.content
+            sufficient=False,
+            clarifying_question="Still need the host.",
+            rewritten_content=row.content,
         )
 
         resp = await async_client.post(
@@ -348,7 +383,12 @@ class TestSubmitTestEnvironment:
         from backend.tests.test_sprints import _seed_test_plan
 
         sprint = _seed_complete_sprint(db_session)
-        row = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps(DEFAULT_ENV_VARS.variables),
+        )
         plan_id = _seed_test_plan(
             db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
         ).id
@@ -360,6 +400,7 @@ class TestSubmitTestEnvironment:
         assert resp.status_code == 200
         db_session.expire_all()
         assert db_session.get(TestPlan, plan_id) is not None
+        assert db_session.get(TestEnvironmentAccess, row.id).content_revision == 0
 
     @pytest.mark.asyncio
     async def test_422_on_blank_content(self, async_client, db_session, llm_stub):

@@ -71,7 +71,9 @@ def work_in_flight(requirements: list[Requirement]) -> list[str]:
     return blocked
 
 
-def remove_test_plan(session: Session, plan: TestPlan | None) -> None:
+def remove_test_plan(
+    session: Session, plan: TestPlan | None, *, archive_cases: bool = True
+) -> None:
     """Discard a plan while keeping the cases any past run executed.
 
     The cases are archived and *detached* rather than deleted: a
@@ -83,14 +85,22 @@ def remove_test_plan(session: Session, plan: TestPlan | None) -> None:
     unique — archiving it in place would leave no slot for the regenerated
     plan.  Deleting it also means ``generate_test_plans`` sees ``plan is
     None`` and rebuilds, with no change to its existing logic.
+
+    ``archive_cases=False`` deletes them instead, for the one caller that
+    knows no run can reference them (a requirement being hard-deleted
+    precisely because it has none).  Preserving rows there would accumulate
+    garbage no reader can reach.
     """
     if plan is None:
         return
     requirement = plan.requirement
     for case in plan.all_cases:
-        case.archived = True
-        case.test_plan_id = None
-        session.add(case)
+        if archive_cases:
+            case.archived = True
+            case.test_plan_id = None
+            session.add(case)
+        else:
+            session.delete(case)
     session.delete(plan)
 
     # Flush the delete and drop the parent's stale in-memory reference.
@@ -166,9 +176,13 @@ def invalidate_for_requirement_delete(session: Session, requirement: Requirement
 
     The environment stays confirmed — see the module docstring.
     """
-    remove_test_plan(session, requirement.test_plan)
+    has_history = bool(requirement.test_executions or requirement.exploratory_runs)
+    # Archiving cases only protects rows a run points at. On the hard-delete
+    # branch there is no run by definition, so keeping them would leave rows
+    # detached from every parent and reachable from nothing.
+    remove_test_plan(session, requirement.test_plan, archive_cases=has_history)
 
-    if requirement.test_executions or requirement.exploratory_runs:
+    if has_history:
         requirement.archived = True
         session.add(requirement)
         logger.info("Requirement id=%s archived (runs reference it)", requirement.id)
