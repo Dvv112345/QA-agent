@@ -244,7 +244,10 @@ async def list_requirements(
     return list(
         session.exec(
             select(Requirement)
-            .where(Requirement.sprint_id == sprint_id)
+            .where(
+                Requirement.sprint_id == sprint_id,
+                Requirement.archived == False,  # noqa: E712
+            )
             .order_by(Requirement.created_at, Requirement.id)
         ).all()
     )
@@ -270,6 +273,7 @@ async def confirm_all_requirements(
         update(Requirement)
         .where(
             Requirement.sprint_id == sprint_id,
+            Requirement.archived == False,  # noqa: E712
             Requirement.status.in_(  # type: ignore[attr-defined]
                 [RequirementStatus.NEEDS_CLARIFICATION, RequirementStatus.READY]
             ),
@@ -281,7 +285,10 @@ async def confirm_all_requirements(
     return list(
         session.exec(
             select(Requirement)
-            .where(Requirement.sprint_id == sprint_id)
+            .where(
+                Requirement.sprint_id == sprint_id,
+                Requirement.archived == False,  # noqa: E712
+            )
             .order_by(Requirement.created_at, Requirement.id)
         ).all()
     )

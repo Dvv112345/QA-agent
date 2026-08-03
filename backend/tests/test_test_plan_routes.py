@@ -465,8 +465,11 @@ class TestEdit:
         assert [case["position"] for case in data["cases"]] == [0, 1]
         assert data["revision_count"] == 1  # direct edits never bump it
 
-        surviving_ids = set(db_session.exec(select(TestCase.id)).all())
-        assert old_case_id not in surviving_ids
+        # Archived, not deleted — the row stays for any run that used it,
+        # but disappears from the plan's live case list.
+        old_case_row = db_session.exec(select(TestCase).where(TestCase.id == old_case_id)).one()
+        assert old_case_row.archived is True
+        assert old_case_id not in {case["id"] for case in data["cases"]}
         assert stub_queue.enqueued_plans == []  # no LLM, no enqueue
 
     @pytest.mark.asyncio

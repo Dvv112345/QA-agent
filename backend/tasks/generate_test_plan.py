@@ -180,9 +180,13 @@ def generate_test_plan_task(test_plan_id: int) -> None:
 
             plan.complexity = result.complexity
             plan.summary = result.summary
-            plan.cases.clear()
+            # Archive the superseded cases instead of deleting them — an
+            # earlier run's TestCaseExecution rows still read from them.
+            for existing in plan.cases:
+                existing.archived = True
+                session.add(existing)
             for position, case in enumerate(result.cases):
-                plan.cases.append(
+                session.add(
                     TestCase(
                         test_plan_id=plan.id,
                         position=position,

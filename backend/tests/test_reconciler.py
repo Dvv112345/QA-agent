@@ -166,6 +166,20 @@ class TestPendingSweep:
 
         assert stub_queue.enqueued == [req.id]
 
+    def test_skips_archived_requirement(self, db_session, stub_queue):
+        """An archived requirement has been deleted as far as the user is
+        concerned — re-enqueuing it would spend an LLM call on a row nothing
+        can display."""
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint)
+        req.archived = True
+        db_session.add(req)
+        db_session.commit()
+
+        reconcile_once()
+
+        assert stub_queue.enqueued == []
+
 
 class TestInactiveSprintSweep:
     def test_fails_pending_on_finished_sprint(self, db_session, stub_queue):

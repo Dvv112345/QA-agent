@@ -602,6 +602,80 @@ def _seed_test_env(db_session, sprint, status=None, **kwargs):
     return row
 
 
+class TestArchivedRequirements:
+    """`Sprint.requirements` is the live view; archived rows stay in the table."""
+
+    def test_archived_requirement_drops_out_of_the_collection(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, name="Login")
+        gone = _seed_requirement(db_session, sprint, name="Search")
+
+        gone.archived = True
+        db_session.add(gone)
+        db_session.commit()
+        db_session.refresh(sprint)
+
+        assert [r.name for r in sprint.requirements] == ["Login"]
+        assert {r.name for r in sprint.all_requirements} == {"Login", "Search"}
+
+    def test_completion_flags_ignore_archived_rows(self, db_session):
+        """An archived unconfirmed row must not hold the sprint back."""
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, name="Login")
+        pending = _seed_requirement(db_session, sprint, name="Search")  # not confirmed
+
+        assert sprint.requirements_complete is False
+
+        pending.archived = True
+        db_session.add(pending)
+        db_session.commit()
+        db_session.refresh(sprint)
+
+        assert sprint.requirements_complete is True
+
+    @pytest.mark.asyncio
+    async def test_archived_requirement_absent_from_the_list_endpoint(
+        self, async_client, db_session
+    ):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, name="Login")
+        gone = _seed_requirement(db_session, sprint, name="Search")
+        gone.archived = True
+        db_session.add(gone)
+        db_session.commit()
+
+        resp = await async_client.get(f"/api/sprints/{sprint.id}/requirements")
+
+        assert resp.status_code == 200
+        assert [row["name"] for row in resp.json()] == ["Login"]
+
+
+class TestForeignKeyEnforcement:
+    """The test database must reject dangling references, like PostgreSQL does.
+
+    Without ``PRAGMA foreign_keys=ON`` SQLite silently accepts them, and a
+    whole class of orphaning bug would pass the suite and fail in production.
+    """
+
+    def test_dangling_test_case_reference_is_rejected(self, db_session):
+        import pytest as _pytest
+        from sqlalchemy.exc import IntegrityError
+
+        from backend.models.database import TestCaseExecution
+
+        db_session.add(TestCaseExecution(test_execution_id=9999, test_case_id=9999))
+        with _pytest.raises(IntegrityError):
+            db_session.commit()
+        db_session.rollback()
+
+
 class TestSprintFlags:
     """Serialization of the computed flags on list + detail endpoints."""
 
@@ -815,7 +889,13 @@ class TestTestPlanModelProperties:
         assert plan.requirement_name == ""
         assert plan.requirement_description == ""
 
-    def test_deleting_plan_cascades_to_cases(self, db_session):
+    def test_deleting_plan_detaches_cases_instead_of_deleting_them(self, db_session):
+        """Cases outlive their plan — a past run still reads its content off them.
+
+        The delete-orphan cascade that used to remove them is gone: a
+        ``TestCaseExecution`` points at these rows, and deleting them would
+        rewrite the record of a run that already happened.
+        """
         from sqlmodel import select
 
         from backend.models.database import TestCase, TestPlan
@@ -831,7 +911,27 @@ class TestTestPlanModelProperties:
         db_session.commit()
 
         assert db_session.get(TestPlan, plan.id) is None
-        assert db_session.exec(select(TestCase)).all() == []
+        surviving = db_session.exec(select(TestCase)).all()
+        assert len(surviving) == 2
+        assert all(case.test_plan_id is None for case in surviving)
+
+    def test_archived_cases_drop_out_of_plan_cases(self, db_session):
+        """`cases` is the live view; `all_cases` is everything."""
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint)
+        plan = _seed_test_plan(db_session, requirement)
+        _seed_test_case(db_session, plan, position=0, title="Live")
+        superseded = _seed_test_case(db_session, plan, position=1, title="Superseded")
+
+        superseded.archived = True
+        db_session.add(superseded)
+        db_session.commit()
+        db_session.refresh(plan)
+
+        assert [c.title for c in plan.cases] == ["Live"]
+        assert {c.title for c in plan.all_cases} == {"Live", "Superseded"}
 
     def test_cases_ordered_by_position(self, db_session):
         from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint

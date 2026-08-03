@@ -191,7 +191,9 @@ async def list_sprints(
             # The computed SprintResponse flags touch these relationships on
             # every row — eager-load them to avoid per-row lazy queries.
             .options(
-                selectinload(Sprint.requirements).selectinload(Requirement.test_plan),
+                # Eager-load the raw collection; `Sprint.requirements` is the
+                # filtered property over it and cannot be given to selectinload.
+                selectinload(Sprint.all_requirements).selectinload(Requirement.test_plan),
                 selectinload(Sprint.test_environment),
                 selectinload(Sprint.test_runs).selectinload(TestRun.executions),
             )
@@ -242,6 +244,10 @@ async def finish_sprint(
     # ── Fail requirements still awaiting analysis ─────────────────────
     # Analysis on a finished sprint would only mutate cards the user can
     # no longer act on, so mark in-progress rows failed in the same commit.
+    #
+    # Deliberately *not* filtered on `archived`: this is convergence, not a
+    # user-facing view. An archived row left in-progress would sit there
+    # forever, since the reconciler skips archived rows by design.
     in_progress = session.exec(
         select(Requirement).where(
             Requirement.sprint_id == sprint_id,

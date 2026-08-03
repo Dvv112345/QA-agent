@@ -51,6 +51,53 @@ def test_noop_on_fresh_schema(db_session):
     assert "readme_user_provided" in _sprint_columns(engine)
     assert "environment" in _exploratory_finding_columns(engine)
     assert _test_case_execution_columns(engine) >= _FINDING_COLUMNS
+    assert "archived" in _requirement_columns(engine)
+    assert "archived" in _testcase_columns(engine)
+
+
+def test_adds_missing_requirement_archived_column():
+    """An existing database predating the soft delete gets the column once."""
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE requirement DROP COLUMN archived"))
+    assert "archived" not in _requirement_columns(engine)
+
+    run_migrations(engine)
+    assert "archived" in _requirement_columns(engine)
+    run_migrations(engine)  # idempotent on the migrated schema too
+    assert "archived" in _requirement_columns(engine)
+
+
+def test_adds_missing_testcase_archived_column():
+    """An existing database predating case archiving gets the column once."""
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE testcase DROP COLUMN archived"))
+    assert "archived" not in _testcase_columns(engine)
+
+    run_migrations(engine)
+    assert "archived" in _testcase_columns(engine)
+    run_migrations(engine)  # idempotent on the migrated schema too
+    assert "archived" in _testcase_columns(engine)
+
+
+def test_test_plan_id_nullability_step_skips_sqlite():
+    """The one non-ADD-COLUMN migration must no-op rather than raise here.
+
+    SQLite has no ``ALTER COLUMN``, and its schema is built fresh from the
+    models (which already declare ``test_plan_id`` optional), so there is
+    nothing to do.  This asserts the skip, not the DDL — the PostgreSQL
+    branch is only reachable against a real database.
+    """
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+
+    run_migrations(engine)  # must not raise
+
+    info = next(c for c in inspect(engine).get_columns("testcase") if c["name"] == "test_plan_id")
+    assert info["nullable"] is True
 
 
 def test_adds_missing_testcase_script_column():

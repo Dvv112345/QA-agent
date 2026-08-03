@@ -1,14 +1,34 @@
 import importlib
+import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 
 _TESTS_DIR = Path(__file__).resolve().parent
 
 TEST_DATABASE_URL = "sqlite:///file:test_db?mode=memory&cache=shared&uri=true"
+
+
+# ── Enforce foreign keys on every SQLite connection ───────────────────
+# SQLite ignores foreign keys unless asked, so without this a test can
+# orphan a child row (or delete a parent out from under one) and still
+# pass, while PostgreSQL rejects the same statement in production.  The
+# listener is registered on the Engine *class* rather than an instance
+# because engines are built in several places: the two fixtures below and
+# ad-hoc ones in test_migrations.py.
+
+
+@event.listens_for(Engine, "connect")
+def _enforce_sqlite_foreign_keys(dbapi_connection, connection_record):
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 # ── Globally replace the database engine with SQLite ──────────────────

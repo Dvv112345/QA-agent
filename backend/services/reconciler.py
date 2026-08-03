@@ -66,8 +66,8 @@ class _SweepSpec:
     The machinery columns (``status``/``retry_count``/``job_id``/
     ``last_heartbeat``/``error``/``updated_at``) share names across models,
     which is what lets the per-row disposition code below be common — only
-    the selects (sprint join), the "pending user input" field, and the
-    enqueue method differ.
+    the query scoping, the "pending user input" field, and the enqueue
+    method differ.
     """
 
     model: type
@@ -81,7 +81,11 @@ class _SweepSpec:
     clear_field: str | None
     enqueue_name: str  # QueueService method used to (re-)enqueue
     stale_error: str  # user-facing error once retries are exhausted
-    join_to_sprint: Callable[[SelectOfScalar], SelectOfScalar]
+    # Joins the row type to Sprint (so sprint activity can be filtered on)
+    # and excludes rows belonging to an archived requirement. An archived
+    # requirement has been deleted as far as the user is concerned; nothing
+    # of its should be re-enqueued, re-pended, or spend an LLM call.
+    scope_query: Callable[[SelectOfScalar], SelectOfScalar]
 
 
 _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
@@ -97,7 +101,7 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Analysis worker died repeatedly while processing this requirement. "
             "Use Restart to try again."
         ),
-        join_to_sprint=lambda stmt: stmt.join(Sprint),
+        scope_query=lambda stmt: stmt.join(Sprint).where(Requirement.archived == False),  # noqa: E712
     ),
     _SweepSpec(
         model=TestPlan,
@@ -111,9 +115,9 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Generation worker died repeatedly while processing this test plan. "
             "Use Restart to try again."
         ),
-        join_to_sprint=lambda stmt: stmt.join(
-            Requirement, TestPlan.requirement_id == Requirement.id
-        ).join(Sprint, Requirement.sprint_id == Sprint.id),
+        scope_query=lambda stmt: stmt.join(Requirement, TestPlan.requirement_id == Requirement.id)
+        .join(Sprint, Requirement.sprint_id == Sprint.id)
+        .where(Requirement.archived == False),  # noqa: E712
     ),
     _SweepSpec(
         model=TestExecution,
@@ -127,9 +131,11 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Execution worker died repeatedly while processing this test run. "
             "Use Restart to try again."
         ),
-        join_to_sprint=lambda stmt: stmt.join(
+        scope_query=lambda stmt: stmt.join(
             Requirement, TestExecution.requirement_id == Requirement.id
-        ).join(Sprint, Requirement.sprint_id == Sprint.id),
+        )
+        .join(Sprint, Requirement.sprint_id == Sprint.id)
+        .where(Requirement.archived == False),  # noqa: E712
     ),
     _SweepSpec(
         model=ExploratoryRun,
@@ -144,8 +150,11 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Use Restart to try again."
         ),
         # Joins straight to Sprint — unlike plans and executions, an
-        # exploratory run carries its own sprint_id.
-        join_to_sprint=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
+        # exploratory run carries its own sprint_id. The Requirement join is
+        # only here for the archived filter.
+        scope_query=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id)
+        .join(Requirement, ExploratoryRun.requirement_id == Requirement.id)
+        .where(Requirement.archived == False),  # noqa: E712
     ),
 )
 
@@ -175,7 +184,7 @@ def _sweep_inactive_sprints(session, spec: _SweepSpec, now: datetime) -> None:
     failed, not re-pended.
     """
     orphaned = session.exec(
-        spec.join_to_sprint(select(spec.model)).where(
+        spec.scope_query(select(spec.model)).where(
             spec.model.status.in_([spec.pending_status, spec.running_status]),
             Sprint.active.is_(False),  # type: ignore[attr-defined]
         )
@@ -226,7 +235,7 @@ def _sweep_pending(session, spec: _SweepSpec, queue_service: Any, now: datetime)
     — their rows were failed by the inactive-sprint sweep)."""
     enqueue: Callable[[int], Any] = getattr(queue_service, spec.enqueue_name)
     pending = session.exec(
-        spec.join_to_sprint(select(spec.model)).where(
+        spec.scope_query(select(spec.model)).where(
             spec.model.status == spec.pending_status, Sprint.active
         )
     ).all()

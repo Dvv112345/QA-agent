@@ -203,12 +203,13 @@ class TestRevision:
         assert row.pending_feedback is None
         assert row.complexity == "medium"
         assert row.summary == "Covers the login flows."
-        # fresh query rather than session.get — the delete happened in the
-        # task's own session, and the stale identity-map entry here would
-        # raise ObjectDeletedError instead of returning None
-        surviving_ids = set(db_session.exec(select(TestCase.id)).all())
-        assert old_case_id not in surviving_ids
+        # The superseded case is archived, not deleted: a run that already
+        # executed it reads its title and steps off this row. It drops out
+        # of `plan.cases` while staying in the table.
+        old_case_row = db_session.exec(select(TestCase).where(TestCase.id == old_case_id)).one()
+        assert old_case_row.archived is True
         assert [c.title for c in row.cases] == ["Valid login", "Invalid login"]
+        assert old_case_id not in {c.id for c in row.cases}
         assert llm_stub.generate_calls == []
 
     def test_current_plan_json_and_feedback_passed(self, db_session, llm_stub, fetch_stub):

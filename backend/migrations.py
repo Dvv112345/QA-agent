@@ -118,6 +118,67 @@ def _add_test_case_execution_finding_fields(engine: Engine) -> None:
     )
 
 
+def _add_requirement_archived(engine: Engine) -> None:
+    """Add ``requirement.archived`` (soft delete) when missing."""
+    inspector = inspect(engine)
+    if "requirement" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("requirement")}
+    if "archived" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE requirement ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE")
+        )
+    logger.info("Migration applied: requirement.archived column added")
+
+
+def _add_testcase_archived(engine: Engine) -> None:
+    """Add ``testcase.archived`` (superseded by a revision or edit) when missing."""
+    inspector = inspect(engine)
+    if "testcase" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("testcase")}
+    if "archived" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE testcase ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE")
+        )
+    logger.info("Migration applied: testcase.archived column added")
+
+
+def _relax_testcase_test_plan_id(engine: Engine) -> None:
+    """Drop NOT NULL from ``testcase.test_plan_id`` so archived cases can detach.
+
+    The only migration here that is not a plain ``ADD COLUMN``, and the only
+    one that has to branch on dialect: PostgreSQL has ``ALTER COLUMN ... DROP
+    NOT NULL``, SQLite has no ``ALTER COLUMN`` at all (its workaround is a
+    full table rebuild).  Skipping SQLite is correct rather than a
+    compromise — the test database is built fresh by ``create_all`` from the
+    models, which already declare the column optional, so there is nothing
+    to migrate there.
+
+    Consequence worth knowing: this step is only ever exercised against a
+    real PostgreSQL database.  The suite can confirm it does not raise, not
+    that it works.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    inspector = inspect(engine)
+    if "testcase" not in inspector.get_table_names():
+        return
+    info = next(
+        (c for c in inspector.get_columns("testcase") if c["name"] == "test_plan_id"),
+        None,
+    )
+    if info is None or info.get("nullable", True):
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE testcase ALTER COLUMN test_plan_id DROP NOT NULL"))
+    logger.info("Migration applied: testcase.test_plan_id NOT NULL dropped")
+
+
 _MIGRATIONS = [
     _add_requirement_from_prd,
     _add_testcase_script,
@@ -125,6 +186,9 @@ _MIGRATIONS = [
     _add_sprint_readme_user_provided,
     _add_exploratory_finding_environment,
     _add_test_case_execution_finding_fields,
+    _add_requirement_archived,
+    _add_testcase_archived,
+    _relax_testcase_test_plan_id,
 ]
 
 

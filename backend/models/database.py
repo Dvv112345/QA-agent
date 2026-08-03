@@ -45,12 +45,30 @@ class Sprint(SQLModel, table=True):
     )
 
     repo: Repo | None = Relationship(back_populates="sprints")
-    requirements: list["Requirement"] = Relationship(back_populates="sprint")
+    # Every requirement row, archived included. Deliberately *not* named
+    # `requirements` — see the property below.
+    all_requirements: list["Requirement"] = Relationship(back_populates="sprint")
     test_environment: Optional["TestEnvironmentAccess"] = Relationship(
         back_populates="sprint", sa_relationship_kwargs={"uselist": False}
     )
     test_runs: list["TestRun"] = Relationship(back_populates="sprint")
     exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="sprint")
+
+    @property
+    def requirements(self) -> list["Requirement"]:
+        """The sprint's live requirements — archived rows excluded.
+
+        Deleting a requirement archives it rather than removing the row, so
+        that test runs which already executed against it keep working.  The
+        filter lives here, under the name every caller already uses, rather
+        than at ~12 call sites that would each have to remember it: a missed
+        one would silently resurrect a deleted requirement in a list, a
+        completion check, or a run selector.
+
+        Reach for ``all_requirements`` only when archived rows are genuinely
+        wanted — which is nowhere outside the archive machinery itself.
+        """
+        return [r for r in self.all_requirements if not r.archived]
 
     @property
     def requirements_complete(self) -> bool:
@@ -121,6 +139,11 @@ class Requirement(SQLModel, table=True):
     description: str  # current text (possibly LLM-rewritten)
     original_description: str
     from_prd: bool = Field(default=False)  # PRD-split rows; replaced on re-upload
+    # Soft delete. A requirement with test runs or exploratory runs behind it
+    # cannot be removed without destroying their history, so "delete" archives
+    # instead and every live view filters it out (see Sprint.requirements).
+    # Requirements with no such history are still deleted outright.
+    archived: bool = Field(default=False)
     status: str = Field(default=RequirementStatus.PENDING)
     clarifying_question: str | None = Field(default=None)
     pending_answer: str | None = Field(default=None)  # user answer awaiting the revise job
@@ -136,7 +159,7 @@ class Requirement(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
     )
 
-    sprint: Sprint | None = Relationship(back_populates="requirements")
+    sprint: Sprint | None = Relationship(back_populates="all_requirements")
     test_plan: Optional["TestPlan"] = Relationship(
         back_populates="requirement", sa_relationship_kwargs={"uselist": False}
     )
@@ -256,10 +279,27 @@ class TestPlan(SQLModel, table=True):
     )
 
     requirement: Optional["Requirement"] = Relationship(back_populates="test_plan")
-    cases: list["TestCase"] = Relationship(
+    # Every case row, archived included — see the `cases` property below.
+    #
+    # The delete-orphan cascade this relationship used to carry is gone on
+    # purpose: revisions and edits now *archive* the outgoing cases instead
+    # of deleting them, and under delete-orphan detaching a case would
+    # delete the row — precisely the history loss archiving exists to
+    # prevent. Nothing deletes a TestCase any more.
+    all_cases: list["TestCase"] = Relationship(
         back_populates="test_plan",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "TestCase.position"},
+        sa_relationship_kwargs={"order_by": "TestCase.position"},
     )
+
+    @property
+    def cases(self) -> list["TestCase"]:
+        """The plan's live cases — archived rows excluded.
+
+        Same arrangement as ``Sprint.requirements``: the filter sits under
+        the name every caller already uses, so a revision cannot leak the
+        superseded cases into a prompt, a plan card, or a new run.
+        """
+        return [c for c in self.all_cases if not c.archived]
 
     @property
     def feedback_cap_reached(self) -> bool:
@@ -290,14 +330,21 @@ class TestCasePriority(str, Enum):
 class TestCase(SQLModel, table=True):
     """A single test case belonging to a test plan.
 
-    Rows are replaced wholesale on every LLM revision or direct edit
-    (delete-orphan cascade from ``TestPlan.cases``).
+    Rows are superseded wholesale on every LLM revision or direct edit, but
+    never deleted: a ``TestCaseExecution`` from an earlier run points here
+    for its title, steps, and expected result, so removing the row would
+    rewrite the history of something that already happened.  The outgoing
+    rows are marked ``archived`` instead and drop out of ``TestPlan.cases``.
     """
 
     __test__ = False  # tell pytest this "Test*" name is not a test class
 
     id: int | None = Field(default=None, primary_key=True)
-    test_plan_id: int = Field(foreign_key="testplan.id", index=True)
+    # Nullable so an archived case can be detached when its plan row is
+    # removed. TestPlan.requirement_id is unique, so the plan row cannot
+    # simply be archived alongside — the next generation needs that slot.
+    test_plan_id: int | None = Field(default=None, foreign_key="testplan.id", index=True)
+    archived: bool = Field(default=False)
     position: int
     title: str
     preconditions: str | None = Field(default=None)
@@ -310,7 +357,7 @@ class TestCase(SQLModel, table=True):
     # exhausted, still looks broken; a future run should regenerate fresh).
     script: str | None = Field(default=None)
 
-    test_plan: Optional["TestPlan"] = Relationship(back_populates="cases")
+    test_plan: Optional["TestPlan"] = Relationship(back_populates="all_cases")
 
 
 # ── Findings (shared by scripted and exploratory testing) ─────────────
