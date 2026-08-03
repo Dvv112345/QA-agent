@@ -14,18 +14,18 @@ npm run dev        # http://localhost:5173
 
 Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
 
-| Route                                          | Page                       | Purpose                                                                                                                                                |
-| ---------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/`                                            | `SprintListPage`           | All sprints; cards link to detail or test-environment pages                                                                                            |
-| `/sprints/new`                                 | `CreateSprintPage`         | Create a sprint (with inline repo registration + README status)                                                                                        |
-| `/sprints/:id`                                 | `SprintDetailPage`         | Enter requirements manually or upload a PRD to split into requirements; follow analysis via polling, answer/confirm/confirm all                        |
-| `/sprints/:id/test-environment`                | `TestEnvironmentPage`      | Describe test environment access, answer clarifications, confirm                                                                                       |
-| `/sprints/:id/test-plans`                      | `TestPlansPage`            | Generate, review, give feedback on, edit, and approve/approve all test plans                                                                           |
-| `/sprints/:id/test-runs`                       | `TestRunsPage`             | Two lists: exploratory sessions and scripted test runs; start either                                                                                   |
-| `/sprints/:id/test-runs/:runId`                | `TestRunDetailPage`        | Per-requirement, per-case execution results; download scripts; restart failed executions                                                               |
-| `/sprints/:id/exploratory-runs/:runId`         | `ExploratoryRunDetailPage` | One requirement's exploration: summary, finding counts, session list; restart or retry the summary                                                     |
-| `/sprints/:id/exploratory-sessions/:sessionId` | `ExploratorySessionPage`   | SBTM session sheet: charter, SFDIPOT areas, actions used, notes, findings with screenshots, action log; polls while the session is queued or exploring |
-| `/repos`                                       | `RepoListPage`             | Registered repos; deactivate unused ones                                                                                                               |
+| Route                                          | Page                       | Purpose                                                                                                                                                                    |
+| ---------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                                            | `SprintListPage`           | All sprints; cards link to detail or test-environment pages                                                                                                                |
+| `/sprints/new`                                 | `CreateSprintPage`         | Create a sprint (with inline repo registration + README status)                                                                                                            |
+| `/sprints/:id`                                 | `SprintDetailPage`         | Enter requirements manually or upload a PRD to split into requirements; follow analysis via polling, answer/confirm/confirm all                                            |
+| `/sprints/:id/test-environment`                | `TestEnvironmentPage`      | Describe test environment access, answer clarifications, confirm                                                                                                           |
+| `/sprints/:id/test-plans`                      | `TestPlansPage`            | Generate, review, give feedback on, edit, and approve/approve all test plans                                                                                               |
+| `/sprints/:id/test-runs`                       | `TestRunsPage`             | Two lists: exploratory sessions and scripted test runs; start either                                                                                                       |
+| `/sprints/:id/test-runs/:runId`                | `TestRunDetailPage`        | Per-requirement, per-case execution results; failed and errored cases show a finding card (same one exploratory sessions use); download scripts; restart failed executions |
+| `/sprints/:id/exploratory-runs/:runId`         | `ExploratoryRunDetailPage` | One requirement's exploration: summary, finding counts, session list; restart or retry the summary                                                                         |
+| `/sprints/:id/exploratory-sessions/:sessionId` | `ExploratorySessionPage`   | SBTM session sheet: charter, SFDIPOT areas, actions used, notes, findings with screenshots, action log; polls while the session is queued or exploring                     |
+| `/repos`                                       | `RepoListPage`             | Registered repos; deactivate unused ones                                                                                                                                   |
 
 ## Environment Variables
 

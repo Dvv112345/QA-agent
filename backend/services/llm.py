@@ -34,7 +34,6 @@ from backend.config import (
     OPENAI_MODEL,
     OPENAI_TIMEOUT,
     TEST_EXECUTION_TOOL_ROUNDS,
-    TEST_PLAN_TOOL_ROUNDS,
 )
 from backend.models.database import SfdipotArea, TestCasePriority
 from backend.services.llm_prompts import (
@@ -397,6 +396,19 @@ def _complete_with_tools(
     return _parse_json(response.choices[0].message.content, model_cls)
 
 
+# Test planning takes no ``read_file`` executor, and takes no ``on_round``
+# because there are no rounds to report. Both absences are structural on
+# purpose. A plan defines what "correct" means for a requirement, so handing
+# the model the implementation is precisely where that judgment drifts into
+# describing what the code already does — the failure this codebase has hit
+# before, and the reason the exploratory loop omits the tool too. Accepting
+# ``read_file=None`` instead would leave re-enabling it one argument away.
+#
+# Nothing is lost: the interface details the old loop fetched are looked up
+# again by ``generate_test_script`` at execution time, with a larger round
+# budget and a fresher repo snapshot.
+
+
 def generate_test_plan(
     name: str,
     description: str,
@@ -404,23 +416,14 @@ def generate_test_plan(
     test_env_content: str | None,
     readme: str | None,
     file_tree: str | None,
-    read_file: Callable[[str], str] | None,
-    on_round: Callable[[], None],
 ) -> TestPlanResult:
     """Generate a structured test plan for one requirement.
 
-    Runs a bounded ``read_file`` tool loop (``TEST_PLAN_TOOL_ROUNDS``);
-    with ``read_file=None`` falls back to a plain single completion.
+    One completion, grounded in the requirement, README, file tree, and test
+    environment — never in the repository's code.
     """
     parts = test_plan_context(name, description, sibling_names, test_env_content, readme, file_tree)
-    result = _complete_with_tools(
-        TEST_PLAN_SYSTEM_PROMPT,
-        "\n\n".join(parts),
-        TestPlanResult,
-        read_file,
-        on_round,
-        TEST_PLAN_TOOL_ROUNDS,
-    )
+    result = _complete(TEST_PLAN_SYSTEM_PROMPT, "\n\n".join(parts), TestPlanResult)
     return _validate_test_plan(result)
 
 
@@ -433,20 +436,11 @@ def revise_test_plan(
     file_tree: str | None,
     current_plan_json: str,
     feedback: str,
-    read_file: Callable[[str], str] | None,
-    on_round: Callable[[], None],
 ) -> TestPlanResult:
-    """Revise a draft test plan per user feedback (same loop + validation)."""
+    """Revise a draft test plan per user feedback (same grounding + validation)."""
     parts = test_plan_context(name, description, sibling_names, test_env_content, readme, file_tree)
     parts.append(f"Current test plan (JSON):\n{current_plan_json}\n\nUser's feedback:\n{feedback}")
-    result = _complete_with_tools(
-        TEST_PLAN_REVISE_SYSTEM_PROMPT,
-        "\n\n".join(parts),
-        TestPlanResult,
-        read_file,
-        on_round,
-        TEST_PLAN_TOOL_ROUNDS,
-    )
+    result = _complete(TEST_PLAN_REVISE_SYSTEM_PROMPT, "\n\n".join(parts), TestPlanResult)
     return _validate_test_plan(result)
 
 
@@ -469,6 +463,18 @@ class ScriptDiagnosisResult(SQLModel):
     classification: Literal["script_bug", "app_bug"]
     fixed_script: str | None = None
     explanation: str
+    # Bug report accompanying an app_bug verdict — the same shape an
+    # exploratory session records. All optional, and deliberately not
+    # validated below: the task normalizes them against the test case
+    # instead. Raising here would route into _record_failure and retry the
+    # entire TestExecution — re-running every remaining case — to punish a
+    # formatting slip in a report whose substance is already in
+    # `explanation`.
+    finding_severity: str | None = None
+    finding_title: str | None = None
+    finding_steps_to_reproduce: str | None = None
+    finding_expected: str | None = None
+    finding_actual: str | None = None
 
 
 def _validate_env_vars(result: EnvVarsResult) -> EnvVarsResult:

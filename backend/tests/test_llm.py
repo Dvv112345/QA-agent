@@ -392,15 +392,13 @@ def _generate(**overrides):
         "test_env_content": "SSH to staging as qa.",
         "readme": None,
         "file_tree": None,
-        "read_file": lambda path: "FILE CONTENT",
-        "on_round": lambda: None,
     }
     kwargs.update(overrides)
     return generate_test_plan(**kwargs)
 
 
 class TestGenerateTestPlan:
-    def test_happy_path_without_tool_calls(self, monkeypatch):
+    def test_happy_path_is_a_single_tool_free_call(self, monkeypatch):
         client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
 
         result = _generate()
@@ -410,132 +408,11 @@ class TestGenerateTestPlan:
         assert len(result.cases) == 1
         assert result.cases[0].title == "Valid login"
         assert result.cases[0].steps == ["Open the login page", "Enter valid credentials", "Submit"]
-        assert len(client.requests) == 1
-        # Every round sends tools together with strict JSON mode — the
-        # DeepSeek spike (2026-07-16) confirmed the combination works and
-        # that omitting response_format yields unparseable final answers.
-        tools = client.requests[0]["tools"]
-        assert [t["function"]["name"] for t in tools] == ["read_file"]
-        assert client.requests[0]["response_format"] == {"type": "json_object"}
-
-    def test_tool_round_trip(self, monkeypatch):
-        client = _sequence_client(
-            monkeypatch,
-            _tool_call_response("src/app.py"),
-            _final_response(_plan_payload()),
-        )
-        read_paths: list[str] = []
-
-        def read_file(path: str) -> str:
-            read_paths.append(path)
-            return "FILE CONTENT"
-
-        result = _generate(read_file=read_file)
-
-        assert result.complexity == "medium"
-        assert read_paths == ["src/app.py"]
-        assert len(client.requests) == 2
-        tool_messages = [
-            m
-            for m in client.requests[1]["messages"]
-            if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "tool"
-        ]
-        assert len(tool_messages) == 1
-        assert "FILE CONTENT" in tool_messages[0]["content"]
-
-    def test_on_round_called_after_every_api_round(self, monkeypatch):
-        _sequence_client(
-            monkeypatch,
-            _tool_call_response("src/app.py"),
-            _final_response(_plan_payload()),
-        )
-        rounds = []
-
-        _generate(on_round=lambda: rounds.append(1))
-
-        assert len(rounds) == 2
-
-    def test_total_budget_stated_in_initial_prompt(self, monkeypatch):
-        monkeypatch.setattr(llm, "TEST_PLAN_TOOL_ROUNDS", 3)
-        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
-
-        _generate()
-
-        prompt = client.requests[0]["messages"][1]["content"]
-        assert "up to 3" in prompt
-        assert "read_file" in prompt
-
-    def test_remaining_budget_appended_to_tool_result(self, monkeypatch):
-        monkeypatch.setattr(llm, "TEST_PLAN_TOOL_ROUNDS", 3)
-        client = _sequence_client(
-            monkeypatch,
-            _tool_call_response("src/app.py"),
-            _final_response(_plan_payload()),
-        )
-
-        _generate()
-
-        tool_messages = [
-            m
-            for m in client.requests[1]["messages"]
-            if isinstance(m, dict) and m.get("role") == "tool"
-        ]
-        assert "2 of 3 rounds remaining" in tool_messages[-1]["content"]
-        assert "FILE CONTENT" in tool_messages[-1]["content"]
-
-    def test_round_cap_forces_final_json_answer(self, monkeypatch):
-        monkeypatch.setattr(llm, "TEST_PLAN_TOOL_ROUNDS", 2)
-        client = _sequence_client(
-            monkeypatch,
-            _tool_call_response("a.py"),
-            _tool_call_response("b.py"),
-            _final_response(_plan_payload()),
-        )
-
-        result = _generate()
-
-        assert result.complexity == "medium"
-        assert len(client.requests) == 3
-        final = client.requests[2]
-        assert final["tool_choice"] == "none"
-        assert final["response_format"] == {"type": "json_object"}
-        last_message = final["messages"][-1]
-        assert last_message["role"] == "user"
-        assert "exhaust" in last_message["content"].lower()
-
-    def test_read_file_none_skips_tools(self, monkeypatch):
-        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
-
-        result = _generate(read_file=None)
-
-        assert result.complexity == "medium"
+        # One request, no tools: a plan decides what "correct" means, so it
+        # never gets to read the implementation it is judging.
         assert len(client.requests) == 1
         assert "tools" not in client.requests[0]
         assert client.requests[0]["response_format"] == {"type": "json_object"}
-
-    def test_bad_request_on_first_round_falls_back_to_no_tools(self, monkeypatch):
-        client = _sequence_client(
-            monkeypatch,
-            _bad_request_error(),
-            _final_response(_plan_payload()),
-        )
-
-        result = _generate()
-
-        assert result.complexity == "medium"
-        assert len(client.requests) == 2
-        assert "tools" not in client.requests[1]
-        assert client.requests[1]["response_format"] == {"type": "json_object"}
-
-    def test_bad_request_after_first_round_raises(self, monkeypatch):
-        _sequence_client(
-            monkeypatch,
-            _tool_call_response("src/app.py"),
-            _bad_request_error(),
-        )
-
-        with pytest.raises(LLMError):
-            _generate()
 
     def test_other_openai_error_raises_llm_error(self, monkeypatch):
         error = openai.APIConnectionError(request=httpx.Request("POST", "https://api.test"))
@@ -612,8 +489,6 @@ class TestReviseTestPlan:
             "file_tree": None,
             "current_plan_json": json.dumps(_PLAN_PAYLOAD),
             "feedback": "Add negative test cases for lockout.",
-            "read_file": lambda path: "FILE CONTENT",
-            "on_round": lambda: None,
         }
         kwargs.update(overrides)
         return revise_test_plan(**kwargs)
@@ -777,6 +652,75 @@ class TestGenerateTestScript:
         with pytest.raises(LLMError):
             _generate_script()
 
+    # ── tool-loop mechanics ───────────────────────────────────────────
+    # Script generation is the only remaining consumer of
+    # _complete_with_tools, so these guard the shared loop itself. They
+    # previously rode on test-plan generation, which no longer has tools.
+
+    def test_on_round_called_after_every_api_round(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _final_response({"script": "print('hello')"}),
+        )
+        rounds = []
+
+        _generate_script(on_round=lambda: rounds.append(1))
+
+        assert len(rounds) == 2
+
+    def test_total_budget_stated_in_initial_prompt(self, monkeypatch):
+        monkeypatch.setattr(llm, "TEST_EXECUTION_TOOL_ROUNDS", 3)
+        client = _sequence_client(monkeypatch, _final_response({"script": "print('hello')"}))
+
+        _generate_script()
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "up to 3" in prompt
+        assert "read_file" in prompt
+
+    def test_remaining_budget_appended_to_tool_result(self, monkeypatch):
+        monkeypatch.setattr(llm, "TEST_EXECUTION_TOOL_ROUNDS", 3)
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _final_response({"script": "print('hello')"}),
+        )
+
+        _generate_script()
+
+        tool_messages = [
+            m
+            for m in client.requests[1]["messages"]
+            if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        assert "2 of 3 rounds remaining" in tool_messages[-1]["content"]
+        assert "FILE CONTENT" in tool_messages[-1]["content"]
+
+    def test_bad_request_on_first_round_falls_back_to_no_tools(self, monkeypatch):
+        """A provider that rejects tools must still produce a script."""
+        client = _sequence_client(
+            monkeypatch,
+            _bad_request_error(),
+            _final_response({"script": "print('hello')"}),
+        )
+
+        result = _generate_script()
+
+        assert result.script == "print('hello')"
+        assert len(client.requests) == 2
+        assert "tools" not in client.requests[1]
+
+    def test_bad_request_after_first_round_raises(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _tool_call_response("src/app.py"),
+            _bad_request_error(),
+        )
+
+        with pytest.raises(LLMError):
+            _generate_script()
+
     def test_prompt_contains_env_var_names_and_case_fields_but_not_secrets(self, monkeypatch):
         client = _sequence_client(monkeypatch, _final_response({"script": "print('hello')"}))
 
@@ -845,6 +789,51 @@ class TestDiagnoseAndFixScript:
 
         assert result.classification == "app_bug"
         assert result.fixed_script is None
+
+    def test_app_bug_carries_the_bug_report(self, monkeypatch):
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "app_bug",
+                    "fixed_script": None,
+                    "explanation": "Login genuinely fails for valid credentials.",
+                    "finding_severity": "high",
+                    "finding_title": "Valid credentials are rejected",
+                    "finding_steps_to_reproduce": "Open /login\nSubmit valid credentials",
+                    "finding_expected": "The user is signed in",
+                    "finding_actual": "A 401 is returned",
+                }
+            ),
+        )
+
+        result = _diagnose()
+
+        assert result.finding_severity == "high"
+        assert result.finding_title == "Valid credentials are rejected"
+        assert result.finding_steps_to_reproduce == "Open /login\nSubmit valid credentials"
+        assert result.finding_expected == "The user is signed in"
+        assert result.finding_actual == "A 401 is returned"
+
+    def test_omitted_bug_report_parses_as_none(self, monkeypatch):
+        """Not validated here on purpose — the task fills the gaps from the
+        test case rather than retrying the whole execution over a slip."""
+        _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "app_bug",
+                    "fixed_script": None,
+                    "explanation": "The total is wrong.",
+                }
+            ),
+        )
+
+        result = _diagnose()
+
+        assert result.finding_title is None
+        assert result.finding_severity is None
+        assert result.finding_expected is None
 
     def test_script_bug_without_fix_raises(self, monkeypatch):
         _sequence_client(
@@ -936,6 +925,41 @@ class TestScriptPromptsAdvertiseAvailableLibraries:
         from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
 
         assert library in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+
+class TestFindingSeverityBarIsShared:
+    """Both finding-producing prompts must define severity identically.
+
+    Two definitions would make ``high_severity_count`` — the first number a
+    reader anchors on — mean two different things depending on which mode
+    produced the finding.
+    """
+
+    def test_diagnosis_prompt_embeds_the_shared_bar(self):
+        from backend.services.llm_prompts import (
+            FINDING_SEVERITY_BAR,
+            TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
+        )
+
+        assert FINDING_SEVERITY_BAR in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+    def test_record_finding_tool_embeds_the_shared_bar(self):
+        from backend.services.llm_prompts import BROWSER_TOOLS, FINDING_SEVERITY_BAR
+
+        record = next(
+            tool for tool in BROWSER_TOOLS if tool["function"]["name"] == "record_finding"
+        )
+        severity = record["function"]["parameters"]["properties"]["severity"]
+        assert severity["description"] == FINDING_SEVERITY_BAR
+
+    def test_diagnosis_prompt_anchors_expected_to_the_requirement(self):
+        """The prompt hands the model read_file *and* asks it to write down an
+        expected value — the exact shape that produced a real bug before."""
+        from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+
+        assert "finding_expected comes from the test case and the requirement" in (
+            TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+        )
 
 
 # ── Exploratory testing ───────────────────────────────────────────────

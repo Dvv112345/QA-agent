@@ -87,3 +87,11 @@
   border: 1px solid #e0e4ea;
   border-radius: 4px;
 }
+
+/* Machine-ish detail (browser build, OS, URL) — de-emphasised and allowed
+   to wrap, since it is reference material rather than part of the report. */
+.finding-environment {
+  color: #5b6472;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}

@@ -10,7 +10,7 @@ import json
 import pytest
 from sqlmodel import select
 
-from backend.config import MAX_AUTO_RETRIES, TEST_PLAN_FILE_MAX_CHARS
+from backend.config import MAX_AUTO_RETRIES
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
     RequirementStatus,
@@ -171,8 +171,6 @@ class TestInitialGeneration:
         assert call["test_env_content"] == "SSH to staging as qa."
         assert call["file_tree"] == "src/app.py\nsrc/db.py"
         assert call["readme"] is None
-        assert callable(call["read_file"])
-        assert callable(call["on_round"])
 
     def test_generating_row_is_also_processed(self, db_session, llm_stub, fetch_stub):
         """Idempotent re-run of a row a crashed worker left in generating."""
@@ -351,79 +349,62 @@ class TestFailureHandling:
         assert row.pending_feedback == "Add negative cases."
 
 
-class TestReadFileExecutor:
-    """The read_file closure handed to the LLM loop: path-validated,
-    truncating, never raising."""
+class TestPlanningIsCodeBlind:
+    """Planning never reads the repository.
 
-    def _run_with_read_file(self, db_session, monkeypatch, plan, path):
-        """Run the task with an LLM stub that immediately reads *path*."""
-        import backend.services.llm as llm_module
+    A plan defines what "correct" means for a requirement, so reading the
+    implementation is exactly where that judgment drifts into describing
+    what the code already does. The interface details a script needs are
+    resolved later, by ``generate_test_script``, which does have repo
+    access. These tests exist so that separation cannot be undone quietly.
+    """
 
-        captured = {}
+    def test_generation_never_fetches_repo_files(self, db_session, llm_stub, fetch_stub):
+        _, _, plan = _seed_setup(db_session)
 
-        def _generate(**kwargs):
-            captured["content"] = kwargs["read_file"](path)
-            return RESULT
-
-        monkeypatch.setattr(llm_module, "generate_test_plan", _generate)
         generate_test_plan_task(plan.id)
-        return captured["content"]
 
-    def test_valid_path_fetched_and_truncated(self, db_session, fetch_stub, monkeypatch):
-        _, _, plan = _seed_setup(db_session)
-        fetch_stub.result = "x" * (TEST_PLAN_FILE_MAX_CHARS + 500)
-
-        content = self._run_with_read_file(db_session, monkeypatch, plan, "src/app.py")
-
-        assert fetch_stub.calls == [
-            {"owner": "owner", "repo": "repo", "path": "src/app.py", "token": None}
-        ]
-        assert content == "x" * TEST_PLAN_FILE_MAX_CHARS + "\n… (truncated)"
-
-    def test_short_file_not_truncated(self, db_session, fetch_stub, monkeypatch):
-        _, _, plan = _seed_setup(db_session)
-        fetch_stub.result = "print('hi')\n"
-
-        content = self._run_with_read_file(db_session, monkeypatch, plan, "src/app.py")
-
-        assert content == "print('hi')\n"
-
-    def test_path_not_in_tree_returns_error_without_fetch(
-        self, db_session, fetch_stub, monkeypatch
-    ):
-        _, _, plan = _seed_setup(db_session)
-
-        content = self._run_with_read_file(db_session, monkeypatch, plan, "secrets/keys.txt")
-
-        assert content.startswith("ERROR")
-        assert "secrets/keys.txt" in content
         assert fetch_stub.calls == []
-
-    def test_github_error_returns_error_string(self, db_session, fetch_stub, monkeypatch):
-        from backend.utils.github_utils import GitHubError
-
-        _, _, plan = _seed_setup(db_session)
-        fetch_stub.result = GitHubError("rate limited")
-
-        content = self._run_with_read_file(db_session, monkeypatch, plan, "src/app.py")
-
-        assert content.startswith("ERROR")
-        assert "src/app.py" in content
-        # the executor never raises — the plan still lands normally
         assert _reload(db_session, plan.id).status == TestPlanStatus.DRAFT
 
-    def test_missing_file_returns_error_string(self, db_session, fetch_stub, monkeypatch):
+    def test_revision_never_fetches_repo_files(self, db_session, llm_stub, fetch_stub):
         _, _, plan = _seed_setup(db_session)
-        fetch_stub.result = None
-
-        content = self._run_with_read_file(db_session, monkeypatch, plan, "src/app.py")
-
-        assert content.startswith("ERROR")
-
-    def test_no_file_tree_passes_read_file_none(self, db_session, llm_stub, fetch_stub):
-        _, _, plan = _seed_setup(db_session, file_tree=None)
+        plan.pending_feedback = "Add negative cases."
+        db_session.add(plan)
+        db_session.commit()
 
         generate_test_plan_task(plan.id)
 
-        assert llm_stub.generate_calls[0]["read_file"] is None
-        assert llm_stub.generate_calls[0]["file_tree"] is None
+        assert fetch_stub.calls == []
+
+    def test_no_read_file_or_on_round_is_passed(self, db_session, llm_stub, fetch_stub):
+        """Passing read_file=None would leave re-enabling it one argument
+        away; the parameter is gone from the signature entirely."""
+        _, _, plan = _seed_setup(db_session)
+
+        generate_test_plan_task(plan.id)
+
+        call = llm_stub.generate_calls[0]
+        assert "read_file" not in call
+        assert "on_round" not in call
+        # The file tree still reaches the prompt — structure without
+        # behaviour is exactly the grounding a plan should have.
+        assert call["file_tree"] == "src/app.py\nsrc/db.py"
+
+    def test_heartbeat_is_stamped_before_the_call(self, db_session, fetch_stub, monkeypatch):
+        """With no per-round callback, the pre-call stamp is what keeps the
+        reconciler from sweeping a live plan job."""
+        import backend.services.llm as llm_module
+
+        seen = {}
+
+        def _generate(**kwargs):
+            seen["heartbeat"] = _reload(db_session, plan.id).last_heartbeat
+            return RESULT
+
+        _, _, plan = _seed_setup(db_session)
+        monkeypatch.setattr(llm_module, "generate_test_plan", _generate)
+
+        generate_test_plan_task(plan.id)
+
+        assert seen["heartbeat"] is not None

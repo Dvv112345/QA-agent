@@ -64,6 +64,7 @@ function makeCaseExecution(
     attempts: 0,
     output: null,
     error: null,
+    finding: null,
     updated_at: '2026-01-01T00:00:00Z',
     ...overrides,
   }

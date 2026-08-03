@@ -75,11 +75,56 @@ def _add_sprint_readme_user_provided(engine: Engine) -> None:
     logger.info("Migration applied: sprint.readme_user_provided column added")
 
 
+def _add_exploratory_finding_environment(engine: Engine) -> None:
+    """Add ``exploratoryfinding.environment`` (browser/viewport/OS/URL) when missing."""
+    inspector = inspect(engine)
+    if "exploratoryfinding" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("exploratoryfinding")}
+    if "environment" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE exploratoryfinding ADD COLUMN environment TEXT"))
+    logger.info("Migration applied: exploratoryfinding.environment column added")
+
+
+# Structured finding fields on a scripted test-case result, replacing the
+# free-text-only report. Checked per column rather than as a group so a run
+# interrupted partway through still converges on the next boot.
+_TEST_CASE_EXECUTION_FINDING_COLUMNS = (
+    "finding_severity",
+    "finding_title",
+    "finding_steps_to_reproduce",
+    "finding_expected",
+    "finding_actual",
+    "environment",
+)
+
+
+def _add_test_case_execution_finding_fields(engine: Engine) -> None:
+    """Add the structured finding columns to ``testcaseexecution`` when missing."""
+    inspector = inspect(engine)
+    if "testcaseexecution" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("testcaseexecution")}
+    missing = [name for name in _TEST_CASE_EXECUTION_FINDING_COLUMNS if name not in columns]
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for name in missing:
+            connection.execute(text(f"ALTER TABLE testcaseexecution ADD COLUMN {name} TEXT"))
+    logger.info(
+        "Migration applied: testcaseexecution finding columns added (%s)", ", ".join(missing)
+    )
+
+
 _MIGRATIONS = [
     _add_requirement_from_prd,
     _add_testcase_script,
     _add_test_environment_access_env_vars_json,
     _add_sprint_readme_user_provided,
+    _add_exploratory_finding_environment,
+    _add_test_case_execution_finding_fields,
 ]
 
 

@@ -14,6 +14,8 @@ from sqlmodel import select
 from backend.config import MAX_AUTO_RETRIES
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
+    FindingSeverity,
+    FindingType,
     RequirementStatus,
     TestCase,
     TestCaseExecution,
@@ -245,6 +247,140 @@ class TestAppBug:
         db_session.expire_all()
         # Script was correct — it caught a real bug — so it's still cached.
         assert db_session.get(TestCase, cases[0].id).script == "print('generated')"
+
+
+class TestStructuredFindings:
+    """A terminal failure reports itself in the shared finding vocabulary."""
+
+    def _app_bug(self, **overrides) -> ScriptDiagnosisResult:
+        fields = {
+            "classification": "app_bug",
+            "fixed_script": None,
+            "explanation": "Login genuinely broken.",
+            "finding_severity": "high",
+            "finding_title": "Valid credentials are rejected",
+            "finding_steps_to_reproduce": "Open /login\nSubmit valid credentials",
+            "finding_expected": "The user reaches the dashboard",
+            "finding_actual": "A 401 is returned",
+        }
+        fields.update(overrides)
+        return ScriptDiagnosisResult(**fields)
+
+    def _run_app_bug(self, db_session, llm_stub, script_runner_stub, diagnosis):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        script_runner_stub.default_result = ScriptRunResult(
+            exit_code=1, stdout="", stderr="assertion failed", timed_out=False
+        )
+        llm_stub.diagnosis_result = diagnosis
+        execute_test_task(execution.id)
+        return _reload_case_execs(db_session, execution.id)[0]
+
+    def test_app_bug_persists_the_reported_finding(self, db_session, llm_stub, script_runner_stub):
+        result = self._run_app_bug(db_session, llm_stub, script_runner_stub, self._app_bug())
+
+        assert result.finding_type == FindingType.BUG
+        assert result.finding_severity == "high"
+        assert result.finding_title == "Valid credentials are rejected"
+        assert result.finding_steps_to_reproduce == "Open /login\nSubmit valid credentials"
+        assert result.finding_expected == "The user reaches the dashboard"
+        assert result.finding_actual == "A 401 is returned"
+        assert result.environment  # non-empty: names the worker host
+
+    def test_omitted_fields_fall_back_to_the_test_case(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        """Each fallback is a correct value, not a placeholder — which is why
+        a slip is filled in here rather than retrying the whole execution."""
+        diagnosis = self._app_bug(
+            finding_severity=None,
+            finding_title=None,
+            finding_steps_to_reproduce=None,
+            finding_expected=None,
+            finding_actual=None,
+        )
+
+        result = self._run_app_bug(db_session, llm_stub, script_runner_stub, diagnosis)
+
+        assert result.finding_title == "Case 0"  # the test case's own title
+        assert result.finding_steps_to_reproduce == (
+            "Open the login page\nSubmit valid credentials"
+        )
+        assert result.finding_expected == "User lands on the dashboard."
+        assert result.finding_actual == "Login genuinely broken."  # the explanation
+        assert result.finding_severity == FindingSeverity.MEDIUM
+
+    def test_out_of_range_severity_normalizes(self, db_session, llm_stub, script_runner_stub):
+        """An unknown severity would render as an unstyled badge and sort nowhere."""
+        result = self._run_app_bug(
+            db_session, llm_stub, script_runner_stub, self._app_bug(finding_severity="critical")
+        )
+
+        assert result.finding_severity == FindingSeverity.MEDIUM
+
+    def test_exhausted_self_heal_reports_an_issue_without_an_llm_report(
+        self, db_session, llm_stub, script_runner_stub, monkeypatch
+    ):
+        import backend.tasks.execute_test as execute_test_module
+
+        monkeypatch.setattr(execute_test_module, "MAX_SCRIPT_FIX_ROUNDS", 1)
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        script_runner_stub.default_result = ScriptRunResult(
+            exit_code=1, stdout="", stderr="still broken", timed_out=False
+        )
+        llm_stub.diagnosis_result = ScriptDiagnosisResult(
+            classification="script_bug", fixed_script="print('still wrong')", explanation="Bad."
+        )
+
+        execute_test_task(execution.id)
+
+        result = _reload_case_execs(db_session, execution.id)[0]
+        assert result.finding_type == FindingType.ISSUE
+        # Medium regardless: this says nothing about the product, only that
+        # nobody managed to look at it.
+        assert result.finding_severity == FindingSeverity.MEDIUM
+        assert result.finding_title == "Could not verify: Case 0"
+        assert result.finding_expected == "User lands on the dashboard."
+        assert "never actually exercised" in result.finding_actual
+        assert result.environment
+
+    def test_passing_case_carries_no_finding(self, db_session, llm_stub, script_runner_stub):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)
+
+        result = _reload_case_execs(db_session, execution.id)[0]
+        assert result.status == TestCaseExecutionStatus.PASSED
+        assert result.finding is None
+        assert result.finding_title is None
+        # environment travels with the finding rather than the case: it is
+        # only reachable through the nested `finding` response, so writing it
+        # on a passing case would store what no reader can see.
+        assert result.environment is None
+
+    def test_a_restarted_case_that_now_passes_clears_its_old_finding(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        """A restart reuses the same row, so a fixed bug must stop reporting."""
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, case_execs = _seed_execution(db_session, sprint, requirement, cases)
+        case_execs[0].finding_severity = "high"
+        case_execs[0].finding_title = "Stale bug from the previous attempt"
+        case_execs[0].finding_expected = "old expected"
+        db_session.add(case_execs[0])
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        result = _reload_case_execs(db_session, execution.id)[0]
+        assert result.status == TestCaseExecutionStatus.PASSED
+        assert result.finding_title is None
+        assert result.finding_severity is None
+        assert result.finding_expected is None
+        assert result.environment is None
+        assert result.finding is None
 
 
 class TestExhaustedSelfHeal:

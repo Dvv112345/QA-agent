@@ -313,6 +313,69 @@ class TestCase(SQLModel, table=True):
     test_plan: Optional["TestPlan"] = Relationship(back_populates="cases")
 
 
+# ── Findings (shared by scripted and exploratory testing) ─────────────
+#
+# Defined here rather than in the exploratory section below because both
+# testing modes now report findings in this vocabulary: an exploratory
+# session records them through a tool, a scripted run derives them from a
+# test case's outcome.
+
+
+class FindingType(str, Enum):
+    """SBTM distinguishes product defects from testing obstructions.
+
+    Collapsing these would discard the signal that a session was *blocked*
+    rather than clean.  The same split carries over to scripted runs, where
+    it is derived from the case outcome: a ``failed`` case caught the
+    product being wrong, an ``error`` case means the test itself never got
+    off the ground.
+    """
+
+    BUG = "bug"  # the product is wrong
+    ISSUE = "issue"  # something obstructed the testing itself
+
+    @classmethod
+    def normalize(cls, value: str | None) -> str:
+        """Coerce a reported type to a usable one, defaulting to ``bug``.
+
+        An unrecognised type is worse than a wrong one: a finding counted
+        toward neither ``bug_count`` nor ``issue_count`` while still
+        counting toward ``finding_count`` makes the run page show numbers
+        that do not add up.
+
+        ``bug`` matches what ``BrowserSession.record_finding`` already
+        defaults to when the model omits the field — this closes the same
+        gap for a value it got wrong.
+        """
+        return value if value in {member.value for member in cls} else cls.BUG.value
+
+
+class FindingSeverity(str, Enum):
+    """Reporter-assigned severity of a finding."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+    @classmethod
+    def normalize(cls, value: str | None) -> str:
+        """Coerce a reported severity to a usable one, defaulting to medium.
+
+        Both finding sources are LLM-reported and both feed the same card
+        and the same ``high_severity_count``, so an unrecognised value has
+        to be resolved the same way on each — otherwise that count means
+        two different things depending on which mode found the bug.
+
+        Medium is the neutral choice: it neither inflates the headline
+        number nor buries something that might matter.
+
+        Returns the plain string, never the enum member: on Python 3.12 an
+        f-string of a member renders as ``FindingSeverity.MEDIUM``, and
+        these values reach both prompt text and stored columns.
+        """
+        return value if value in {member.value for member in cls} else cls.MEDIUM.value
+
+
 class TestExecutionStatus(str, Enum):
     """Lifecycle status of one requirement's test-case run within a TestRun."""
 
@@ -424,6 +487,12 @@ class TestCaseExecution(SQLModel, table=True):
 
     Stores only the final attempt (script/output/attempts) — intermediate
     failed self-heal attempts aren't user-facing.
+
+    A terminal failure also carries a structured finding, in the same
+    vocabulary an exploratory session uses.  The fields live directly on
+    this row rather than in a child table because a case stops at its first
+    verdict: it produces at most one finding, so a 0..1 relationship would
+    buy a foreign key and cascade for nothing.
     """
 
     __test__ = False  # tell pytest this "Test*" name is not a test class
@@ -436,12 +505,74 @@ class TestCaseExecution(SQLModel, table=True):
     output: str | None = Field(default=None)
     error: str | None = Field(default=None)
     script_snapshot: str | None = Field(default=None)  # credential-free, downloadable as-is
+    # ── structured finding (set on a terminal failure, cleared on pass) ──
+    # Prefixed because `title`/`expected` alone would read as the test
+    # case's own; the `finding` property below maps them back onto the
+    # shared names the API exposes.
+    finding_severity: str | None = Field(default=None)  # FindingSeverity value
+    finding_title: str | None = Field(default=None)
+    finding_steps_to_reproduce: str | None = Field(default=None)  # newline-joined
+    finding_expected: str | None = Field(default=None)
+    finding_actual: str | None = Field(default=None)
+    # Where the script ran (worker host). Part of the finding above, so it
+    # is None on every case that has no finding — a pass, a row still in
+    # flight, or a row written before findings were structured.
+    environment: str | None = Field(default=None)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
 
     test_execution: Optional["TestExecution"] = Relationship(back_populates="cases")
     test_case: Optional["TestCase"] = Relationship()
+
+    @property
+    def finding_type(self) -> str | None:
+        """Derived from the outcome — deliberately never stored.
+
+        ``failed`` means the script ran correctly and the product was
+        wrong; ``error`` means self-heal gave up and the testing itself
+        never landed.  Storing this alongside ``status`` would create two
+        sources of truth that a restart could put out of step.
+
+        Plain strings, not enum members, for the same reason
+        ``FindingSeverity.normalize`` returns one.
+        """
+        if self.status == TestCaseExecutionStatus.FAILED:
+            return FindingType.BUG.value
+        if self.status == TestCaseExecutionStatus.ERROR:
+            return FindingType.ISSUE.value
+        return None
+
+    @property
+    def finding(self) -> dict[str, str | None] | None:
+        """The finding in the shared shape, or None when there isn't one.
+
+        Keyed to match ``FindingBase`` in ``models/types.py`` so FastAPI can
+        validate it straight into the nested response model.
+
+        Gated on ``finding_title`` rather than on status: rows written
+        before this feature are ``failed`` with no finding, and must not
+        surface as an empty card.
+
+        The five required fields below the title are coalesced because
+        ``FindingBase`` declares them non-optional over nullable columns: a
+        single ``None`` would fail response validation and 500 the *whole*
+        run detail response rather than just this card.  The task always writes them as
+        a group, so this should be unreachable — but the blast radius is far
+        out of proportion to the cost of a fallback.  ``environment`` is
+        left alone: the response model already allows it to be null.
+        """
+        if not self.finding_title:
+            return None
+        return {
+            "finding_type": self.finding_type or "",
+            "severity": self.finding_severity or "",
+            "title": self.finding_title,
+            "steps_to_reproduce": self.finding_steps_to_reproduce or "",
+            "expected": self.finding_expected or "",
+            "actual": self.finding_actual or "",
+            "environment": self.environment,
+        }
 
 
 # ── Exploratory testing ───────────────────────────────────────────────
@@ -488,25 +619,6 @@ class ExploratorySessionStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
-
-
-class FindingType(str, Enum):
-    """SBTM distinguishes product defects from testing obstructions.
-
-    Collapsing these would discard the signal that a session was *blocked*
-    rather than clean.
-    """
-
-    BUG = "bug"  # the product is wrong
-    ISSUE = "issue"  # something obstructed the testing itself
-
-
-class FindingSeverity(str, Enum):
-    """Reporter-assigned severity of a finding."""
-
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
 
 
 class ExploratoryRun(SQLModel, table=True):
@@ -638,6 +750,10 @@ class ExploratoryFinding(SQLModel, table=True):
     # whenever STORE_OFFLINE is false: the normal case for that setting, not
     # an error.
     screenshot_path: str | None = Field(default=None)
+    # Browser, viewport, OS, and page URL at the moment of recording —
+    # captured in code, never asked of the model. Best-effort: None on rows
+    # written before capture existed, and on a page too broken to answer.
+    environment: str | None = Field(default=None)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import FindingCard from '../components/FindingCard'
-import { fetchExploratorySession } from '../services/api'
+import { fetchExploratorySession, findingScreenshotUrl } from '../services/api'
 import type { ExploratorySessionResponse } from '../types'
 import './ExploratorySessionPage.css'
 
@@ -125,7 +125,11 @@ export default function ExploratorySessionPage() {
         ) : (
           <div className="exp-session-findings">
             {session.findings.map((finding) => (
-              <FindingCard key={finding.id} finding={finding} />
+              <FindingCard
+                key={finding.id}
+                finding={finding}
+                screenshotUrl={finding.has_screenshot ? findingScreenshotUrl(finding.id) : null}
+              />
             ))}
           </div>
         )}

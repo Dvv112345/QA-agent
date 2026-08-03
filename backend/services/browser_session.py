@@ -37,6 +37,7 @@ from backend.config import (
     EXPLORATORY_MAX_FINDINGS,
     EXPLORATORY_SNAPSHOT_MAX_CHARS,
 )
+from backend.utils import environment_utils
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,9 @@ class FindingRecord:
     steps_to_reproduce: str
     expected: str
     actual: str
+    # Browser, viewport, OS, and page URL at the moment of recording.
+    # Optional so a session assembled without a live browser still records.
+    environment: str | None = None
 
 
 def allowed_origins(urls: list[str]) -> set[tuple[str, str]]:
@@ -113,12 +117,26 @@ class BrowserSession:
         self._page: Any = None
         self._console: list[str] = []
         self.findings_recorded = 0
+        # Set once in __enter__. Initialized here because this class is also
+        # constructed directly with a page injected (tests do exactly that),
+        # and every finding path must survive the browser never existing.
+        self._browser_label: str | None = None
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
     def __enter__(self) -> BrowserSession:
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(headless=self._headless)
+        # Read once: a browser cannot change version mid-session, and the
+        # alternative is doing this work on the failure path, at the worst
+        # possible moment. Never fatal — a finding with a vaguer environment
+        # beats no session.
+        try:
+            self._browser_label = (
+                f"{self._browser.browser_type.name.capitalize()} {self._browser.version}"
+            )
+        except Exception:  # pragma: no cover — driver-dependent
+            logger.warning("Could not read the browser version", exc_info=True)
         self._page = self._browser.new_page()
         self._page.set_default_timeout(self._action_timeout * 1000)
         self._page.on("console", self._record_console)
@@ -358,6 +376,10 @@ class BrowserSession:
             steps_to_reproduce=steps_to_reproduce,
             expected=expected,
             actual=actual,
+            # Same instant as the screenshot, for the same reason: the
+            # viewport and URL describe *this* observation, and a later
+            # action would silently change both.
+            environment=self._environment(),
         )
         try:
             self._on_finding(record, screenshot)
@@ -367,6 +389,21 @@ class BrowserSession:
 
         self.findings_recorded += 1
         return f"Recorded {finding_type}: {title}. Continue exploring the charter."
+
+    def _environment(self) -> str:
+        """Describe where this observation was made.
+
+        Reads the page defensively: a page that has crashed or closed
+        answers for neither its URL nor its viewport, and that must cost the
+        detail, never the finding.
+        """
+        url: str | None = None
+        viewport: dict[str, int] | None = None
+        with contextlib.suppress(PlaywrightError, AttributeError):
+            url = self._page.url
+        with contextlib.suppress(PlaywrightError, AttributeError):
+            viewport = self._page.viewport_size
+        return environment_utils.browser_environment(self._browser_label, viewport, url)
 
     def _element_error(self, ref: str, exc: PlaywrightError, action: str) -> str:
         message = str(exc)

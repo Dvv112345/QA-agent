@@ -111,3 +111,9 @@
   font-size: 0.85rem;
   text-decoration: underline;
 }
+
+/* The embedded finding card already carries its own bottom margin; this
+   only separates it from the attempt count above. */
+.case-execution-finding {
+  margin-top: 0.6rem;
+}

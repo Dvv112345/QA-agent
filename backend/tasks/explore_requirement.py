@@ -43,6 +43,8 @@ from backend.models.database import (
     ExploratoryRunStatus,
     ExploratorySession,
     ExploratorySessionStatus,
+    FindingSeverity,
+    FindingType,
 )
 from backend.services import browser_session, llm
 from backend.services.storage import StorageService
@@ -165,13 +167,21 @@ def _build_on_finding(
         finding = ExploratoryFinding(
             exploratory_session_id=exploratory_session.id,
             position=position,
-            finding_type=record.finding_type,
-            severity=record.severity,
+            # The tool schema constrains both of these to an enum, but the
+            # model is not bound by it. An unrecognised type counts toward
+            # neither bug_count nor issue_count while still counting toward
+            # finding_count, so the run page would show numbers that do not
+            # add up; an unrecognised severity would make
+            # high_severity_count mean something different here than on the
+            # scripted path.
+            finding_type=FindingType.normalize(record.finding_type),
+            severity=FindingSeverity.normalize(record.severity),
             title=record.title,
             steps_to_reproduce=record.steps_to_reproduce,
             expected=record.expected,
             actual=record.actual,
             screenshot_path=screenshot_path,
+            environment=record.environment,
         )
         session.add(finding)
         session.commit()

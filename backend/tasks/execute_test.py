@@ -27,11 +27,12 @@ from backend.config import (
     MAX_AUTO_RETRIES,
     MAX_SCRIPT_FIX_ROUNDS,
     SCRIPT_EXECUTION_TIMEOUT,
-    TEST_PLAN_FILE_MAX_CHARS,
+    TEST_EXECUTION_FILE_MAX_CHARS,
 )
 from backend.database import new_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
+    FindingSeverity,
     TestCaseExecution,
     TestCaseExecutionStatus,
     TestExecution,
@@ -40,7 +41,7 @@ from backend.models.database import (
 )
 from backend.services import llm, script_runner
 from backend.services.llm_prompts import TestCaseLike
-from backend.utils import github_utils
+from backend.utils import environment_utils, github_utils
 from backend.utils.crypto import decrypt_token
 from backend.utils.readme_utils import resolve_readme
 
@@ -95,8 +96,10 @@ def _build_read_file(
     """Executor for the LLM's read_file tool: path-validated, truncating,
     never raising — errors go back to the model as strings it can react to.
 
-    Duplicated from ``tasks/generate_test_plan.py`` rather than shared
-    (Decision 4) — one file per task type, self-contained.
+    The only repo access in the pipeline. Test planning deliberately has
+    none, so the interface details a script needs — real endpoint paths,
+    parameters, response shapes — are resolved here, at the point of use and
+    against a snapshot refreshed when the run was created.
     """
     allowed_paths = set(file_tree.splitlines())
 
@@ -110,11 +113,83 @@ def _build_read_file(
             return f"ERROR: could not read '{requested}': {exc}"
         if content is None:
             return f"ERROR: could not read '{requested}': file not found."
-        if len(content) > TEST_PLAN_FILE_MAX_CHARS:
-            content = content[:TEST_PLAN_FILE_MAX_CHARS] + _FILE_TRUNCATION_MARKER
+        if len(content) > TEST_EXECUTION_FILE_MAX_CHARS:
+            content = content[:TEST_EXECUTION_FILE_MAX_CHARS] + _FILE_TRUNCATION_MARKER
         return content
 
     return read_file
+
+
+# Cap for the finding title — a one-liner, held to the same bound as the
+# other short user-facing summaries.
+_FINDING_TITLE_MAX_CHARS = 300
+
+
+def _bug_finding(diagnosis: llm.ScriptDiagnosisResult, test_case: TestCaseLike) -> dict[str, str]:
+    """Normalize an app_bug diagnosis into the stored finding fields.
+
+    Every fallback is a genuinely correct value rather than a placeholder:
+    the test case *is* the reproduction steps and the expected result, and
+    the diagnosis explanation *is* an account of what happened.  That is why
+    a missing field is filled here instead of raising — raising would retry
+    the entire TestExecution over a formatting slip in a report whose
+    substance already arrived in ``explanation``.
+    """
+    return {
+        # An unknown severity is worse than an assumed one: it would render
+        # as an unstyled badge and sort nowhere. Shared with the exploratory
+        # path so one count can't mean two things.
+        "finding_severity": FindingSeverity.normalize(diagnosis.finding_severity),
+        "finding_title": (diagnosis.finding_title or test_case.title)[:_FINDING_TITLE_MAX_CHARS],
+        "finding_steps_to_reproduce": (diagnosis.finding_steps_to_reproduce or test_case.steps)[
+            :_OUTPUT_MAX_CHARS
+        ],
+        "finding_expected": (diagnosis.finding_expected or test_case.expected_result)[
+            :_OUTPUT_MAX_CHARS
+        ],
+        "finding_actual": (diagnosis.finding_actual or diagnosis.explanation)[:_OUTPUT_MAX_CHARS],
+        "environment": environment_utils.script_environment(),
+    }
+
+
+def _issue_finding(test_case: TestCaseLike, attempts: int) -> dict[str, str]:
+    """Build the finding for a case whose script could never be made to run.
+
+    No LLM call: the last diagnosis said ``script_bug``, so there is no
+    verdict about the product to report.  Severity is fixed at medium
+    because this says nothing about the product — the requirement may be
+    perfectly well met, and nobody has been able to look.
+    """
+    return {
+        "finding_severity": FindingSeverity.MEDIUM.value,
+        "finding_title": f"Could not verify: {test_case.title}"[:_FINDING_TITLE_MAX_CHARS],
+        "finding_steps_to_reproduce": test_case.steps[:_OUTPUT_MAX_CHARS],
+        "finding_expected": test_case.expected_result[:_OUTPUT_MAX_CHARS],
+        "finding_actual": (
+            f"The generated test script could not be made to run correctly after "
+            f"{attempts} attempts, so this test case was never actually exercised. "
+            "The failure looked like a problem with the script rather than the "
+            "application every time."
+        ),
+        "environment": environment_utils.script_environment(),
+    }
+
+
+# Cleared on a passing case. A restarted execution reuses its
+# TestCaseExecution rows, so a fixed bug would otherwise keep reporting
+# itself from the previous attempt.
+#
+# ``environment`` belongs to the finding rather than the case: it is only
+# reachable through the nested `finding` response, so writing it on a
+# passing case would store something no reader can ever see.
+_NO_FINDING = {
+    "finding_severity": None,
+    "finding_title": None,
+    "finding_steps_to_reproduce": None,
+    "finding_expected": None,
+    "finding_actual": None,
+    "environment": None,
+}
 
 
 def _fail_execution(session: Session, execution: TestExecution, error: str) -> None:
@@ -257,6 +332,7 @@ def execute_test_task(test_execution_id: int) -> None:
                 final_status: str | None = None
                 final_output = ""
                 final_error: str | None = None
+                finding: dict[str, str | None] = dict(_NO_FINDING)
                 while True:
                     attempts += 1
                     run_result = script_runner.run_script(
@@ -273,6 +349,7 @@ def execute_test_task(test_execution_id: int) -> None:
                         final_status = TestCaseExecutionStatus.ERROR
                         final_output = f"{run_result.stdout}\n{run_result.stderr}".strip()
                         final_error = "Self-heal attempts exhausted; still failing."
+                        finding = _issue_finding(case_like, attempts)
                         break
 
                     diagnosis = llm.diagnose_and_fix_script(
@@ -294,6 +371,7 @@ def execute_test_task(test_execution_id: int) -> None:
                         final_status = TestCaseExecutionStatus.FAILED
                         final_output = f"{run_result.stdout}\n{run_result.stderr}".strip()
                         final_error = diagnosis.explanation
+                        finding = _bug_finding(diagnosis, case_like)
                         break
 
                     script = diagnosis.fixed_script
@@ -303,6 +381,8 @@ def execute_test_task(test_execution_id: int) -> None:
                 case_exec.output = final_output[:_OUTPUT_MAX_CHARS] or None
                 case_exec.error = final_error[:_OUTPUT_MAX_CHARS] if final_error else None
                 case_exec.script_snapshot = script
+                for field, value in finding.items():
+                    setattr(case_exec, field, value)
                 case_exec.updated_at = _now()
                 session.add(case_exec)
 

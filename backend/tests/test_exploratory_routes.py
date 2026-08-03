@@ -608,6 +608,32 @@ class TestReads:
         assert "screenshot_path" not in finding
 
     @pytest.mark.asyncio
+    async def test_finding_reports_where_it_was_observed(self, async_client, db_session):
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(
+            db_session, sprint, requirement, status=ExploratoryRunStatus.COMPLETED
+        )
+        session_row = _seed_exploratory_session(
+            db_session, run, status=ExploratorySessionStatus.COMPLETED
+        )
+        _seed_exploratory_finding(
+            db_session,
+            session_row,
+            position=0,
+            environment="Chromium 131 · viewport 1280x720 · https://app.test/checkout",
+        )
+        # No environment: a finding recorded before capture existed.
+        _seed_exploratory_finding(db_session, session_row, position=1, title="Older finding")
+
+        resp = await async_client.get(f"/api/exploratory-sessions/{session_row.id}")
+
+        findings = resp.json()["findings"]
+        assert findings[0]["environment"] == (
+            "Chromium 131 · viewport 1280x720 · https://app.test/checkout"
+        )
+        assert findings[1]["environment"] is None
+
+    @pytest.mark.asyncio
     async def test_run_404(self, async_client, db_session):
         assert (await async_client.get("/api/exploratory-runs/999999")).status_code == 404
 

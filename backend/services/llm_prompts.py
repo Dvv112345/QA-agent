@@ -64,9 +64,9 @@ SPLIT_PRD_SYSTEM_PROMPT = (
     "self-contained description that makes sense without reading the rest "
     "of the document, because each requirement is reviewed in isolation "
     "later. Cover every requirement the document states, but do not invent "
-    "requirements that are not in it, and do not merge unrelated features "
-    "into one requirement. Do not divide a single requirement into multiple"
-    "smaller requirements. Respond with a JSON object of the shape "
+    "requirements that are not in it. Do not divide the requirements too finely, "
+    "but also do not merge unrelated features into one requirement. "
+    "Respond with a JSON object of the shape "
     '{"requirements": [{"name": string, "description": string}]}. '
     "Return an empty list if the document contains no software requirements."
 )
@@ -117,41 +117,42 @@ def requirements_section(requirements: list[tuple[str, str]]) -> str:
 
 # ── Test plans ────────────────────────────────────────────────────────
 
-# OpenAI function schema for the repo file-reading tool offered to the model.
-READ_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "Read a file from the repository under test. The path must be one "
-            "of the paths listed in the provided repository file tree."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Repository-relative file path."}
-            },
-            "required": ["path"],
-        },
-    },
-}
-
-
 TEST_PLAN_BAR = (
     "Rate the requirement's testing complexity as low, medium, or high and "
     "scale the plan accordingly: a trivial requirement needs only a few "
     "focused checks, while a complex one needs thorough coverage including "
     "edge and negative cases. Base every case's steps and expected result on "
     "what the requirement itself says should happen — the requirement is the "
-    "source of truth, not the current implementation. Do not base expected "
-    "result on the code returned by read_file. Write steps a QA engineer can execute "
-    "concretely against the described test environment. The other "
+    "source of truth, not the current implementation. The other "
     "requirements listed are scope boundaries only — do not write test "
-    "cases for them. Use the read_file tool with paths taken from the "
-    "provided file tree only to confirm the real endpoint paths, "
-    "request/response shapes, and parameter names needed to phrase concrete "
-    "steps — never to decide what the correct or expected behavior should "
-    "be. "
+    "cases for them.\n\n"
+    "EACH TEST CASE BECOMES ONE AUTOMATED SCRIPT. A later step turns every "
+    "case you write into a single self-contained Playwright (Python) script "
+    "and runs it against the test environment, so write cases that can "
+    "actually be executed that way:\n"
+    "- expected_result must be something a script can check — a specific "
+    "value, message, state, status, or record — never a subjective judgment "
+    "like 'the page looks right' or 'performance is acceptable'.\n"
+    "- preconditions must be establishable by the script itself using only "
+    "the test environment access described above. Never assume data someone "
+    "set up by hand, and never require manual or out-of-band steps.\n"
+    "- cases must be repeatable: the same case will be run more than once "
+    "against the same environment, and the script seeds and cleans up its "
+    "own data, so avoid cases that only work once or depend on a pristine "
+    "database.\n"
+    "- do not write cases needing access the test environment description "
+    "does not provide.\n"
+    "Skip checks that no script could make. Exploratory testing covers that "
+    "ground separately, and a case that cannot be automated becomes a script "
+    "that only ever errors.\n\n"
+    "SAY WHAT TO VERIFY, NOT HOW TO REACH IT. Write steps behaviourally — "
+    "'sign in as a standard user', 'submit the form with an empty required "
+    "field'. Do not name endpoint paths, URLs, CSS selectors, database "
+    "tables, or other implementation details: you have not seen the code, "
+    "and the step that generates the script reads the repository to resolve "
+    "them against what is actually there. A path you guess here would be "
+    "wrong more often than not, and would pin the plan to an implementation "
+    "the requirement never mentioned. "
 )
 
 TEST_PLAN_JSON_SHAPE = (
@@ -196,7 +197,48 @@ def test_plan_context(
     return parts
 
 
+# ── Findings (shared by scripted and exploratory testing) ─────────────
+
+# Without a bar the model's severity is arbitrary, and high_severity_count
+# is the first number a reader anchors on. Shared rather than inlined so the
+# scripted and exploratory prompts cannot drift on what "high" means — two
+# definitions would make that one count mean two different things at once.
+# Same reasoning as AVAILABLE_TEST_LIBRARIES below.
+FINDING_SEVERITY_BAR = (
+    "'high' if the requirement cannot be met — data loss, a blocked primary "
+    "flow, or a wrong result a user would act on. 'medium' if the "
+    "requirement is still met but materially degraded, or there is a "
+    "workaround. 'low' for cosmetic problems and minor annoyances."
+)
+
+
 # ── Test execution ────────────────────────────────────────────────────
+
+# OpenAI function schema for the repo file-reading tool offered to the model.
+#
+# Script generation and diagnosis are its only consumers. Test planning
+# deliberately has no tool access: a plan defines what "correct" means, and
+# handing the model the implementation is exactly where that judgment gets
+# anchored to what the code already does. The interface details a script
+# needs are resolved here instead, against a fresher snapshot and with a
+# larger round budget.
+READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": (
+            "Read a file from the repository under test. The path must be one "
+            "of the paths listed in the provided repository file tree."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Repository-relative file path."}
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 ENV_VARS_SYSTEM_PROMPT = (
     "You are a senior QA engineer extracting environment access details from a "
@@ -281,9 +323,24 @@ TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT = (
     "os.environ-only, precondition-seeding, try/finally-cleanup contract as "
     "generation — do not drop cleanup the original script had, and add it if "
     "the original script was missing it and that plausibly caused the "
-    'failure. Respond with a JSON object of the shape {"classification": '
+    "failure.\n\n"
+    "For app_bug, also write the bug report, because this run is the only "
+    "time anyone sees the failure with its context: finding_title is a "
+    "one-line summary; finding_severity is "
+    f"{FINDING_SEVERITY_BAR} finding_steps_to_reproduce lists one step per "
+    "line and must not be numbered; finding_expected and finding_actual "
+    "state specifically what should have happened and what did. "
+    "finding_expected comes from the test case and the requirement — never "
+    "from what the code you read appears to intend. If those disagree, that "
+    "disagreement is the bug you are reporting, so restating the code's "
+    "behaviour as the expectation would erase the finding. These five fields "
+    "are ignored for script_bug; omit them there.\n\n"
+    'Respond with a JSON object of the shape {"classification": '
     '"script_bug" or "app_bug", "fixed_script": string or null, '
-    '"explanation": string}.'
+    '"explanation": string, "finding_title": string or null, '
+    '"finding_severity": "high"|"medium"|"low" or null, '
+    '"finding_steps_to_reproduce": string or null, '
+    '"finding_expected": string or null, "finding_actual": string or null}.'
 )
 
 
@@ -630,13 +687,7 @@ BROWSER_TOOLS = [
             "severity": {
                 "type": "string",
                 "enum": ["high", "medium", "low"],
-                # Without a bar the model's severity is arbitrary, and
-                # high_severity_count is the first number a reader anchors on.
-                "description": "'high' if the requirement cannot be met — data "
-                "loss, a blocked primary flow, or a wrong result a user would "
-                "act on. 'medium' if the requirement is still met but "
-                "materially degraded, or there is a workaround. 'low' for "
-                "cosmetic problems and minor annoyances.",
+                "description": FINDING_SEVERITY_BAR,
             },
             "title": {"type": "string", "description": "One-line summary."},
             "steps_to_reproduce": {

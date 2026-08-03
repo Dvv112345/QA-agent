@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from backend.models.database import (
+    FindingSeverity,
+    FindingType,
     RequirementStatus,
     TestCaseExecutionStatus,
     TestExecution,
@@ -411,6 +413,83 @@ class TestGetTestRun:
         assert data["executions"][0]["requirement_id"] == requirement.id
         assert len(data["executions"][0]["cases"]) == 1
         assert data["executions"][0]["cases"][0]["test_case"]["title"] == plan.cases[0].title
+
+    def _run_with_case(self, db_session, **case_kwargs):
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
+        plan = requirement.test_plan
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(db_session, run, requirement)
+        case_exec = _seed_test_case_execution(db_session, execution, plan.cases[0])
+        for field, value in case_kwargs.items():
+            setattr(case_exec, field, value)
+        db_session.add(case_exec)
+        db_session.commit()
+        return run
+
+    @pytest.mark.asyncio
+    async def test_failed_case_nests_a_bug_finding(self, async_client, db_session):
+        run = self._run_with_case(
+            db_session,
+            status=TestCaseExecutionStatus.FAILED,
+            finding_severity=FindingSeverity.HIGH,
+            finding_title="Valid credentials are rejected",
+            finding_steps_to_reproduce="Open /login\nSubmit valid credentials",
+            finding_expected="The user reaches the dashboard",
+            finding_actual="A 401 is returned",
+            environment="Windows-10 · Python 3.12.4",
+        )
+
+        resp = await async_client.get(f"/api/test-runs/{run.id}")
+
+        finding = resp.json()["executions"][0]["cases"][0]["finding"]
+        assert finding["finding_type"] == FindingType.BUG
+        assert finding["severity"] == FindingSeverity.HIGH
+        assert finding["title"] == "Valid credentials are rejected"
+        assert finding["steps_to_reproduce"] == "Open /login\nSubmit valid credentials"
+        assert finding["expected"] == "The user reaches the dashboard"
+        assert finding["actual"] == "A 401 is returned"
+        assert finding["environment"] == "Windows-10 · Python 3.12.4"
+
+    @pytest.mark.asyncio
+    async def test_errored_case_nests_an_issue_finding(self, async_client, db_session):
+        run = self._run_with_case(
+            db_session,
+            status=TestCaseExecutionStatus.ERROR,
+            finding_severity=FindingSeverity.MEDIUM,
+            finding_title="Could not verify: Valid login",
+            finding_steps_to_reproduce="Open the login page",
+            finding_expected="User lands on the dashboard.",
+            finding_actual="The script was never made to run.",
+        )
+
+        resp = await async_client.get(f"/api/test-runs/{run.id}")
+
+        finding = resp.json()["executions"][0]["cases"][0]["finding"]
+        assert finding["finding_type"] == FindingType.ISSUE
+        assert finding["environment"] is None
+
+    @pytest.mark.asyncio
+    async def test_passing_case_nests_no_finding(self, async_client, db_session):
+        run = self._run_with_case(db_session, status=TestCaseExecutionStatus.PASSED)
+
+        resp = await async_client.get(f"/api/test-runs/{run.id}")
+
+        assert resp.json()["executions"][0]["cases"][0]["finding"] is None
+
+    @pytest.mark.asyncio
+    async def test_legacy_failed_case_nests_no_finding(self, async_client, db_session):
+        """Rows written before findings were structured have no title, and
+        must not surface as an all-null card."""
+        run = self._run_with_case(
+            db_session, status=TestCaseExecutionStatus.FAILED, error="something broke"
+        )
+
+        resp = await async_client.get(f"/api/test-runs/{run.id}")
+
+        case = resp.json()["executions"][0]["cases"][0]
+        assert case["finding"] is None
+        assert case["error"] == "something broke"  # raw output still reported
 
 
 # ── GET /api/test-case-executions/{id}/script ─────────────────────────
