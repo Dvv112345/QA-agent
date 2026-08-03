@@ -621,29 +621,6 @@ class TestEditCascadeThroughTheApi:
         assert db_session.get(type(test_env), test_env.id).status == TestEnvironmentStatus.CONFIRMED
 
     @pytest.mark.asyncio
-    async def test_edit_blocked_while_a_run_is_in_flight(
-        self, async_client, db_session, stub_queue
-    ):
-        """The cascade deletes the plan row a running job is reading."""
-        from backend.models.database import TestExecutionStatus, TestPlan
-        from backend.tests.test_sprints import _seed_test_execution, _seed_test_run
-
-        sprint, requirement, plan, _ = self._seed_full_sprint(db_session)
-        plan_id = plan.id
-        run = _seed_test_run(db_session, sprint)
-        _seed_test_execution(db_session, run, requirement, status=TestExecutionStatus.RUNNING)
-        db_session.refresh(requirement)
-
-        resp = await async_client.patch(
-            f"/api/requirements/{requirement.id}", json={"description": "Reworded."}
-        )
-
-        assert resp.status_code == 422
-        assert "in progress" in resp.json()["detail"]
-        # Nothing was destroyed on the way to the refusal.
-        assert db_session.get(TestPlan, plan_id) is not None
-
-    @pytest.mark.asyncio
     async def test_delete_preserves_the_run_and_its_case_content(
         self, async_client, db_session, stub_queue
     ):

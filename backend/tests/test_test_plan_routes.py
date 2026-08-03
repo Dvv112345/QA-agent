@@ -571,27 +571,6 @@ class TestApprove:
         assert _reload(db_session, plan.id).status == TestPlanStatus.PENDING
         assert stub_queue.enqueued_plans == [plan.id]
 
-    @pytest.mark.asyncio
-    async def test_edit_blocked_while_a_run_is_in_flight(
-        self, async_client, db_session, stub_queue
-    ):
-        from backend.models.database import TestExecutionStatus
-        from backend.tests.test_sprints import _seed_test_execution, _seed_test_run
-
-        sprint, requirements = _seed_locked_sprint(db_session)
-        plan = _seed_test_plan(db_session, requirements[0], status=TestPlanStatus.APPROVED)
-        run = _seed_test_run(db_session, sprint)
-        _seed_test_execution(db_session, run, requirements[0], status=TestExecutionStatus.RUNNING)
-
-        resp = await async_client.patch(f"/api/test-plans/{plan.id}", json=_edit_body())
-
-        assert resp.status_code == 422
-        assert "in progress" in resp.json()["detail"]
-        assert _reload(db_session, plan.id).status == TestPlanStatus.APPROVED
-
-
-# ── POST /api/sprints/{id}/test-plans/approve-all ────────────────────
-
 
 class TestApproveAll:
     @pytest.mark.asyncio

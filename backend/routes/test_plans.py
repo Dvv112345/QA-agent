@@ -20,7 +20,6 @@ from backend.models.types import (
     TestPlanFeedbackRequest,
     TestPlanResponse,
 )
-from backend.services import invalidation
 from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
 
@@ -50,22 +49,6 @@ def _ensure_sprint_active(sprint: Sprint | None) -> None:
         raise HTTPException(
             status_code=422,
             detail="Sprint is finished — test plans can no longer be modified.",
-        )
-
-
-def _ensure_no_work_in_flight(plan: TestPlan) -> None:
-    """Refuse a plan edit while its own requirement has work in progress."""
-    requirement = plan.requirement
-    if requirement is None:
-        return
-    blocked = invalidation.work_in_flight([requirement])
-    if blocked:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "This requirement has a test run in progress — "
-                "wait for it to finish before editing the plan."
-            ),
         )
 
 
@@ -192,8 +175,6 @@ async def submit_feedback(
     if not feedback:
         raise HTTPException(status_code=422, detail="Feedback cannot be empty.")
 
-    _ensure_no_work_in_flight(plan)
-
     plan.pending_feedback = feedback
     plan.status = TestPlanStatus.PENDING
     _touch(plan)
@@ -234,8 +215,6 @@ async def edit_test_plan(
             )
         if not case.case_type.strip():
             raise HTTPException(status_code=422, detail="Every test case needs a non-empty type.")
-
-    _ensure_no_work_in_flight(plan)
 
     plan.complexity = body.complexity
     plan.summary = body.summary

@@ -144,9 +144,9 @@ def _seed_setup(db_session, *, active=True, file_tree="src/app.py\nsrc/db.py", c
     return sprint, requirement, plan, cases
 
 
-def _seed_execution(db_session, sprint, requirement, cases):
+def _seed_execution(db_session, sprint, requirement, cases, **kwargs):
     run = _seed_test_run(db_session, sprint)
-    execution = _seed_test_execution(db_session, run, requirement)
+    execution = _seed_test_execution(db_session, run, requirement, **kwargs)
     case_execs = [_seed_test_case_execution(db_session, execution, c) for c in cases]
     return execution, case_execs
 
@@ -602,3 +602,85 @@ class TestFailureHandling:
         assert row.status == TestExecutionStatus.FAILED
         assert row.retry_count == MAX_AUTO_RETRIES
         assert len(row.error) <= 300
+
+
+class TestSupersededMidRun:
+    """An upstream edit stops the run at the next case boundary.
+
+    Nothing breaks if it carries on — the cases still resolve and the run is
+    marked out of date at the end — but each remaining case costs an LLM
+    call and a subprocess for a result nobody wants. This replaced a
+    route-level guard that blocked the user's edit instead, which could
+    never be airtight against a concurrent request anyway.
+    """
+
+    def _bump_requirement_elsewhere(self, requirement_id):
+        """Commit the cascade from another session, as the route would."""
+        from backend.database import new_session
+        from backend.models.database import Requirement
+
+        with new_session() as other:
+            row = other.get(Requirement, requirement_id)
+            row.content_revision += 1
+            other.add(row)
+            other.commit()
+
+    def test_stops_before_the_next_case_and_says_why(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        from backend.models.database import SUPERSEDED_ERROR
+
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=3)
+        execution, case_execs = _seed_execution(
+            db_session,
+            sprint,
+            requirement,
+            cases,
+            requirement_revision=requirement.content_revision,
+            plan_revision=plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+        requirement_id = requirement.id
+
+        import backend.services.llm as llm_module
+
+        original = llm_stub.generate_test_script
+        calls = {"n": 0}
+
+        def _bump_after_first(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                self._bump_requirement_elsewhere(requirement_id)
+            return original(**kwargs)
+
+        llm_module.generate_test_script = _bump_after_first
+
+        execute_test_task(execution.id)
+
+        row = _reload_execution(db_session, execution.id)
+        assert row.status == TestExecutionStatus.FAILED
+        assert row.error == SUPERSEDED_ERROR
+        statuses = [c.status for c in row.cases]
+        # First case finished; the rest were never started.
+        assert statuses[0] == TestCaseExecutionStatus.PASSED
+        assert statuses[1:] == [TestCaseExecutionStatus.PENDING] * 2
+        # Only one script was generated — the saving this exists for.
+        assert calls["n"] == 1
+
+    def test_a_current_run_is_untouched(self, db_session, llm_stub, script_runner_stub):
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, _ = _seed_execution(
+            db_session,
+            sprint,
+            requirement,
+            cases,
+            requirement_revision=requirement.content_revision,
+            plan_revision=plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+
+        execute_test_task(execution.id)
+
+        row = _reload_execution(db_session, execution.id)
+        assert row.status == TestExecutionStatus.COMPLETED
+        assert all(c.status == TestCaseExecutionStatus.PASSED for c in row.cases)

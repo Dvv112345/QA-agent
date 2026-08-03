@@ -68,23 +68,6 @@ def _ensure_requirements_complete(sprint: Sprint) -> None:
         raise HTTPException(status_code=422, detail=_REQUIREMENTS_INCOMPLETE_ERROR)
 
 
-def _ensure_no_work_in_flight(sprint: Sprint) -> None:
-    """Refuse an environment edit while any worker holds a plan or run.
-
-    Sprint-wide, unlike the requirement guard: this cascade removes *every*
-    plan in the sprint.
-    """
-    blocked = invalidation.work_in_flight(list(sprint.requirements))
-    if blocked:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "These requirements have work in progress — wait for it to "
-                f"finish before changing the environment: {', '.join(blocked)}."
-            ),
-        )
-
-
 def _apply_check_result(
     session: Session,
     sprint: Sprint,
@@ -112,11 +95,6 @@ def _apply_check_result(
     """
     if test_env.content == content and test_env.env_vars_json == env_vars_json:
         return
-    # Re-checked here rather than trusting the caller's earlier guard: up to
-    # two LLM calls (2 x OPENAI_TIMEOUT) sit between them, and a run can start
-    # in that window. The earlier check only exists to avoid spending those
-    # calls on a request already destined to 422.
-    _ensure_no_work_in_flight(sprint)
     test_env.content = content
     test_env.env_vars_json = env_vars_json
     test_env.content_revision += 1
@@ -193,13 +171,6 @@ async def submit_test_environment(
     if not content:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
 
-    # Cheap pre-check so a request destined to 422 does not first spend two
-    # LLM calls. Unconditional for an existing row: the re-extracted variables
-    # can differ even when the text does not, so any resubmission may cascade.
-    # `_apply_check_result` re-checks authoritatively once it knows.
-    if test_env is not None:
-        _ensure_no_work_in_flight(sprint)
-
     requirements, readme, file_tree = await _gather_context(sprint)
     try:
         result = await asyncio.to_thread(
@@ -260,11 +231,6 @@ async def answer_test_environment(
     answer = body.answer.strip()
     if not answer:
         raise HTTPException(status_code=422, detail="Answer cannot be empty.")
-
-    # A revision exists to rewrite the description, so unlike the submit path
-    # this guard is unconditional — there is no way to know the rewrite is a
-    # no-op before making the call, and the intent is always a change.
-    _ensure_no_work_in_flight(sprint)
 
     requirements, readme, file_tree = await _gather_context(sprint)
     try:
@@ -327,7 +293,6 @@ async def edit_test_environment_vars(
 
     new_json = json.dumps(body.variables)
     if new_json != test_env.env_vars_json:
-        _ensure_no_work_in_flight(sprint)
         test_env.env_vars_json = new_json
         # A variables edit changes what a run executes against, so it is a
         # content change for staleness purposes and every plan goes.

@@ -273,39 +273,3 @@ class TestPlanRevisionRestartInvariant:
         # plan_revision now collides, so the requirement bump is the only
         # thing keeping this honest.
         assert execution.outdated_reasons == ["requirement"]
-
-
-class TestWorkInFlight:
-    def test_reports_nothing_when_idle(self, db_session):
-        sprint = _seed_sprint(db_session)
-        requirement = _seed_planned(db_session, sprint)
-
-        assert invalidation.work_in_flight([requirement]) == []
-
-    @pytest.mark.parametrize("status", [TestPlanStatus.PENDING, TestPlanStatus.GENERATING])
-    def test_reports_a_plan_being_generated(self, db_session, status):
-        sprint = _seed_sprint(db_session)
-        requirement = _seed_requirement(db_session, sprint, name="Login")
-        _seed_test_plan(db_session, requirement, status=status)
-        db_session.refresh(requirement)
-
-        assert invalidation.work_in_flight([requirement]) == ["Login"]
-
-    @pytest.mark.parametrize("status", [TestExecutionStatus.PENDING, TestExecutionStatus.RUNNING])
-    def test_reports_a_running_execution(self, db_session, status):
-        sprint = _seed_sprint(db_session)
-        requirement = _seed_planned(db_session, sprint)
-        run = _seed_test_run(db_session, sprint)
-        _seed_test_execution(db_session, run, requirement, status=status)
-        db_session.refresh(requirement)
-
-        assert invalidation.work_in_flight([requirement]) == ["Login"]
-
-    def test_ignores_finished_work(self, db_session):
-        sprint = _seed_sprint(db_session)
-        requirement = _seed_planned(db_session, sprint)
-        run = _seed_test_run(db_session, sprint)
-        _seed_test_execution(db_session, run, requirement, status=TestExecutionStatus.COMPLETED)
-        db_session.refresh(requirement)
-
-        assert invalidation.work_in_flight([requirement]) == []

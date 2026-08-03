@@ -58,24 +58,6 @@ def _ensure_sprint_active(sprint: Sprint) -> None:
         )
 
 
-def _ensure_no_work_in_flight(requirements: list[Requirement]) -> None:
-    """Refuse an edit while a worker may be holding the rows it would remove.
-
-    The cascade deletes a ``TestPlan`` row, and ``execute_test`` would fault
-    on the missing row mid-job. Making the state unreachable is cheaper than
-    hardening every task against it.
-    """
-    blocked = invalidation.work_in_flight(requirements)
-    if blocked:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "These requirements have test-plan generation or a test run in "
-                f"progress — wait for it to finish: {', '.join(blocked)}."
-            ),
-        )
-
-
 def _touch(requirement: Requirement) -> None:
     requirement.updated_at = datetime.now(timezone.utc)
 
@@ -232,7 +214,6 @@ async def create_requirements_from_prd(
             )
         ).all()
     )
-    _ensure_no_work_in_flight(superseded)
     for row in superseded:
         invalidation.invalidate_for_requirement_delete(session, row)
     invalidation.invalidate_for_requirement_add(session, sprint)
@@ -408,7 +389,6 @@ async def edit_requirement(
     if not description:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
     if description != requirement.description:
-        _ensure_no_work_in_flight([requirement])
         # Editing the text invalidates everything written against the old
         # text: the plan goes, and the environment returns for re-checking.
         # Staged on this session so the edit and its cascade commit together.
@@ -462,8 +442,6 @@ async def delete_requirement(
     """Remove a requirement from its sprint (allowed in every status)."""
     requirement = _get_requirement_or_404(session, requirement_id)
     _ensure_sprint_active(requirement.sprint)
-    _ensure_no_work_in_flight([requirement])
-
     # Removes its plan; the environment stays confirmed (removal can only
     # shrink what needs access). Archived rather than deleted when runs
     # reference it — see services/invalidation.py.

@@ -215,7 +215,7 @@ Upload a PRD document and have an LLM split it into requirements — the alterna
 
 Re-uploading a PRD **replaces** the previous upload's `from_prd` rows (in the same transaction as the new inserts); manually entered requirements are never touched. Every failure — invalid file, unreadable/empty document, text over `PRD_MAX_CHARS`, zero or more than `MAX_PRD_REQUIREMENTS` extracted requirements, LLM failure — happens before that transaction, so a failed upload never destroys existing requirements. When `STORE_OFFLINE=true` the original file is saved to the sprint directory as `PRD<ext>` (best-effort).
 
-A re-upload is simultaneously a bulk delete and a bulk add, so both cascades apply: the superseded rows lose their test plans, and the test environment goes back for re-checking. **Errors:** 404 (sprint), 422 (finished sprint, work in progress, unsupported/corrupt/empty/oversized file, no requirements found, too many requirements), 502 (LLM failure — nothing persisted).
+A re-upload is simultaneously a bulk delete and a bulk add, so both cascades apply: the superseded rows lose their test plans, and the test environment goes back for re-checking. **Errors:** 404 (sprint), 422 (finished sprint, unsupported/corrupt/empty/oversized file, no requirements found, too many requirements), 502 (LLM failure — nothing persisted).
 
 #### `GET /api/sprints/{sprint_id}/requirements`
 
@@ -280,7 +280,7 @@ Create or update the access description (`{ "content": "..." }`) and run a fresh
 }
 ```
 
-Resubmitting a **confirmed** description is allowed and re-runs the check. If the description or the re-extracted variables differ from what is stored, every test plan in the sprint is removed and existing runs are marked out of date; re-checking identical text changes nothing. **Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, empty content, or work in progress), 502 (LLM failure — nothing is persisted).
+Resubmitting a **confirmed** description is allowed and re-runs the check. If the description or the re-extracted variables differ from what is stored, every test plan in the sprint is removed and existing runs are marked out of date; re-checking identical text changes nothing. **Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, or empty content), 502 (LLM failure — nothing is persisted).
 
 #### `POST /api/test-environment/{te_id}/answer`
 
@@ -292,7 +292,7 @@ Answer the clarifying question (`{ "answer": "..." }`); the LLM rewrites the des
 
 Directly correct the LLM-extracted variables — no LLM call, uncapped, doesn't touch `content`/`status`/`revision_count`. Body: `{ "variables": { "NAME": "value", … } }`.
 
-Editable after confirmation: changing the variables removes every test plan in the sprint, returns the row to `ready` for re-confirmation, and marks existing runs out of date. `updated_at` is deliberately _not_ stamped — on this row it means "last LLM check" and drives `requirements_stale`. **Errors:** 404, 422 (finished sprint, empty `variables`, a blank name/value, or work in progress).
+Editable after confirmation: changing the variables removes every test plan in the sprint, returns the row to `ready` for re-confirmation, and marks existing runs out of date. `updated_at` is deliberately _not_ stamped — on this row it means "last LLM check" and drives `requirements_stale`. **Errors:** 404, 422 (finished sprint, empty `variables`, or a blank name/value).
 
 #### `POST /api/test-environment/{te_id}/confirm`
 
@@ -346,13 +346,13 @@ List a sprint's plans, ordered by requirement creation — the polling endpoint 
 
 Send free-text feedback on a `draft` plan (`{ "feedback": "..." }`); the plan re-enters generation and the LLM produces a full revised plan. Capped at `MAX_TEST_PLAN_FEEDBACK_ROUNDS` (default 3) per plan — past the cap this returns 422 and the plan must be edited directly (uncapped).
 
-**Errors:** 404, 422 (not `draft` or `approved`, cap reached, empty feedback, finished sprint, work in progress).
+**Errors:** 404, 422 (not `draft` or `approved`, cap reached, empty feedback, finished sprint).
 
 #### `PATCH /api/test-plans/{plan_id}`
 
 Directly edit a `draft` plan — no LLM involved, uncapped, never increments `revision_count`, stays `draft`. Body: `{ "complexity": "low|medium|high", "summary": "...", "cases": [{ "title": "...", "preconditions": null, "steps": "one step per line", "expected_result": "...", "case_type": "...", "priority": "high|medium|low" }, …] }`. Cases are replaced wholesale.
 
-**Errors:** 404, 422 (not `draft` or `approved`, finished sprint, work in progress, or field validation: no cases, blank title/steps/expected result/type, invalid priority/complexity).
+**Errors:** 404, 422 (not `draft` or `approved`, finished sprint, or field validation: no cases, blank title/steps/expected result/type, invalid priority/complexity).
 
 #### `POST /api/test-plans/{plan_id}/approve`
 
@@ -389,7 +389,7 @@ Create a run covering the selected requirements. Body: `{ "requirement_ids": [1,
 #### `GET /api/sprints/{sprint_id}/test-runs`
 
 List a sprint's runs, newest first. Each row includes rolled-up `status`, `requirement_names`, and case counts (`total_cases`, `passed_cases`, `failed_cases`, `error_cases`). 404 on unknown sprint.
-Every run — scripted and exploratory — also carries `outdated_reasons` and `requirement_deleted`. A run records the content revisions of the requirement, test plan, and test environment it executed against; if any has since changed, the corresponding reason (`requirement`, `test_plan`, `test_environment`) appears. An empty list means the run still reflects the current sprint — there is no separate `outdated` boolean, since it would just be `outdated_reasons.length > 0`. `requirement_deleted` only selects the wording for the `requirement` reason (deletion is one of the ways a requirement can differ, not a separate state). **An outdated run cannot be restarted** — start a new one to test the current state.
+Every run — scripted and exploratory — also carries `outdated_reasons` and `requirement_deleted`. A run records the content revisions of the requirement, test plan, and test environment it executed against; if any has since changed, the corresponding reason (`requirement`, `test_plan`, `test_environment`) appears. An empty list means the run still reflects the current sprint — there is no separate `outdated` boolean, since it would just be `outdated_reasons.length > 0`. `requirement_deleted` only selects the wording for the `requirement` reason (deletion is one of the ways a requirement can differ, not a separate state). **An outdated run cannot be restarted** — start a new one to test the current state. A run that goes outdated _while in progress_ stops itself at the next case (or charter) boundary and records `Superseded — …`, rather than spending LLM calls on a result already known to be stale. Editing is never blocked on a run being in flight.
 
 #### `GET /api/test-runs/{run_id}`
 

@@ -33,6 +33,7 @@ from backend.database import new_session
 from backend.models.database import (
     REQUIREMENT_DELETED_ERROR,
     SPRINT_FINISHED_ERROR,
+    SUPERSEDED_ERROR,
     FindingSeverity,
     TestCaseExecution,
     TestCaseExecutionStatus,
@@ -306,6 +307,28 @@ def execute_test_task(test_execution_id: int) -> None:
                         case_exec.id,
                     )
                     session.rollback()
+                    return
+
+                # Stop as soon as an upstream artifact moves. Nothing breaks
+                # if we carry on — the cases still resolve and the run is
+                # marked out of date at the end — but every remaining case
+                # costs an LLM call and a subprocess for a result nobody
+                # wants. Checked here rather than blocking the user's edit:
+                # a guard on the route can never be airtight against a
+                # concurrent request anyway, and blocking a legitimate edit
+                # for the length of a run is the worse trade.
+                #
+                # expire_all() because the session cached these rows at the
+                # top of the job — which is exactly the state a mid-run edit
+                # changes.
+                session.expire_all()
+                if execution.outdated:
+                    _fail_execution(session, execution, SUPERSEDED_ERROR)
+                    logger.info(
+                        "Test execution %d superseded mid-run (%s) — stopping",
+                        test_execution_id,
+                        ", ".join(execution.outdated_reasons),
+                    )
                     return
 
                 case_exec.status = TestCaseExecutionStatus.RUNNING

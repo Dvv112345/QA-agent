@@ -24,6 +24,16 @@ The rules, and why they are not symmetric:
   environment confirmed.  ``TestEnvironmentAccess.requirements_stale``
   already made this argument: removal can only shrink the environments
   needed, so there is nothing new to check.
+
+None of this blocks on work already in flight, and it does not need to.
+A worker whose plan is removed under it does not fault: ``generate_test_plan``
+discards its result through the status re-check it already had, and
+``execute_test`` keeps resolving its cases because they are archived rather
+than deleted.  Both then stop on their own, at the next case or charter
+boundary, once ``outdated`` goes true — which saves the remaining LLM calls
+without refusing the user's edit.  A route-level guard was tried first and
+removed: it could not be made airtight against a concurrent request anyway,
+so it bought no safety, only a blocked edit for the length of a run.
 """
 
 from __future__ import annotations
@@ -33,42 +43,13 @@ import logging
 from sqlmodel import Session
 
 from backend.models.database import (
-    ExploratoryRunStatus,
     Requirement,
     Sprint,
     TestEnvironmentStatus,
-    TestExecutionStatus,
     TestPlan,
-    TestPlanStatus,
 )
 
 logger = logging.getLogger(__name__)
-
-# Statuses that mean a worker may be holding this row right now.
-_PLAN_IN_FLIGHT = (TestPlanStatus.PENDING, TestPlanStatus.GENERATING)
-_EXECUTION_IN_FLIGHT = (TestExecutionStatus.PENDING, TestExecutionStatus.RUNNING)
-_EXPLORATION_IN_FLIGHT = (ExploratoryRunStatus.PENDING, ExploratoryRunStatus.RUNNING)
-
-
-def work_in_flight(requirements: list[Requirement]) -> list[str]:
-    """Names of requirements a worker is currently busy with.
-
-    Callers turn a non-empty result into a 422.  This exists because a
-    cascade *deletes* a ``TestPlan`` row, and ``execute_test`` would fault
-    on the missing row mid-job — its "plan no longer approved" guard covers
-    the tidy case but not a vanished one.  Cheaper to make the state
-    unreachable than to harden every task against it.
-    """
-    blocked: list[str] = []
-    for requirement in requirements:
-        plan = requirement.test_plan
-        if (
-            (plan is not None and plan.status in _PLAN_IN_FLIGHT)
-            or any(e.status in _EXECUTION_IN_FLIGHT for e in requirement.test_executions)
-            or any(r.status in _EXPLORATION_IN_FLIGHT for r in requirement.exploratory_runs)
-        ):
-            blocked.append(requirement.name)
-    return blocked
 
 
 def remove_test_plan(

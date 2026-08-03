@@ -39,6 +39,7 @@ from backend.database import new_session
 from backend.models.database import (
     REQUIREMENT_DELETED_ERROR,
     SPRINT_FINISHED_ERROR,
+    SUPERSEDED_ERROR,
     ExploratoryFinding,
     ExploratoryRun,
     ExploratoryRunStatus,
@@ -273,6 +274,29 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
                         current_status,
                     )
                     session.rollback()
+                    return
+
+                # Stop as soon as an upstream artifact moves — see the same
+                # check in execute_test.py. It matters more here: a charter
+                # is a full browser session, easily the most expensive unit
+                # of work in the system. Findings already recorded are kept;
+                # they were real observations regardless of what changed
+                # afterwards.
+                session.expire_all()
+                # The plan is excluded on purpose, consistent with the
+                # module note above: its cases were consumed once, at
+                # charter-generation time, so a plan edit does not
+                # invalidate charters already written and half-explored.
+                # The run is still *reported* outdated for that reason —
+                # this only decides whether to keep going.
+                superseding = [r for r in run.outdated_reasons if r != "test_plan"]
+                if superseding:
+                    _fail_run(session, run, SUPERSEDED_ERROR)
+                    logger.info(
+                        "Exploratory run %d superseded mid-run (%s) — stopping",
+                        exploratory_run_id,
+                        ", ".join(superseding),
+                    )
                     return
 
                 exploratory_session.status = ExploratorySessionStatus.RUNNING

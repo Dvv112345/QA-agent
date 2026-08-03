@@ -142,6 +142,14 @@ SPRINT_FINISHED_ERROR = "Sprint was finished before analysis completed."
 # sends a reader looking at the wrong thing entirely.
 REQUIREMENT_DELETED_ERROR = "The requirement was deleted before this finished."
 
+# Stored on a run abandoned because an upstream artifact changed under it.
+# Not a failure of the run: it was testing something that has since moved,
+# and finishing would spend LLM calls and wall-clock on a result already
+# marked out of date.
+SUPERSEDED_ERROR = (
+    "Superseded — the requirement, test plan, or test environment changed while this was running."
+)
+
 
 class Requirement(SQLModel, table=True):
     """A single requirement attached to a sprint, analyzed for QA clarity."""
