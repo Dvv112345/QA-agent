@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 
 from backend.database import get_session
 from backend.models.database import (
+    Requirement,
     RequirementStatus,
     Sprint,
     TestCaseExecution,
@@ -47,10 +48,13 @@ def _get_run_or_404(session: Session, run_id: int) -> TestRun:
         select(TestRun)
         .where(TestRun.id == run_id)
         .options(
-            selectinload(TestRun.executions).selectinload(TestExecution.requirement),
+            selectinload(TestRun.executions)
+            .selectinload(TestExecution.requirement)
+            .selectinload(Requirement.test_plan),
             selectinload(TestRun.executions)
             .selectinload(TestExecution.cases)
             .selectinload(TestCaseExecution.test_case),
+            selectinload(TestRun.sprint).selectinload(Sprint.test_environment),
         )
     ).one_or_none()
     if run is None:
@@ -238,8 +242,15 @@ async def list_test_runs(
         .where(TestRun.sprint_id == sprint_id)
         .order_by(TestRun.created_at.desc(), TestRun.id.desc())
         .options(
-            selectinload(TestRun.executions).selectinload(TestExecution.requirement),
+            # `outdated_reasons` walks requirement → test_plan and
+            # run → sprint → test_environment. This endpoint is polled every
+            # 2.5s, so leaving those to lazy loads costs one query per
+            # distinct requirement on every tick.
+            selectinload(TestRun.executions)
+            .selectinload(TestExecution.requirement)
+            .selectinload(Requirement.test_plan),
             selectinload(TestRun.executions).selectinload(TestExecution.cases),
+            selectinload(TestRun.sprint).selectinload(Sprint.test_environment),
         )
     ).all()
     return [_run_response(run) for run in runs]

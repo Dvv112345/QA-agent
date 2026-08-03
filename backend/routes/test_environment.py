@@ -85,6 +85,29 @@ def _ensure_no_work_in_flight(sprint: Sprint) -> None:
         )
 
 
+def _apply_content_change(
+    session: Session,
+    sprint: Sprint,
+    test_env: TestEnvironmentAccess,
+    content: str,
+) -> None:
+    """Store new access text and invalidate everything written against the old.
+
+    Both paths that can change this text — a resubmission and an LLM rewrite
+    from answering a clarifying question — go through here. They were
+    hand-rolled separately at first and the answer path silently omitted the
+    invalidation, so the rule lives in one place now.
+
+    No-ops when the text is unchanged: the Re-check button re-POSTs the
+    current content, and pressing it must not destroy the sprint's plans.
+    """
+    if test_env.content == content:
+        return
+    test_env.content = content
+    test_env.content_revision += 1
+    invalidation.invalidate_for_environment_change(session, sprint)
+
+
 def _touch(test_env: TestEnvironmentAccess) -> None:
     test_env.updated_at = datetime.now(timezone.utc)
 
@@ -155,6 +178,12 @@ async def submit_test_environment(
     if not content:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
 
+    # Guard before the LLM calls, not after: only a *changed* description
+    # cascades, and that comparison needs no LLM. Checking afterwards would
+    # spend two calls on a request already destined to 422.
+    if test_env is not None and test_env.content != content:
+        _ensure_no_work_in_flight(sprint)
+
     requirements, readme, file_tree = await _gather_context(sprint)
     try:
         result = await asyncio.to_thread(
@@ -171,13 +200,8 @@ async def submit_test_environment(
             content=content,
             original_content=content,
         )
-    elif test_env.content != content:
-        # Re-checking the same text (the "Re-check" button) is not a content
-        # change and must not destroy the sprint's plans.
-        test_env.content = content
-        test_env.content_revision += 1
-        _ensure_no_work_in_flight(sprint)
-        invalidation.invalidate_for_environment_change(session, sprint)
+    else:
+        _apply_content_change(session, sprint, test_env, content)
 
     if result.sufficient:
         test_env.status = TestEnvironmentStatus.READY
@@ -221,6 +245,11 @@ async def answer_test_environment(
     if not answer:
         raise HTTPException(status_code=422, detail="Answer cannot be empty.")
 
+    # A revision exists to rewrite the description, so unlike the submit path
+    # this guard is unconditional — there is no way to know the rewrite is a
+    # no-op before making the call, and the intent is always a change.
+    _ensure_no_work_in_flight(sprint)
+
     requirements, readme, file_tree = await _gather_context(sprint)
     try:
         result = await asyncio.to_thread(
@@ -239,7 +268,12 @@ async def answer_test_environment(
         result.sufficient, result.rewritten_content, readme, file_tree
     )
 
-    test_env.content = result.rewritten_content
+    # The rewrite is a content change like any other: plans written against
+    # the old description go, and runs grounded in it become outdated.
+    # Reachable with plans intact — a Re-check that comes back insufficient
+    # leaves them in place (correctly, nothing changed yet), and answering
+    # from there is what changes the text.
+    _apply_content_change(session, sprint, test_env, result.rewritten_content)
     test_env.revision_count += 1
     if result.sufficient:
         test_env.status = TestEnvironmentStatus.READY

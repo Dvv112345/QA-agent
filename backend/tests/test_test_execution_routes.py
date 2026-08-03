@@ -790,6 +790,62 @@ class TestRestartRefusedWhenOutdated:
         assert resp.json()[0]["requirement_deleted"] is False
 
 
+class TestListEndpointDoesNotScaleWithRequirements:
+    """`outdated_reasons` walks relationships the list query must eager-load.
+
+    This endpoint polls every 2.5s, and the traversal is invisible from the
+    route — it happens inside a model property — so a lazy load here is easy
+    to reintroduce and hard to notice. Pinned by counting statements rather
+    than by inspecting the query, since that is the thing that actually
+    matters.
+    """
+
+    @pytest.mark.asyncio
+    async def test_query_count_is_flat_in_requirement_count(self, async_client, db_session):
+        from sqlalchemy import event
+
+        counts = {}
+        for requirement_count in (2, 6):
+            sprint = _seed_sprint(db_session)
+            _seed_test_env(db_session, sprint)
+            requirements = [
+                _seed_runnable_requirement(db_session, sprint, name=f"R{i}", case_count=1)
+                for i in range(requirement_count)
+            ]
+            run = _seed_test_run(db_session, sprint)
+            for requirement in requirements:
+                _seed_test_execution(
+                    db_session,
+                    run,
+                    requirement,
+                    status=TestExecutionStatus.COMPLETED,
+                    requirement_revision=requirement.content_revision,
+                    plan_revision=requirement.test_plan.content_revision,
+                    env_revision=sprint.test_environment.content_revision,
+                )
+            db_session.commit()
+            db_session.expire_all()
+
+            counter = {"n": 0}
+            engine = db_session.get_bind()
+
+            @event.listens_for(engine, "before_cursor_execute")
+            def _count(conn, cursor, statement, params, context, executemany, _c=counter):
+                _c["n"] += 1
+
+            resp = await async_client.get(f"/api/sprints/{sprint.id}/test-runs")
+            event.remove(engine, "before_cursor_execute", _count)
+
+            assert resp.status_code == 200
+            counts[requirement_count] = counter["n"]
+
+        # Eager-loaded, so tripling the requirements must not add queries.
+        assert counts[2] == counts[6], (
+            f"query count grew with requirement count: {counts} — "
+            "something outdated_reasons touches is lazy-loading again"
+        )
+
+
 # ── Auth spot-check ────────────────────────────────────────────────────
 
 

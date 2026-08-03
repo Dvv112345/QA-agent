@@ -256,6 +256,69 @@ class TestSubmitTestEnvironment:
         assert llm_stub.check_calls  # the check actually ran
 
     @pytest.mark.asyncio
+    async def test_answering_removes_plans_that_survived_a_recheck(
+        self, async_client, db_session, llm_stub
+    ):
+        """The rewrite from an answer is a content change like any other.
+
+        Reachable with plans intact: a Re-check re-POSTs unchanged text and
+        correctly preserves them, but if that check comes back insufficient
+        the following answer rewrites the description — and the plans would
+        otherwise be left describing text that no longer exists.
+        """
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+
+        # Re-check with the identical text; the LLM now wants more detail.
+        llm_stub.check_result = INSUFFICIENT
+        recheck = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+        assert recheck.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is not None  # nothing changed yet
+
+        answer = await async_client.post(
+            f"/api/test-environment/{row.id}/answer", json={"answer": "Creds are in vault."}
+        )
+
+        assert answer.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is None
+        assert db_session.get(TestEnvironmentAccess, row.id).content_revision == 1
+
+    @pytest.mark.asyncio
+    async def test_answer_that_rewrites_nothing_keeps_the_plans(
+        self, async_client, db_session, llm_stub
+    ):
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.NEEDS_INFO)
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+        llm_stub.revise_result = TestEnvironmentResult(
+            sufficient=True, clarifying_question=None, rewritten_content=row.content
+        )
+
+        resp = await async_client.post(
+            f"/api/test-environment/{row.id}/answer", json={"answer": "No change needed."}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is not None
+        assert db_session.get(TestEnvironmentAccess, row.id).content_revision == 0
+
+    @pytest.mark.asyncio
     async def test_content_change_removes_every_plan(self, async_client, db_session, llm_stub):
         from backend.models.database import TestPlan, TestPlanStatus
         from backend.tests.test_sprints import _seed_test_plan

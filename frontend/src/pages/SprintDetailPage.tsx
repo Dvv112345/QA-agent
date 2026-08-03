@@ -154,6 +154,11 @@ export default function SprintDetailPage() {
 
   const repo = sprint.repo
   const analyzedCount = requirements.filter((req) => !isInProgress(req)).length
+  // Whether editing or removing a requirement now destroys something — a test
+  // plan, or the environment's confirmed state. `has_test_plans` is not
+  // redundant with `environment_confirmed`: adding a requirement un-confirms
+  // the environment without removing plans, so plans can outlive confirmation.
+  const editingCascades = sprint.environment_confirmed || sprint.has_test_plans
 
   return (
     <div className="sprint-detail">
@@ -228,7 +233,7 @@ export default function SprintDetailPage() {
             key={requirement.id}
             requirement={requirement}
             sprintActive={sprint.active}
-            cascades={sprint.environment_confirmed}
+            cascades={editingCascades}
             onUpdated={handleUpdated}
             onRemoved={handleRemoved}
           />

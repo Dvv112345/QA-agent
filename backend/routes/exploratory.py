@@ -78,8 +78,12 @@ def _get_run_or_404(session: Session, run_id: int) -> ExploratoryRun:
         select(ExploratoryRun)
         .where(ExploratoryRun.id == run_id)
         .options(
-            selectinload(ExploratoryRun.requirement),
+            # Same reason as the scripted list: `outdated_reasons` walks
+            # requirement → test_plan and sprint → test_environment, and this
+            # endpoint polls every 2.5s.
+            selectinload(ExploratoryRun.requirement).selectinload(Requirement.test_plan),
             selectinload(ExploratoryRun.sessions).selectinload(ExploratorySession.findings),
+            selectinload(ExploratoryRun.sprint).selectinload(Sprint.test_environment),
         )
     ).one_or_none()
     if run is None:
@@ -440,8 +444,12 @@ async def list_exploratory_runs(
         .where(ExploratoryRun.sprint_id == sprint_id)
         .order_by(ExploratoryRun.created_at.desc(), ExploratoryRun.id.desc())
         .options(
-            selectinload(ExploratoryRun.requirement),
+            # Same reason as the scripted list: `outdated_reasons` walks
+            # requirement → test_plan and sprint → test_environment, and this
+            # endpoint polls every 2.5s.
+            selectinload(ExploratoryRun.requirement).selectinload(Requirement.test_plan),
             selectinload(ExploratoryRun.sessions).selectinload(ExploratorySession.findings),
+            selectinload(ExploratoryRun.sprint).selectinload(Sprint.test_environment),
         )
     ).all()
     return [_run_response(run) for run in runs]
