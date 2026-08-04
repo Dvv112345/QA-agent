@@ -178,6 +178,48 @@ class TestPlanEditRequest(SQLModel):
     cases: list[TestCaseInput]
 
 
+# ── Issue tracker ─────────────────────────────────────────────────────
+
+
+class IssueTrackerConfigRequest(SQLModel):
+    """Create-or-edit payload for a sprint's tracker connection.
+
+    Every field but ``provider`` and ``target`` is optional here rather
+    than in the schema: which ones are actually required depends on the
+    provider, and on whether this is an edit that keeps the stored token.
+    The route validates that combination and 422s, so the error names the
+    missing field instead of reading as a malformed request.
+    """
+
+    provider: str
+    target: str  # Jira project key | "owner/repo"
+    base_url: str | None = None  # Jira site root
+    account_email: str | None = None  # Jira Basic-auth user
+    # Blank or absent means "keep the stored token" on a same-provider
+    # edit; required when the provider changes, since a Jira API token is
+    # meaningless to GitHub.
+    api_token: str | None = None
+    issue_type: str | None = None  # Jira issue type name
+
+
+class IssueTrackerConfigResponse(SQLModel):
+    """The connection as the UI sees it — never the token."""
+
+    id: int
+    sprint_id: int
+    provider: str
+    target: str
+    # "Jira · QA" — computed server-side so the panel never reassembles a
+    # provider label from a raw enum value (Convention #10 spirit).
+    target_label: str
+    base_url: str | None = None
+    account_email: str | None = None
+    issue_type: str | None = None
+    verified_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 # ── Findings (shared by scripted and exploratory testing) ─────────────
 
 
@@ -198,6 +240,18 @@ class FindingBase(SQLModel):
     # Where it was observed. None on findings recorded before capture
     # existed — normal for old rows, not an error.
     environment: str | None = None
+    # ── issue-tracker receipt ──
+    # All null on a finding that was never filed: the run's toggle was off,
+    # the run did not reach the completion path, or filing has not run yet.
+    # `tracker_target` is deliberately absent — it exists to scope
+    # de-duplication in the database, and `tracker_issue_url` is already
+    # absolute, so the card needs nothing further to link the ticket.
+    tracker_issue_key: str | None = None
+    tracker_issue_url: str | None = None
+    tracker_error: str | None = None
+    # True when this finding was grouped into another finding's ticket
+    # rather than getting one of its own.
+    tracker_is_duplicate: bool = False
 
 
 class TestCaseFindingResponse(FindingBase):

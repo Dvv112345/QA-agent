@@ -162,6 +162,16 @@ class TestModuleConstants:
         importlib.reload(backend.config)
         assert backend.config.GITHUB_API_TIMEOUT == 15
 
+    def test_issue_tracker_timeout_default(self, monkeypatch):
+        monkeypatch.delenv("ISSUE_TRACKER_TIMEOUT", raising=False)
+        importlib.reload(backend.config)
+        assert backend.config.ISSUE_TRACKER_TIMEOUT == 15
+
+    def test_issue_tracker_timeout_override(self, monkeypatch):
+        monkeypatch.setenv("ISSUE_TRACKER_TIMEOUT", "45")
+        importlib.reload(backend.config)
+        assert backend.config.ISSUE_TRACKER_TIMEOUT == 45
+
     def test_redis_config_defaults(self, monkeypatch):
         monkeypatch.delenv("REDIS_HOST", raising=False)
         monkeypatch.delenv("REDIS_PORT", raising=False)

@@ -53,6 +53,9 @@ class Sprint(SQLModel, table=True):
     )
     test_runs: list["TestRun"] = Relationship(back_populates="sprint")
     exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="sprint")
+    issue_tracker: Optional["IssueTrackerConfig"] = Relationship(
+        back_populates="sprint", sa_relationship_kwargs={"uselist": False}
+    )
 
     @property
     def requirements(self) -> list["Requirement"]:
@@ -414,6 +417,71 @@ class TestCase(SQLModel, table=True):
     test_plan: Optional["TestPlan"] = Relationship(back_populates="all_cases")
 
 
+# ── Issue tracker ─────────────────────────────────────────────────────
+
+
+class IssueTrackerProvider(str, Enum):
+    """Where a sprint's bug findings are filed.
+
+    Exactly one per sprint, never both: a finding that exists as two
+    tickets in two systems is worse than one that exists in neither.
+    """
+
+    JIRA = "jira"
+    GITHUB = "github"
+
+
+class IssueTrackerConfig(SQLModel, table=True):
+    """One sprint's connection to a Jira project or a GitHub Issues repo.
+
+    Editable — provider switch included — which is why every finding
+    records the ``tracker_target`` it was filed against (see
+    ``TestCaseExecution``).  Credentials are verified against the live
+    tracker on every save, so ``verified_at`` records when that last
+    succeeded; it is displayed, never branched on.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", unique=True, index=True)
+    provider: str  # IssueTrackerProvider value
+    base_url: str | None = Field(default=None)  # Jira site root; None for GitHub
+    account_email: str | None = Field(default=None)  # Jira Basic-auth user
+    # Fernet-encrypted, exactly like Repo.github_token: never serialized,
+    # never logged, decrypted only to build an outbound request.
+    api_token: str
+    target: str  # Jira project key | "owner/repo"
+    issue_type: str | None = Field(default=None)  # Jira issue type name
+    verified_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Sprint | None = Relationship(back_populates="issue_tracker")
+
+    @property
+    def tracker_target(self) -> str:
+        """``"{provider}:{target}"`` — what a filed finding records.
+
+        The de-duplication window is scoped by this string rather than by
+        the sprint alone, because the config is editable.  It matters most
+        on GitHub, whose issue numbers are per-repo integers: without it,
+        repo B's ``#7`` would answer ``issue_is_open`` for repo A's ``#7``
+        and a finding would be attached to an unrelated ticket.
+        """
+        return f"{self.provider}:{self.target}"
+
+    @property
+    def target_label(self) -> str:
+        """Human-readable "where findings go", for the connect panel."""
+        provider = "Jira" if self.provider == IssueTrackerProvider.JIRA else "GitHub"
+        return f"{provider} · {self.target}"
+
+
 # ── Findings (shared by scripted and exploratory testing) ─────────────
 #
 # Defined here rather than in the exploratory section below because both
@@ -601,6 +669,9 @@ class TestRun(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    # Decided at run start, never afterwards: whether this run's bug
+    # findings are filed to the sprint's issue tracker when it completes.
+    export_findings: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -766,6 +837,17 @@ class TestCaseExecution(SQLModel, table=True):
     # is None on every case that has no finding — a pass, a row still in
     # flight, or a row written before findings were structured.
     environment: str | None = Field(default=None)
+    # ── issue-tracker receipt (written only by services/finding_export.py) ──
+    # Deliberately *not* cleared alongside the finding fields on a passing
+    # case: a filed ticket is a receipt for an irreversible action in a
+    # system this app does not own. The finding may stop reporting itself;
+    # the record of having reported it may not.
+    tracker_issue_key: str | None = Field(default=None)  # "QA-142" | "7"
+    tracker_issue_url: str | None = Field(default=None)  # absolute, self-describing
+    tracker_error: str | None = Field(default=None)  # last filing failure, cleared on success
+    # IssueTrackerConfig.tracker_target as it stood when this was filed.
+    tracker_target: str | None = Field(default=None)
+    tracker_is_duplicate: bool = Field(default=False)  # grouped into another finding's ticket
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -792,7 +874,7 @@ class TestCaseExecution(SQLModel, table=True):
         return None
 
     @property
-    def finding(self) -> dict[str, str | None] | None:
+    def finding(self) -> dict[str, str | bool | None] | None:
         """The finding in the shared shape, or None when there isn't one.
 
         Keyed to match ``FindingBase`` in ``models/types.py`` so FastAPI can
@@ -809,6 +891,10 @@ class TestCaseExecution(SQLModel, table=True):
         a group, so this should be unreachable — but the blast radius is far
         out of proportion to the cost of a fallback.  ``environment`` is
         left alone: the response model already allows it to be null.
+
+        The four tracker fields pass straight through for the same reason —
+        the response model allows null, and coalescing them would turn "not
+        filed" into an empty link.
         """
         if not self.finding_title:
             return None
@@ -820,6 +906,10 @@ class TestCaseExecution(SQLModel, table=True):
             "expected": self.finding_expected or "",
             "actual": self.finding_actual or "",
             "environment": self.environment,
+            "tracker_issue_key": self.tracker_issue_key,
+            "tracker_issue_url": self.tracker_issue_url,
+            "tracker_error": self.tracker_error,
+            "tracker_is_duplicate": self.tracker_is_duplicate,
         }
 
 
@@ -905,6 +995,8 @@ class ExploratoryRun(SQLModel, table=True):
     # the (single, cheap) summary call fails, recoverable via the summarize
     # endpoint — the findings, not this paragraph, are the deliverable.
     summary: str | None = Field(default=None)
+    # See TestRun.export_findings — decided at run start, read at completion.
+    export_findings: bool = Field(default=False)
     # ── machinery (identical to TestExecution) ──
     status: str = Field(default=ExploratoryRunStatus.PENDING)
     retry_count: int = Field(default=0)  # automatic re-enqueues (reconciler/task)
@@ -1032,6 +1124,12 @@ class ExploratoryFinding(SQLModel, table=True):
     # captured in code, never asked of the model. Best-effort: None on rows
     # written before capture existed, and on a page too broken to answer.
     environment: str | None = Field(default=None)
+    # ── issue-tracker receipt — see TestCaseExecution's identical block ──
+    tracker_issue_key: str | None = Field(default=None)
+    tracker_issue_url: str | None = Field(default=None)
+    tracker_error: str | None = Field(default=None)
+    tracker_target: str | None = Field(default=None)
+    tracker_is_duplicate: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
