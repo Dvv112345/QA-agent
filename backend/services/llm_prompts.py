@@ -83,7 +83,9 @@ TEST_ENV_BAR = (
     "need deployment internals or exhaustive tooling detail. Use the provided "
     "requirements, README, and file tree to resolve ambiguity yourself before "
     "asking the user. Note that the tests will not be running from the same "
-    "directory as the codebase, so relative path should not be accepted."
+    "directory as the codebase, so relative path should not be accepted. "
+    "Do not ask for exact endpoint, those can be determined from code which "
+    "will be available when writing the test script."
 )
 
 TEST_ENV_CHECK_SYSTEM_PROMPT = (

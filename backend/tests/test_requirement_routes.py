@@ -600,6 +600,59 @@ class TestEditCascadeThroughTheApi:
         assert db_session.get(Requirement, requirement.id).content_revision == 1
 
     @pytest.mark.asyncio
+    async def test_the_removed_plan_can_be_regenerated(self, async_client, db_session, stub_queue):
+        """The edit → re-confirm → regenerate round trip closes.
+
+        Removing the plan is only half a story: nothing regenerates it
+        automatically, so the sprint has to be able to say a plan is missing
+        (`test_plans_missing`) and the generate endpoint has to rebuild it.
+        Without both, the edited requirement is silently untestable — every
+        surviving plan is approved, so the sprint otherwise looks finished.
+        """
+        from backend.models.database import TestEnvironmentStatus, TestPlan
+
+        sprint, requirement, plan, test_env = self._seed_full_sprint(db_session)
+        plan_id = plan.id
+
+        await async_client.patch(
+            f"/api/requirements/{requirement.id}", json={"description": "Reworded."}
+        )
+        db_session.expire_all()
+        assert db_session.get(TestPlan, plan_id) is None
+
+        # The edit re-queues analysis, so nothing is missing *yet* — a plan
+        # is only owed once the requirement is confirmed again, which is
+        # exactly when generation would create one.
+        assert (await async_client.get(f"/api/sprints/{sprint.id}")).json()[
+            "test_plans_missing"
+        ] is False
+
+        reanalyzed = db_session.get(Requirement, requirement.id)
+        reanalyzed.status = RequirementStatus.READY
+        db_session.add(reanalyzed)
+        db_session.commit()
+        await async_client.post(f"/api/requirements/{requirement.id}/confirm")
+
+        detail = await async_client.get(f"/api/sprints/{sprint.id}")
+        assert detail.json()["test_plans_missing"] is True
+        assert detail.json()["test_plans_complete"] is False
+
+        # Generation is gated on the environment the same edit re-opened.
+        blocked = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/generate")
+        assert blocked.status_code == 422
+
+        test_env.status = TestEnvironmentStatus.CONFIRMED
+        db_session.add(test_env)
+        db_session.commit()
+
+        resp = await async_client.post(f"/api/sprints/{sprint.id}/test-plans/generate")
+
+        assert resp.status_code == 200
+        assert [p["requirement_id"] for p in resp.json()] == [requirement.id]
+        db_session.expire_all()
+        assert db_session.get(Sprint, sprint.id).test_plans_missing is False
+
+    @pytest.mark.asyncio
     async def test_resubmitting_identical_text_does_not_cascade(
         self, async_client, db_session, stub_queue
     ):

@@ -170,12 +170,13 @@ Create a sprint linked to a repo. Refreshes repo metadata from GitHub and captur
   "has_test_environment_submission": false,
   "environment_confirmed": false,
   "has_test_plans": false,
+  "test_plans_missing": false,
   "test_plans_complete": false,
   "has_test_runs": false
 }
 ```
 
-The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `environment_confirmed` (the test environment is confirmed — the precondition for generating test plans), `has_test_plans` (≥1 requirement has a test-plan row), `test_plans_complete` (every requirement has an `approved` plan), and `has_test_runs` (≥1 test run has been submitted).
+The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `environment_confirmed` (the test environment is confirmed — the precondition for generating test plans), `has_test_plans` (≥1 requirement has a test-plan row), `test_plans_missing` (a `confirmed` requirement has _no_ plan — what a requirement edit leaves behind, and invisible in the plan list itself), `test_plans_complete` (every requirement has an `approved` plan), and `has_test_runs` (≥1 test run has been submitted).
 
 **Errors:** 404 (repo not found), 422 (empty name, deactivated repo, invalid README, or no README available), 502 (GitHub API failure).
 
@@ -311,6 +312,8 @@ Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) 
 #### `POST /api/sprints/{sprint_id}/test-plans/generate`
 
 Create a `pending` plan for every confirmed requirement and enqueue one generation job each. Idempotent — requirements that already have a plan are skipped, `failed` plans are reset like Restart (keeping any interrupted feedback), and the sprint's full plan list is returned either way.
+
+This is also how a plan removed by a requirement edit comes back: editing a confirmed requirement deletes the plan written against its old text and nothing regenerates it automatically. Once that requirement is confirmed again, `SprintResponse.test_plans_missing` flips to `true` and this endpoint rebuilds only the missing plan, leaving existing ones untouched.
 
 **Response** (200): `list[TestPlanResponse]`
 

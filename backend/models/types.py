@@ -55,6 +55,9 @@ class SprintResponse(SQLModel):
     has_test_environment_submission: bool = False
     environment_confirmed: bool = False
     has_test_plans: bool = False
+    # A confirmed requirement with no plan — the state a requirement edit
+    # leaves behind, and invisible in the plan list itself.
+    test_plans_missing: bool = False
     test_plans_complete: bool = False
     has_test_runs: bool = False
     has_exploratory_runs: bool = False

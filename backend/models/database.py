@@ -104,6 +104,26 @@ class Sprint(SQLModel, table=True):
         return any(r.test_plan is not None for r in self.requirements)
 
     @property
+    def test_plans_missing(self) -> bool:
+        """Whether a confirmed requirement has no test plan row.
+
+        Mirrors exactly what ``generate_test_plans`` would create, so the UI
+        can offer the button precisely when pressing it would do something.
+
+        Reachable long after the first generation: editing a confirmed
+        requirement removes the plan written against its old text
+        (``services/invalidation.py``), and nothing regenerates it
+        automatically.  Without this flag the test-plans page has no way to
+        tell a sprint whose plans are all present from one missing the plan
+        for the requirement just edited — the plan list looks identical,
+        because a requirement with no plan contributes no row.
+        """
+        return any(
+            r.status == RequirementStatus.CONFIRMED and r.test_plan is None
+            for r in self.requirements
+        )
+
+    @property
     def test_plans_complete(self) -> bool:
         """Whether every requirement has an approved test plan (and one exists)."""
         return len(self.requirements) > 0 and all(

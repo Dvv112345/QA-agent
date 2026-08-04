@@ -1058,6 +1058,58 @@ class TestSprintTestPlanFlags:
         assert sprint.has_test_plans is True
         assert sprint.test_plans_complete is True
 
+    def test_missing_is_true_for_a_confirmed_requirement_without_a_plan(self, db_session):
+        """The state a requirement edit leaves behind.
+
+        Every plan that exists is approved, so `test_plans_complete` alone
+        cannot be trusted to mean "nothing left to do" — a requirement with
+        no plan contributes no row for it to fall short on.
+        """
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        planned = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, name="Search")
+        _seed_test_plan(db_session, planned, status=TestPlanStatus.APPROVED)
+
+        db_session.refresh(sprint)
+        assert sprint.test_plans_missing is True
+        assert sprint.test_plans_complete is False
+
+    def test_missing_is_false_once_every_confirmed_requirement_has_one(self, db_session):
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        for name in ("Login", "Search"):
+            requirement = _seed_requirement(
+                db_session, sprint, status=RequirementStatus.CONFIRMED, name=name
+            )
+            _seed_test_plan(db_session, requirement, status=TestPlanStatus.PENDING)
+
+        db_session.refresh(sprint)
+        # A pending plan is still a plan — generating again would create
+        # nothing, which is exactly what this flag reports.
+        assert sprint.test_plans_missing is False
+
+    def test_missing_ignores_unconfirmed_requirements(self, db_session):
+        """Generation only ever creates plans for confirmed requirements.
+
+        A requirement still being analyzed must not make the page offer a
+        button that would leave it without a plan anyway.
+        """
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        planned = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.ANALYZING, name="Search")
+        _seed_test_plan(db_session, planned, status=TestPlanStatus.APPROVED)
+
+        db_session.refresh(sprint)
+        assert sprint.test_plans_missing is False
+
     @pytest.mark.asyncio
     async def test_flags_serialized_on_list_and_detail(self, async_client, db_session):
         from backend.models.database import RequirementStatus, TestPlanStatus
@@ -1072,6 +1124,7 @@ class TestSprintTestPlanFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_plans"] is False
+            assert row["test_plans_missing"] is True
             assert row["test_plans_complete"] is False
 
         plan = _seed_test_plan(db_session, requirement, status=TestPlanStatus.DRAFT)
@@ -1081,6 +1134,7 @@ class TestSprintTestPlanFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_plans"] is True
+            assert row["test_plans_missing"] is False
             assert row["test_plans_complete"] is False
 
         plan.status = TestPlanStatus.APPROVED

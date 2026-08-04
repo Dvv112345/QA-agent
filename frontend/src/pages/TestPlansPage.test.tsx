@@ -43,6 +43,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     has_test_environment_submission: true,
     environment_confirmed: true,
     has_test_plans: false,
+    test_plans_missing: false,
     test_plans_complete: false,
     has_test_runs: false,
     has_exploratory_runs: false,
@@ -206,7 +207,12 @@ describe('TestPlansPage', () => {
 
     it('approves all draft plans and replaces the list', async () => {
       vi.spyOn(window, 'confirm').mockReturnValue(true)
-      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+      // The completion banner reads the sprint's own flag, so the mock has
+      // to move the way the server does: incomplete on load, complete once
+      // the approval has landed.
+      mockFetchSprint
+        .mockResolvedValueOnce(makeSprint({ has_test_plans: true }))
+        .mockResolvedValue(makeSprint({ has_test_plans: true, test_plans_complete: true }))
       mockFetchTestPlans.mockResolvedValue([
         makePlan({ status: 'draft' }),
         makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'draft' }),
@@ -253,7 +259,9 @@ describe('TestPlansPage', () => {
   })
 
   it('shows the summary line and completion banner', async () => {
-    mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+    mockFetchSprint.mockResolvedValue(
+      makeSprint({ has_test_plans: true, test_plans_complete: true }),
+    )
     mockFetchTestPlans.mockResolvedValue([
       makePlan({ status: 'approved' }),
       makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'approved' }),
@@ -277,7 +285,9 @@ describe('TestPlansPage', () => {
   })
 
   it('shows the Continue to Test Runs link once every plan is approved', async () => {
-    mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
+    mockFetchSprint.mockResolvedValue(
+      makeSprint({ has_test_plans: true, test_plans_complete: true }),
+    )
     mockFetchTestPlans.mockResolvedValue([
       makePlan({ status: 'approved' }),
       makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'approved' }),
@@ -286,6 +296,60 @@ describe('TestPlansPage', () => {
 
     const link = await screen.findByRole('link', { name: 'Continue to Test Runs' })
     expect(link).toHaveAttribute('href', '/sprints/1/test-runs')
+  })
+
+  it('does not claim completion when a requirement has no plan at all', async () => {
+    // The bug this flag exists for: editing a confirmed requirement removes
+    // its plan, and every *remaining* plan is approved — so deriving
+    // completion from the plan list alone said "all approved" and offered
+    // Continue, while the edited requirement could not be run at all.
+    mockFetchSprint.mockResolvedValue(
+      makeSprint({ has_test_plans: true, test_plans_missing: true, test_plans_complete: false }),
+    )
+    mockFetchTestPlans.mockResolvedValue([makePlan({ status: 'approved' })])
+    renderPage()
+
+    await screen.findByText('1 of 1 plans drafted · 1 approved')
+    expect(screen.queryByText('All test plans approved.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Continue to Test Runs' })).not.toBeInTheDocument()
+  })
+
+  it('offers regeneration when a requirement lost its plan', async () => {
+    mockFetchSprint.mockResolvedValue(
+      makeSprint({ has_test_plans: true, test_plans_missing: true }),
+    )
+    mockFetchTestPlans.mockResolvedValue([makePlan({ status: 'approved' })])
+    mockGenerateTestPlans.mockResolvedValue([
+      makePlan({ status: 'approved' }),
+      makePlan({ id: 12 }),
+    ])
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Generate missing test plans' }))
+
+    await waitFor(() => {
+      expect(mockGenerateTestPlans).toHaveBeenCalledWith(1)
+    })
+  })
+
+  it('points at the test environment when it needs re-confirming first', async () => {
+    // Generating would 422 here — the same requirement edit that removed the
+    // plan also sent the environment back for re-checking.
+    mockFetchSprint.mockResolvedValue(
+      makeSprint({
+        has_test_plans: true,
+        test_plans_missing: true,
+        environment_confirmed: false,
+      }),
+    )
+    mockFetchTestPlans.mockResolvedValue([makePlan({ status: 'approved' })])
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: 'Re-check the test environment' })
+    expect(link).toHaveAttribute('href', '/sprints/1/test-environment')
+    expect(
+      screen.queryByRole('button', { name: 'Generate missing test plans' }),
+    ).not.toBeInTheDocument()
   })
 
   it('finishes the sprint from the footer', async () => {

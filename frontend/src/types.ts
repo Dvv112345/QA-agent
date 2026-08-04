@@ -27,6 +27,8 @@ export interface SprintResponse {
   has_test_environment_submission: boolean
   environment_confirmed: boolean
   has_test_plans: boolean
+  /** A confirmed requirement has no plan — what a requirement edit leaves behind. */
+  test_plans_missing: boolean
   test_plans_complete: boolean
   has_test_runs: boolean
   has_exploratory_runs: boolean
