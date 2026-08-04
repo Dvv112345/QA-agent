@@ -81,17 +81,19 @@ def _apply_check_result(
     function.** The description is what plans were generated against; the
     variables are what runs actually execute against. Changing either without
     invalidating leaves plans describing an environment that no longer exists
-    and runs reporting as current — and the variables are the easier one to
-    miss, because a re-check of *unchanged* text still re-extracts them and
-    the LLM need not return the same values.
+    and runs reporting as current.
 
     Every path that can change either — a resubmission, and an LLM rewrite
     from answering a clarifying question — goes through here. They were
     hand-rolled separately at first, and each hand-rolled version omitted a
     different half of the rule.
 
-    No-ops when both are unchanged: the Re-check button re-POSTs the current
-    content, and pressing it must not destroy the sprint's plans.
+    No-ops when both are unchanged. That comparison is a backstop, not the
+    defence: it can only recognise sameness the LLM happened to produce, and
+    `generate_env_vars` is free to word the same access description
+    differently on any call. The Re-check button re-POSTs the *current*
+    content, so what actually keeps it from destroying the sprint's plans is
+    `_resolve_env_vars_json` declining to re-extract at all.
     """
     # Compared as decoded values, not as JSON text: `json.dumps` preserves
     # whatever key order the model happened to emit, so identical variables
@@ -142,6 +144,48 @@ async def _extract_env_vars_json(
     return json.dumps(vars_result.variables, sort_keys=True)
 
 
+async def _resolve_env_vars_json(
+    sufficient: bool,
+    test_env: TestEnvironmentAccess | None,
+    content: str,
+    readme: str | None,
+    file_tree: str | None,
+) -> str | None:
+    """Extraction for a resubmission — kept as-is when the text is identical.
+
+    The variables are *derived from* the description, so byte-identical
+    content already has its correct derivation stored and re-deriving it buys
+    nothing.  It costs two things.
+
+    First, plans. The Re-check button exists to re-run the sufficiency
+    judgment after the requirement set moved; it re-POSTs the current text
+    unchanged.  A fresh `generate_env_vars` on that text need not come back
+    identical — one renamed key, one extra variable, one trailing slash — and
+    any drift reads as a content change in `_apply_check_result`, which
+    deletes every test plan in the sprint and marks every run outdated.  A
+    button whose whole purpose is "nothing changed, re-verify" must not be
+    able to do that, and comparing after the fact cannot prevent it.
+
+    Second, and quieter: `PATCH /test-environment/{id}/env-vars` lets the user
+    hand-correct a value the model got wrong.  Re-extracting would overwrite
+    that correction with no warning and no record of it.
+
+    An insufficient verdict still clears the variables, and genuinely new text
+    still gets a fresh extraction — both flow through `_extract_env_vars_json`
+    below.  So does a row that has none yet, which is reachable on unchanged
+    text: a description judged insufficient before can come back sufficient
+    once the requirements it is judged against have changed.
+    """
+    if (
+        sufficient
+        and test_env is not None
+        and test_env.content == content
+        and test_env.env_vars_json
+    ):
+        return test_env.env_vars_json
+    return await _extract_env_vars_json(sufficient, content, readme, file_tree)
+
+
 @router.get(
     "/sprints/{sprint_id}/test-environment",
     response_model=TestEnvironmentResponse,
@@ -186,7 +230,9 @@ async def submit_test_environment(
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    env_vars_json = await _extract_env_vars_json(result.sufficient, content, readme, file_tree)
+    env_vars_json = await _resolve_env_vars_json(
+        result.sufficient, test_env, content, readme, file_tree
+    )
 
     if test_env is None:
         test_env = TestEnvironmentAccess(

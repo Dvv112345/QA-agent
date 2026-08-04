@@ -48,7 +48,7 @@ from backend.models.database import (
     FindingSeverity,
     FindingType,
 )
-from backend.services import browser_session, llm
+from backend.services import browser_session, finalization, llm
 from backend.services.storage import StorageService
 from backend.utils.exploratory_utils import session_sheets
 from backend.utils.readme_utils import resolve_readme
@@ -92,6 +92,12 @@ def _record_failure(session: Session, run_id: int, exc: Exception) -> None:
     if run.retry_count >= MAX_AUTO_RETRIES:
         run.status = ExploratoryRunStatus.FAILED
         run.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
+        # Terminal, so the charters this attempt never explored never will.
+        # Only on this branch — the retry below must leave a `running`
+        # session alone so the next attempt re-enters that charter.
+        finalization.abandon_unreached_children(
+            session, finalization.EXPLORATORY_SESSION_SPEC, run_id, run.error
+        )
     else:
         # Back to pending — the reconciler re-enqueues it.
         run.status = ExploratoryRunStatus.PENDING
@@ -102,11 +108,22 @@ def _record_failure(session: Session, run_id: int, exc: Exception) -> None:
 
 
 def _fail_run(session: Session, run: ExploratoryRun, error: str) -> None:
+    """Fail the run and settle every charter it never explored.
+
+    The single chokepoint for the three job-start guards *and* the mid-run
+    supersede exit — see ``execute_test._fail_execution``, which this
+    mirrors. Findings already persisted by ``record_finding`` are
+    untouched: they were real observations regardless of what stopped the
+    run.
+    """
     run.status = ExploratoryRunStatus.FAILED
     run.error = error
     run.last_heartbeat = None
     run.updated_at = _now()
     session.add(run)
+    finalization.abandon_unreached_children(
+        session, finalization.EXPLORATORY_SESSION_SPEC, run.id, error
+    )
     session.commit()
 
 

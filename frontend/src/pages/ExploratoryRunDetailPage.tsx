@@ -24,6 +24,7 @@ const SESSION_STATUS_LABELS: Record<string, string> = {
   running: 'Exploring',
   completed: 'Completed',
   error: 'Error',
+  skipped: 'Not explored',
 }
 
 export default function ExploratoryRunDetailPage() {

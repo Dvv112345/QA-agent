@@ -6,6 +6,10 @@ here as a migration step (Convention #11).  Each step inspects the live
 schema and applies DDL only when it is missing, which keeps every run
 idempotent and dialect-portable (PostgreSQL in production, SQLite in
 tests).
+
+A step may also be data-only — repairing rows a past bug left behind
+(``_settle_orphaned_children``).  Same contract: it must match nothing on
+the second run and nothing at all on a fresh database.
 """
 
 import logging
@@ -210,6 +214,48 @@ def _add_content_revisions(engine: Engine) -> None:
         logger.info("Migration applied: %s revision columns added (%s)", table, ", ".join(missing))
 
 
+# Orphaned child rows: a case or charter session left `pending`/`running`
+# under a parent that already finished. Every writer now settles these
+# (services/finalization.py), but databases predating that carry the ones
+# produced before it — one backfill, not a recurring repair.
+#
+# (child table, parent table, foreign key, terminal parent statuses)
+_ORPHANED_CHILD_TABLES = (
+    ("testcaseexecution", "testexecution", "test_execution_id", ("completed", "failed")),
+    ("exploratorysession", "exploratoryrun", "exploratory_run_id", ("completed", "failed")),
+)
+
+
+def _settle_orphaned_children(engine: Engine) -> None:
+    """Mark pre-existing children of finished parents ``skipped``.
+
+    Data-only and idempotent: the ``WHERE`` matches nothing on a second
+    run, and nothing at all on a fresh database.  Plain SQL with a
+    subquery rather than an ORM pass — it is one statement per table and
+    runs on every boot.
+    """
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    for child, parent, foreign_key, terminal in _ORPHANED_CHILD_TABLES:
+        if child not in table_names or parent not in table_names:
+            continue
+        parent_states = ", ".join(f"'{status}'" for status in terminal)
+        with engine.begin() as connection:
+            result = connection.execute(
+                text(
+                    f"UPDATE {child} SET status = 'skipped', "  # noqa: S608 - names are literals above
+                    f"error = 'Not run. This run finished before reaching it.' "
+                    f"WHERE status IN ('pending', 'running') "
+                    f"AND {foreign_key} IN "
+                    f"(SELECT id FROM {parent} WHERE status IN ({parent_states}))"
+                )
+            )
+        if result.rowcount:
+            logger.info(
+                "Migration applied: %d orphaned %s row(s) marked skipped", result.rowcount, child
+            )
+
+
 _MIGRATIONS = [
     _add_requirement_from_prd,
     _add_testcase_script,
@@ -221,6 +267,7 @@ _MIGRATIONS = [
     _add_testcase_archived,
     _relax_testcase_test_plan_id,
     _add_content_revisions,
+    _settle_orphaned_children,
 ]
 
 

@@ -231,6 +231,66 @@ def test_converges_on_partially_migrated_test_case_execution():
     assert _test_case_execution_columns(engine) >= _FINDING_COLUMNS
 
 
+def _seed_orphan_case(db_session, *, parent_status, case_status):
+    """A TestExecution in *parent_status* holding one case in *case_status*.
+
+    Seeded through the models (and the shared fixture engine, so the
+    ``PRAGMA foreign_keys=ON`` in conftest applies) and then forced into
+    the combination a pre-fix database ended up with, which no writer
+    produces any more.
+    """
+    from backend.models.database import RequirementStatus
+    from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+    from backend.tests.test_sprints import (
+        _seed_test_case,
+        _seed_test_case_execution,
+        _seed_test_execution,
+        _seed_test_plan,
+        _seed_test_run,
+    )
+
+    sprint = _seed_sprint(db_session)
+    requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+    plan = _seed_test_plan(db_session, requirement)
+    run = _seed_test_run(db_session, sprint)
+    execution = _seed_test_execution(db_session, run, requirement, status=parent_status)
+    case_execution = _seed_test_case_execution(
+        db_session, execution, _seed_test_case(db_session, plan), status=case_status
+    )
+    return case_execution.id
+
+
+def _case_status(db_session, case_execution_id):
+    from backend.models.database import TestCaseExecution
+
+    db_session.expire_all()
+    return db_session.get(TestCaseExecution, case_execution_id).status
+
+
+def test_settles_children_orphaned_by_a_finished_parent(db_session):
+    """Rows stranded before the fix are repaired once, on the next boot.
+
+    Every writer settles these now, but a database that already ran the
+    buggy code carries the orphans it produced — and the commonest cause
+    (a superseded run) can never be restarted, so nothing else would ever
+    revisit them.
+    """
+    case_id = _seed_orphan_case(db_session, parent_status="failed", case_status="running")
+
+    run_migrations(db_session.get_bind())
+    assert _case_status(db_session, case_id) == "skipped"
+    run_migrations(db_session.get_bind())  # idempotent — nothing left to match
+    assert _case_status(db_session, case_id) == "skipped"
+
+
+def test_leaves_children_of_a_live_parent_alone(db_session):
+    """A run still in progress is not an orphan — its cases are just queued."""
+    case_id = _seed_orphan_case(db_session, parent_status="running", case_status="pending")
+
+    run_migrations(db_session.get_bind())
+    assert _case_status(db_session, case_id) == "pending"
+
+
 def test_skips_database_without_requirement_table():
     """A brand-new database (before create_all) must not raise."""
     engine = create_engine("sqlite://")

@@ -549,7 +549,15 @@ class TestExecutionStatus(str, Enum):
 
 
 class TestCaseExecutionStatus(str, Enum):
-    """Outcome of a single test case within a TestExecution."""
+    """Outcome of a single test case within a TestExecution.
+
+    ``SKIPPED`` is the only value the walking loop never writes: it is
+    stamped by ``services/finalization.py`` when the parent execution
+    finishes without reaching this case.  Deliberately *not* part of the
+    loop's finalized set — a restart re-runs a skipped case, so the row
+    carries no stale verdict forward (see the ``finding_type`` note below
+    for the same reasoning applied to the type).
+    """
 
     __test__ = False  # tell pytest this "Test*" name is not a test class
 
@@ -558,6 +566,7 @@ class TestCaseExecutionStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
     ERROR = "error"
+    SKIPPED = "skipped"
 
 
 class TestRun(SQLModel, table=True):
@@ -831,13 +840,16 @@ class ExploratorySessionStatus(str, Enum):
 
     ``COMPLETED`` regardless of how many findings it produced — a
     finding-heavy session is a successful session. ``ERROR`` means the
-    session machinery itself broke.
+    session machinery itself broke.  ``SKIPPED`` means the charter was
+    never explored at all because the run ended first — written only by
+    ``services/finalization.py``, exactly like its scripted twin.
     """
 
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
+    SKIPPED = "skipped"
 
 
 class ExploratoryRun(SQLModel, table=True):

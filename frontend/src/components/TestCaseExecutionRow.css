@@ -72,6 +72,19 @@
   color: #92400e;
 }
 
+/* Grey like "Queued" — a case nobody ran carries no verdict, so it must
+   not read as a result either way. */
+.case-badge-skipped {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.case-execution-skipped-reason {
+  color: var(--color-text-secondary, #666);
+  font-size: 0.85rem;
+  margin: 0.35rem 0 0;
+}
+
 .case-execution-attempts {
   color: var(--color-text-secondary, #666);
   font-size: 0.85rem;

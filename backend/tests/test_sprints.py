@@ -507,6 +507,46 @@ class TestFinishSprint:
             assert row.status == status
             assert row.error is None
 
+    @pytest.mark.asyncio
+    async def test_settles_the_cases_a_failed_execution_never_reached(
+        self, async_client, db_session
+    ):
+        """A finished sprint can run nothing, so no case may stay queued."""
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            RequirementStatus,
+            TestCaseExecution,
+            TestCaseExecutionStatus,
+            TestExecutionStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        plan = _seed_test_plan(db_session, requirement)
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(
+            db_session, run, requirement, status=TestExecutionStatus.RUNNING
+        )
+        done = _seed_test_case_execution(
+            db_session,
+            execution,
+            _seed_test_case(db_session, plan, position=0, title="Done"),
+            status=TestCaseExecutionStatus.PASSED,
+        )
+        queued = _seed_test_case_execution(
+            db_session, execution, _seed_test_case(db_session, plan, position=1, title="Queued")
+        )
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        assert db_session.get(TestCaseExecution, done.id).status == TestCaseExecutionStatus.PASSED
+        settled = db_session.get(TestCaseExecution, queued.id)
+        assert settled.status == TestCaseExecutionStatus.SKIPPED
+        assert SPRINT_FINISHED_ERROR in settled.error
+
 
 # == Repo file-tree capture during sprint creation ====================
 
@@ -1438,3 +1478,24 @@ class TestFinishSprintSweepsExploratoryRuns:
             row = db_session.get(ExploratoryRun, run_id)
             assert row.status == status
             assert row.error is None
+
+    @pytest.mark.asyncio
+    async def test_settles_the_charters_a_failed_run_never_explored(self, async_client, db_session):
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            ExploratorySession,
+            ExploratorySessionStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        run = self._run(db_session, sprint)
+        queued = _seed_exploratory_session(db_session, run, position=0)
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        settled_session = db_session.get(ExploratorySession, queued.id)
+        assert settled_session.status == ExploratorySessionStatus.SKIPPED
+        assert SPRINT_FINISHED_ERROR in settled_session.error

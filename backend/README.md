@@ -189,7 +189,7 @@ Get a single sprint with its repo info. 404 if not found.
 
 #### `PATCH /api/sprints/{sprint_id}`
 
-Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements, `pending`/`generating` test plans, `pending`/`running` test executions, and `pending`/`running` exploratory runs are marked `failed` — nothing runs on a finished sprint.
+Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements, `pending`/`generating` test plans, `pending`/`running` test executions, and `pending`/`running` exploratory runs are marked `failed` — nothing runs on a finished sprint. The test cases and charter sessions those runs never reached are marked `skipped` in the same commit, so nothing is left reading as queued under a run that can no longer proceed.
 
 **Errors:** 404 (not found), 422 (already finished or `active` not `false`).
 
@@ -280,7 +280,7 @@ Create or update the access description (`{ "content": "..." }`) and run a fresh
 }
 ```
 
-Resubmitting a **confirmed** description is allowed and re-runs the check. If the description or the re-extracted variables differ from what is stored, every test plan in the sprint is removed and existing runs are marked out of date; re-checking identical text changes nothing. **Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, or empty content), 502 (LLM failure — nothing is persisted).
+Resubmitting a **confirmed** description is allowed and re-runs the sufficiency check. If the description changed, or the check now comes back insufficient (which clears the variables), every test plan in the sprint is removed and existing runs are marked out of date. Resubmitting **identical** text changes nothing and costs only the one check call: the variable extraction is skipped entirely, since the variables are derived from a description that did not move. That is what makes the UI's Re-check button (offered when a requirement changed since the last check) safe to press — a fresh extraction is non-deterministic, and re-running it would let harmless rewording delete the sprint's plans and silently overwrite any variables you corrected by hand. **Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, or empty content), 502 (LLM failure — nothing is persisted).
 
 #### `POST /api/test-environment/{te_id}/answer`
 
@@ -372,9 +372,11 @@ Restart a `failed` plan (clears the error and retry counter; keeps pending feedb
 
 ### Test Execution
 
-The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), or `error` (self-heal exhausted, still looks like a script bug). Generated scripts may use Playwright, `requests`, `Faker`, `psycopg2` (Postgres), `sqlite3`, or the standard library — nothing else, since only those are installed in the worker's own venv that scripts execute under.
+The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), `error` (self-heal exhausted, still looks like a script bug), or `skipped` (the execution ended before reaching this case — see below). Generated scripts may use Playwright, `requests`, `Faker`, `psycopg2` (Postgres), `sqlite3`, or the standard library — nothing else, since only those are installed in the worker's own venv that scripts execute under.
 
 Both terminal failures also carry a **structured finding** on `TestCaseExecutionResponse.finding`, in the same shape exploratory testing uses (severity, title, reproduction steps, expected vs actual, environment): a `failed` case reports a `bug`, an `error` case reports an `issue` — the product was wrong, versus the testing never got off the ground. The bug report costs no extra LLM call; the diagnosis that classified the failure returns it alongside the classification. A `passed` case reports no finding, and its finding fields are cleared, so a restarted run that now passes stops reporting a fixed bug. Raw `output`, `error`, and the downloadable script are unchanged — the finding is the report, the output is the debugging surface.
+
+An execution can stop before it has walked every case — superseded by an upstream edit, a finished sprint, a plan no longer approved, or a worker that died with its retries exhausted. Whenever that happens the cases it never reached are marked `skipped` rather than left `pending`/`running`, and each carries a one-line `error` saying why: "Not run. …" for a case that never started, "Interrupted before it finished…" for the one that was in flight when a worker was killed (only that one may have partially touched the test environment). `skipped` is not a verdict about the product and is counted in none of `passed_cases`/`failed_cases`/`error_cases`; a restart re-runs those cases normally.
 
 > **Unsandboxed execution:** generated test scripts run as a plain subprocess with no sandboxing beyond a wall-clock timeout (`SCRIPT_EXECUTION_TIMEOUT`) — an accepted risk, not an oversight.
 
@@ -415,7 +417,7 @@ Two frameworks shape it. **SBTM** (Session-Based Test Management) organizes expl
 
 A run covers **exactly one requirement** — unlike a scripted run, which can batch several. Exploration is expensive and meant to be read, not glanced at. Within a run, charters execute **sequentially** in a single RQ job: charters for one requirement touch the same feature by construction, so running them concurrently would collide on the same records and manufacture false findings.
 
-Lifecycle per run: `pending → running → completed` (terminal), plus `failed` (restartable). Per session: `pending → running → completed`, plus `error` when the session machinery itself broke. A session that finds twenty bugs is still `completed` — findings drive their own counts, not the status.
+Lifecycle per run: `pending → running → completed` (terminal), plus `failed` (restartable). Per session: `pending → running → completed`, plus `error` when the session machinery itself broke and `skipped` when the run ended before that charter was ever explored (the mirror of a scripted `skipped` case — same reason text, same non-verdict meaning). A session that finds twenty bugs is still `completed` — findings drive their own counts, not the status.
 
 Findings are typed, following SBTM's distinction:
 

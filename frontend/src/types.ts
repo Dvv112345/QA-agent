@@ -157,7 +157,9 @@ export type OutdatedReason = 'requirement' | 'test_plan' | 'test_environment'
 
 export type TestExecutionStatus = 'pending' | 'running' | 'completed' | 'failed'
 
-export type TestCaseExecutionStatus = 'pending' | 'running' | 'passed' | 'failed' | 'error'
+/** `skipped` = the execution finished without ever reaching this case. */
+export type TestCaseExecutionStatus =
+  'pending' | 'running' | 'passed' | 'failed' | 'error' | 'skipped'
 
 export interface TestCaseExecutionResponse {
   id: number
@@ -230,7 +232,8 @@ export interface TestRunDetailResponse {
 
 export type ExploratoryRunStatus = 'pending' | 'running' | 'completed' | 'failed'
 
-export type ExploratorySessionStatus = 'pending' | 'running' | 'completed' | 'error'
+/** `skipped` = the run ended before this charter was ever explored. */
+export type ExploratorySessionStatus = 'pending' | 'running' | 'completed' | 'error' | 'skipped'
 
 export type SfdipotArea =
   'Structure' | 'Function' | 'Data' | 'Interfaces' | 'Platform' | 'Operations' | 'Time'

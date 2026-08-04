@@ -12,6 +12,7 @@ const STATUS_LABELS: Record<string, string> = {
   running: 'Exploring',
   completed: 'Completed',
   error: 'Error',
+  skipped: 'Not explored',
 }
 
 const STOP_REASON_LABELS: Record<string, string> = {

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlmodel import select
 
 import backend.services.reconciler as reconciler_module
 from backend.models.database import SPRINT_FINISHED_ERROR, Requirement, RequirementStatus
@@ -796,6 +797,138 @@ class TestTestExecutionSweeps:
         assert stub_queue.enqueued == [req.id]
         assert stub_queue.enqueued_plans == [plan.id]
         assert stub_queue.enqueued_executions == [execution.id]
+
+
+# == Child rows settled alongside a failed parent ======================
+
+
+def _seed_execution_with_cases(db_session, sprint, case_statuses, **kwargs):
+    """A TestExecution plus one TestCaseExecution per requested status."""
+    from backend.tests.test_sprints import (
+        _seed_test_case,
+        _seed_test_case_execution,
+        _seed_test_execution,
+        _seed_test_plan,
+        _seed_test_run,
+    )
+
+    requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+    plan = _seed_test_plan(db_session, requirement)
+    run = _seed_test_run(db_session, sprint)
+    execution = _seed_test_execution(db_session, run, requirement, **kwargs)
+    for position, status in enumerate(case_statuses):
+        case = _seed_test_case(db_session, plan, position=position, title=f"Case {position}")
+        _seed_test_case_execution(db_session, execution, case, status=status)
+    return execution
+
+
+def _reload_cases(db_session, execution_id):
+    from backend.models.database import TestCaseExecution
+
+    db_session.expire_all()
+    return db_session.exec(
+        select(TestCaseExecution)
+        .where(TestCaseExecution.test_execution_id == execution_id)
+        .order_by(TestCaseExecution.id)
+    ).all()
+
+
+class TestChildRowsSettledWithFailedParent:
+    """Failing a parent here must not strand its children.
+
+    The reconciler is the one writer that can fail a row without the task
+    ever running, so before this it produced the same orphans the task's
+    early exits did — a `failed` execution above cases still reading
+    "Queued".
+    """
+
+    def test_inactive_sprint_sweep_settles_cases(self, db_session, stub_queue):
+        from backend.models.database import TestCaseExecutionStatus, TestExecutionStatus
+
+        sprint = _seed_sprint(db_session, active=False)
+        execution = _seed_execution_with_cases(
+            db_session,
+            sprint,
+            [TestCaseExecutionStatus.PASSED, TestCaseExecutionStatus.PENDING],
+        )
+
+        reconcile_once()
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.FAILED
+        cases = _reload_cases(db_session, execution.id)
+        assert cases[0].status == TestCaseExecutionStatus.PASSED  # keeps its verdict
+        assert cases[1].status == TestCaseExecutionStatus.SKIPPED
+        assert SPRINT_FINISHED_ERROR in cases[1].error
+
+    def test_exhausted_heartbeat_sweep_settles_cases(self, db_session, stub_queue):
+        from backend.models.database import TestCaseExecutionStatus, TestExecutionStatus
+
+        sprint = _seed_sprint(db_session)
+        execution = _seed_execution_with_cases(
+            db_session,
+            sprint,
+            [TestCaseExecutionStatus.RUNNING, TestCaseExecutionStatus.PENDING],
+            status=TestExecutionStatus.RUNNING,
+            last_heartbeat=_stale_time(),
+            retry_count=2,
+        )
+
+        reconcile_once()
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.FAILED
+        cases = _reload_cases(db_session, execution.id)
+        assert [c.status for c in cases] == [TestCaseExecutionStatus.SKIPPED] * 2
+        # The killed worker's in-flight case may have touched the
+        # environment; the queued one provably did not.
+        assert cases[0].error.startswith("Interrupted before it finished")
+        assert cases[1].error.startswith("Not run.")
+
+    def test_repending_sweep_leaves_children_alone(self, db_session, stub_queue):
+        """The retry branch must stay resumable — settling here would break it."""
+        from backend.models.database import TestCaseExecutionStatus, TestExecutionStatus
+
+        sprint = _seed_sprint(db_session)
+        execution = _seed_execution_with_cases(
+            db_session,
+            sprint,
+            [TestCaseExecutionStatus.RUNNING, TestCaseExecutionStatus.PENDING],
+            status=TestExecutionStatus.RUNNING,
+            last_heartbeat=_stale_time(),
+        )
+
+        reconcile_once()
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.PENDING
+        cases = _reload_cases(db_session, execution.id)
+        assert [c.status for c in cases] == [
+            TestCaseExecutionStatus.RUNNING,
+            TestCaseExecutionStatus.PENDING,
+        ]
+
+    def test_exploratory_sessions_settle_the_same_way(self, db_session, stub_queue):
+        from backend.models.database import (
+            ExploratoryRunStatus,
+            ExploratorySession,
+            ExploratorySessionStatus,
+        )
+        from backend.tests.test_sprints import _seed_exploratory_session
+
+        sprint = _seed_sprint(db_session, active=False)
+        run = _seed_exploration(db_session, sprint)
+        _seed_exploratory_session(db_session, run, position=0)
+        _seed_exploratory_session(db_session, run, position=1)
+
+        reconcile_once()
+
+        assert _reload_exploration(db_session, run.id).status == ExploratoryRunStatus.FAILED
+        db_session.expire_all()
+        sessions = db_session.exec(
+            select(ExploratorySession)
+            .where(ExploratorySession.exploratory_run_id == run.id)
+            .order_by(ExploratorySession.position)
+        ).all()
+        assert [s.status for s in sessions] == [ExploratorySessionStatus.SKIPPED] * 2
+        assert all(SPRINT_FINISHED_ERROR in s.error for s in sessions)
 
 
 # == Exploratory-run sweeps (mirroring the other three) ================

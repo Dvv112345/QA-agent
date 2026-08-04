@@ -10,6 +10,7 @@ const STATUS_LABELS: Record<string, string> = {
   passed: 'Passed',
   failed: 'Application bug found',
   error: 'Could not determine — script may still be broken',
+  skipped: 'Not run',
 }
 
 interface Props {
@@ -22,7 +23,12 @@ export default function TestCaseExecutionRow({ caseExecution }: Props) {
   // script_snapshot is only guaranteed set once a case has finalized —
   // showing the download link earlier (pending/running) would 404.
   const finalized = status === 'passed' || status === 'failed' || status === 'error'
-  const hasOutput = Boolean(caseExecution.output || caseExecution.error)
+  // A skipped case never ran, so its `error` is a one-line explanation
+  // rather than script output — shown inline, since "why didn't this run"
+  // is the whole question a reader has and must not sit behind a toggle
+  // labelled "Show output".
+  const skipped = status === 'skipped'
+  const hasOutput = !skipped && Boolean(caseExecution.output || caseExecution.error)
 
   return (
     <li className={`case-execution-row case-execution-row-${status}`}>
@@ -49,6 +55,10 @@ export default function TestCaseExecutionRow({ caseExecution }: Props) {
         <div className="case-execution-finding">
           <FindingCard finding={caseExecution.finding} />
         </div>
+      )}
+
+      {skipped && caseExecution.error && (
+        <p className="case-execution-skipped-reason">{caseExecution.error}</p>
       )}
 
       {hasOutput && (

@@ -41,7 +41,7 @@ from backend.models.database import (
     TestExecutionStatus,
     TestPlanStatus,
 )
-from backend.services import llm, script_runner
+from backend.services import finalization, llm, script_runner
 from backend.services.llm_prompts import TestCaseLike
 from backend.utils import environment_utils, github_utils
 from backend.utils.crypto import decrypt_token
@@ -85,6 +85,14 @@ def _record_failure(session: Session, test_execution_id: int, exc: Exception) ->
     if execution.retry_count >= MAX_AUTO_RETRIES:
         execution.status = TestExecutionStatus.FAILED
         execution.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
+        # Terminal, so the cases this attempt never finished never will —
+        # including the one it was mid-way through when it raised, which
+        # was already committed as `running`. Only on this branch: the
+        # retry below must leave that row alone so the next attempt
+        # resumes it.
+        finalization.abandon_unreached_children(
+            session, finalization.TEST_CASE_SPEC, test_execution_id, execution.error
+        )
     else:
         # Back to pending — the reconciler re-enqueues it.
         execution.status = TestExecutionStatus.PENDING
@@ -197,11 +205,20 @@ _NO_FINDING = {
 
 
 def _fail_execution(session: Session, execution: TestExecution, error: str) -> None:
+    """Fail the execution and settle every case it never reached.
+
+    The single chokepoint for all four job-start guards *and* the mid-run
+    supersede exit, which is why the child cleanup belongs here rather than
+    at each call site.
+    """
     execution.status = TestExecutionStatus.FAILED
     execution.error = error
     execution.last_heartbeat = None
     execution.updated_at = _now()
     session.add(execution)
+    finalization.abandon_unreached_children(
+        session, finalization.TEST_CASE_SPEC, execution.id, error
+    )
     session.commit()
 
 

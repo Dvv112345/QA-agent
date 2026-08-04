@@ -403,6 +403,147 @@ class TestSubmitTestEnvironment:
         assert db_session.get(TestEnvironmentAccess, row.id).content_revision == 0
 
     @pytest.mark.asyncio
+    async def test_recheck_does_not_re_extract_unchanged_text(
+        self, async_client, db_session, llm_stub
+    ):
+        """Unchanged text keeps its stored variables — no second LLM call.
+
+        The sufficiency check is the point of Re-check and still runs; the
+        extraction is skipped because the variables are derived from a
+        description that did not move.
+        """
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps(DEFAULT_ENV_VARS.variables),
+        )
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        assert llm_stub.check_calls  # the judgment ran
+        assert llm_stub.env_vars_calls == []  # the extraction did not
+
+    @pytest.mark.asyncio
+    async def test_recheck_survives_a_drifting_extractor(self, async_client, db_session, llm_stub):
+        """A re-worded extraction of identical text must not destroy the plans.
+
+        The comparison in `_apply_check_result` cannot catch this — the model
+        is free to rename a key or add a variable on any call, and any drift
+        reads as a content change. Not calling it at all is what holds.
+        """
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json=json.dumps({"BASE_URL": "https://staging.example.com"}),
+        )
+        plan_id = _seed_test_plan(
+            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+        ).id
+        # Same environment, different words for it — the realistic failure.
+        llm_stub.env_vars_result = EnvVarsResult(
+            variables={"APP_URL": "https://staging.example.com/", "TIMEOUT": "30"}
+        )
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        db_session.expire_all()
+        refreshed = db_session.get(TestEnvironmentAccess, row.id)
+        assert refreshed.content_revision == 0
+        assert refreshed.env_vars == {"BASE_URL": "https://staging.example.com"}
+        assert db_session.get(TestPlan, plan_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_recheck_preserves_hand_edited_variables(
+        self, async_client, db_session, llm_stub
+    ):
+        """A manual correction must outlive the next Re-check.
+
+        Re-extracting would overwrite it silently — no warning, no record.
+        """
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps(DEFAULT_ENV_VARS.variables),
+        )
+        corrected = {"BASE_URL": "https://staging.internal.example.com"}
+        patch_resp = await async_client.patch(
+            f"/api/test-environment/{row.id}/env-vars", json={"variables": corrected}
+        )
+        assert patch_resp.status_code == 200
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["env_vars"] == corrected
+        assert _reload(db_session, row.id).env_vars == corrected
+
+    @pytest.mark.asyncio
+    async def test_changed_text_still_re_extracts(self, async_client, db_session, llm_stub):
+        """The skip is scoped to identical text — new text is a new derivation."""
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.READY,
+            env_vars_json=json.dumps({"BASE_URL": "https://old.example.com"}),
+        )
+        llm_stub.env_vars_result = EnvVarsResult(variables={"BASE_URL": "https://new.example.com"})
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment",
+            json={"content": f"{row.content} Now also reachable at https://new.example.com."},
+        )
+
+        assert resp.status_code == 200
+        assert len(llm_stub.env_vars_calls) == 1
+        refreshed = _reload(db_session, row.id)
+        assert refreshed.env_vars == {"BASE_URL": "https://new.example.com"}
+        assert refreshed.content_revision == 1
+
+    @pytest.mark.asyncio
+    async def test_unchanged_text_extracts_when_the_row_has_no_variables(
+        self, async_client, db_session, llm_stub
+    ):
+        """Reachable on identical text: a verdict can flip without the text moving.
+
+        The requirements this description is judged against changed, so a
+        description that was insufficient (variables cleared to None) can now
+        come back sufficient — and must get an extraction.
+        """
+        sprint = _seed_complete_sprint(db_session)
+        row = _seed_test_env(
+            db_session,
+            sprint,
+            status=TestEnvironmentStatus.NEEDS_INFO,
+            env_vars_json=None,
+        )
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+        )
+
+        assert resp.status_code == 200
+        assert len(llm_stub.env_vars_calls) == 1
+        assert _reload(db_session, row.id).env_vars == DEFAULT_ENV_VARS.variables
+
+    @pytest.mark.asyncio
     async def test_422_on_blank_content(self, async_client, db_session, llm_stub):
         sprint = _seed_complete_sprint(db_session)
 
@@ -1076,31 +1217,46 @@ class TestVariableComparisonIgnoresKeyOrder:
     """`env_vars_json` is compared as decoded values, not as JSON text.
 
     `json.dumps` preserves whatever order the model emitted, so comparing
-    the serialized form made identical variables read as a change — and a
-    Re-check of unchanged text would then delete every plan in the sprint,
-    the exact outcome the guard exists to prevent.
+    the serialized form makes identical variables read as a change and
+    deletes every plan in the sprint.
+
+    Exercised through **answer**, not submit: a resubmission of unchanged
+    text no longer re-extracts at all (`_resolve_env_vars_json`), so the
+    comparison is unreachable there. Answering runs a fresh extraction on
+    the rewritten text, and a rewrite that comes back byte-identical — the
+    answer clarified nothing the text did not already say — lands on
+    exactly this comparison.
     """
+
+    def _seed_answerable(self, db_session, env_vars: dict, content="SSH into staging."):
+        row = _seed_test_env(
+            db_session,
+            _seed_complete_sprint(db_session),
+            content=content,
+            original_content=content,
+            status=TestEnvironmentStatus.NEEDS_INFO,
+            clarifying_question="Which host?",
+            env_vars_json=json.dumps(env_vars),
+        )
+        return row
 
     @pytest.mark.asyncio
     async def test_reordered_variables_are_not_a_change(self, async_client, db_session, llm_stub):
         from backend.models.database import TestPlan, TestPlanStatus
         from backend.tests.test_sprints import _seed_test_plan
 
-        sprint = _seed_complete_sprint(db_session)
-        row = _seed_test_env(
-            db_session,
-            sprint,
-            status=TestEnvironmentStatus.CONFIRMED,
-            env_vars_json=json.dumps({"A": "1", "B": "2"}),
-        )
+        row = self._seed_answerable(db_session, {"A": "1", "B": "2"})
         plan_id = _seed_test_plan(
-            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+            db_session, row.sprint.requirements[0], status=TestPlanStatus.APPROVED
         ).id
+        llm_stub.revise_result = TestEnvironmentResult(
+            sufficient=True, clarifying_question=None, rewritten_content=row.content
+        )
         # Same pairs, opposite order.
         llm_stub.env_vars_result = EnvVarsResult(variables={"B": "2", "A": "1"})
 
         resp = await async_client.post(
-            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+            f"/api/test-environment/{row.id}/answer", json={"answer": "staging.example.com"}
         )
 
         assert resp.status_code == 200
@@ -1115,20 +1271,17 @@ class TestVariableComparisonIgnoresKeyOrder:
         from backend.models.database import TestPlan, TestPlanStatus
         from backend.tests.test_sprints import _seed_test_plan
 
-        sprint = _seed_complete_sprint(db_session)
-        row = _seed_test_env(
-            db_session,
-            sprint,
-            status=TestEnvironmentStatus.CONFIRMED,
-            env_vars_json=json.dumps({"A": "1"}),
-        )
+        row = self._seed_answerable(db_session, {"A": "1"})
         plan_id = _seed_test_plan(
-            db_session, sprint.requirements[0], status=TestPlanStatus.APPROVED
+            db_session, row.sprint.requirements[0], status=TestPlanStatus.APPROVED
         ).id
+        llm_stub.revise_result = TestEnvironmentResult(
+            sufficient=True, clarifying_question=None, rewritten_content=row.content
+        )
         llm_stub.env_vars_result = EnvVarsResult(variables={"A": "CHANGED"})
 
         resp = await async_client.post(
-            f"/api/sprints/{sprint.id}/test-environment", json={"content": row.content}
+            f"/api/test-environment/{row.id}/answer", json={"answer": "the value is different"}
         )
 
         assert resp.status_code == 200

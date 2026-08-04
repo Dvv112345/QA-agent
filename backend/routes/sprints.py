@@ -28,6 +28,11 @@ from backend.models.types import (
     SprintResponse,
     SprintUpdateRequest,
 )
+from backend.services.finalization import (
+    EXPLORATORY_SESSION_SPEC,
+    TEST_CASE_SPEC,
+    abandon_unreached_children,
+)
 from backend.services.storage import StorageService
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token
@@ -300,6 +305,10 @@ async def finish_sprint(
         execution.last_heartbeat = None
         execution.updated_at = datetime.now(timezone.utc)
         session.add(execution)
+        # A terminal parent leaves no non-terminal children — otherwise the
+        # cases this run never reached read as "Queued" forever on a sprint
+        # that can no longer run anything.
+        abandon_unreached_children(session, TEST_CASE_SPEC, execution.id, SPRINT_FINISHED_ERROR)
 
     # ── Fail exploratory runs still in progress (same rationale) ──────
     in_progress_explorations = session.exec(
@@ -316,6 +325,9 @@ async def finish_sprint(
         exploration.last_heartbeat = None
         exploration.updated_at = datetime.now(timezone.utc)
         session.add(exploration)
+        abandon_unreached_children(
+            session, EXPLORATORY_SESSION_SPEC, exploration.id, SPRINT_FINISHED_ERROR
+        )
 
     session.commit()
     session.refresh(sprint)
