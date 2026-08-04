@@ -10,14 +10,17 @@ from sqlmodel import Session, select
 
 from backend.database import get_session
 from backend.models.database import (
+    Requirement,
     RequirementStatus,
     Sprint,
     TestCaseExecution,
     TestCaseExecutionStatus,
+    TestEnvironmentStatus,
     TestExecution,
     TestExecutionStatus,
     TestPlanStatus,
     TestRun,
+    outdated_restart_error,
 )
 from backend.models.types import (
     TestExecutionResponse,
@@ -46,10 +49,13 @@ def _get_run_or_404(session: Session, run_id: int) -> TestRun:
         select(TestRun)
         .where(TestRun.id == run_id)
         .options(
-            selectinload(TestRun.executions).selectinload(TestExecution.requirement),
+            selectinload(TestRun.executions)
+            .selectinload(TestExecution.requirement)
+            .selectinload(Requirement.test_plan),
             selectinload(TestRun.executions)
             .selectinload(TestExecution.cases)
             .selectinload(TestCaseExecution.test_case),
+            selectinload(TestRun.sprint).selectinload(Sprint.test_environment),
         )
     ).one_or_none()
     if run is None:
@@ -109,6 +115,8 @@ def _run_response(run: TestRun) -> TestRunResponse:
         sprint_id=run.sprint_id,
         created_at=run.created_at,
         status=run.status,
+        outdated_reasons=run.outdated_reasons,
+        requirement_deleted=run.requirement_deleted,
         requirement_names=run.requirement_names,
         total_cases=total,
         passed_cases=passed,
@@ -132,6 +140,25 @@ async def create_test_run(
 
     if not body.requirement_ids:
         raise HTTPException(status_code=422, detail="At least one requirement must be selected.")
+
+    # Scripted runs need this as much as exploratory ones do — the worker
+    # injects `env_vars` into every script's subprocess. It went unchecked
+    # while a confirmed environment was permanent; now that adding a
+    # requirement un-confirms it without removing plans, a run can be started
+    # against an environment that is no longer confirmed, and every case
+    # fails on missing variables. Mirrors `_resolve_env_vars` in
+    # routes/exploratory.py.
+    test_env = sprint.test_environment
+    if test_env is None or test_env.status != TestEnvironmentStatus.CONFIRMED:
+        raise HTTPException(
+            status_code=422,
+            detail="Confirm the test environment before running tests.",
+        )
+    if not test_env.env_vars:
+        raise HTTPException(
+            status_code=422,
+            detail="No test environment variables are available for this sprint.",
+        )
 
     requirements_by_id = {r.id: r for r in sprint.requirements}
     selected = []
@@ -190,10 +217,19 @@ async def create_test_run(
     except Exception as exc:
         logger.warning("Sprint id=%d: README/file tree refresh failed: %s", sprint_id, exc)
 
+    # Each execution records the content revisions it is about to run
+    # against; a later edit upstream is what makes it read as outdated.
+    env_revision = test_env.content_revision
     run = TestRun(sprint_id=sprint_id)
     executions: list[TestExecution] = []
     for requirement in selected:
-        execution = TestExecution(test_run=run, requirement_id=requirement.id)
+        execution = TestExecution(
+            test_run=run,
+            requirement_id=requirement.id,
+            requirement_revision=requirement.content_revision,
+            plan_revision=requirement.test_plan.content_revision,
+            env_revision=env_revision,
+        )
         for case in requirement.test_plan.cases:
             TestCaseExecution(test_execution=execution, test_case_id=case.id)
         executions.append(execution)
@@ -226,8 +262,15 @@ async def list_test_runs(
         .where(TestRun.sprint_id == sprint_id)
         .order_by(TestRun.created_at.desc(), TestRun.id.desc())
         .options(
-            selectinload(TestRun.executions).selectinload(TestExecution.requirement),
+            # `outdated_reasons` walks requirement → test_plan and
+            # run → sprint → test_environment. This endpoint is polled every
+            # 2.5s, so leaving those to lazy loads costs one query per
+            # distinct requirement on every tick.
+            selectinload(TestRun.executions)
+            .selectinload(TestExecution.requirement)
+            .selectinload(Requirement.test_plan),
             selectinload(TestRun.executions).selectinload(TestExecution.cases),
+            selectinload(TestRun.sprint).selectinload(Sprint.test_environment),
         )
     ).all()
     return [_run_response(run) for run in runs]
@@ -275,6 +318,13 @@ async def restart_test_execution(
 
     if execution.status != TestExecutionStatus.FAILED:
         raise HTTPException(status_code=422, detail="Only failed test executions can be restarted.")
+    if execution.outdated:
+        raise HTTPException(
+            status_code=422,
+            detail=outdated_restart_error(
+                execution.outdated_reasons, execution.requirement_deleted
+            ),
+        )
 
     execution.status = TestExecutionStatus.PENDING
     execution.error = None

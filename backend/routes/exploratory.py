@@ -38,6 +38,7 @@ from backend.models.database import (
     Sprint,
     TestEnvironmentStatus,
     TestPlanStatus,
+    outdated_restart_error,
 )
 from backend.models.types import (
     CharterDraft,
@@ -77,8 +78,12 @@ def _get_run_or_404(session: Session, run_id: int) -> ExploratoryRun:
         select(ExploratoryRun)
         .where(ExploratoryRun.id == run_id)
         .options(
-            selectinload(ExploratoryRun.requirement),
+            # Same reason as the scripted list: `outdated_reasons` walks
+            # requirement → test_plan and sprint → test_environment, and this
+            # endpoint polls every 2.5s.
+            selectinload(ExploratoryRun.requirement).selectinload(Requirement.test_plan),
             selectinload(ExploratoryRun.sessions).selectinload(ExploratorySession.findings),
+            selectinload(ExploratoryRun.sprint).selectinload(Sprint.test_environment),
         )
     ).one_or_none()
     if run is None:
@@ -226,6 +231,8 @@ def _run_response(run: ExploratoryRun) -> ExploratoryRunResponse:
         status=run.status,
         summary=run.summary,
         error=run.error,
+        outdated_reasons=run.outdated_reasons,
+        requirement_deleted=run.requirement_deleted,
         session_count=len(run.sessions),
         bug_count=bugs,
         issue_count=issues,
@@ -245,6 +252,8 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
         status=run.status,
         summary=run.summary,
         error=run.error,
+        outdated_reasons=run.outdated_reasons,
+        requirement_deleted=run.requirement_deleted,
         base_url_env_vars=run.base_url_env_vars,
         sessions=[_session_summary(s) for s in run.sessions],
         bug_count=bugs,
@@ -395,6 +404,10 @@ async def create_exploratory_run(
     run = ExploratoryRun(
         sprint_id=sprint_id,
         requirement_id=requirement.id,
+        # Recorded so a later edit upstream marks this run outdated.
+        requirement_revision=requirement.content_revision,
+        plan_revision=requirement.test_plan.content_revision,
+        env_revision=sprint.test_environment.content_revision,
         base_url_env_vars_csv=",".join(body.base_url_env_vars),
     )
     for position, charter in enumerate(body.charters):
@@ -431,8 +444,12 @@ async def list_exploratory_runs(
         .where(ExploratoryRun.sprint_id == sprint_id)
         .order_by(ExploratoryRun.created_at.desc(), ExploratoryRun.id.desc())
         .options(
-            selectinload(ExploratoryRun.requirement),
+            # Same reason as the scripted list: `outdated_reasons` walks
+            # requirement → test_plan and sprint → test_environment, and this
+            # endpoint polls every 2.5s.
+            selectinload(ExploratoryRun.requirement).selectinload(Requirement.test_plan),
             selectinload(ExploratoryRun.sessions).selectinload(ExploratorySession.findings),
+            selectinload(ExploratoryRun.sprint).selectinload(Sprint.test_environment),
         )
     ).all()
     return [_run_response(run) for run in runs]
@@ -508,6 +525,16 @@ async def restart_exploratory_run(
     if run.status != ExploratoryRunStatus.FAILED:
         raise HTTPException(
             status_code=422, detail="Only failed exploratory runs can be restarted."
+        )
+    # A plan edit does not stop a session already under way (see
+    # tasks/explore_requirement.py) and must not block a restart either —
+    # a charter's cases were consumed once, at generation time. The run is
+    # still *badged* for it; this only decides whether it can run again.
+    blocking = [reason for reason in run.outdated_reasons if reason != "test_plan"]
+    if blocking:
+        raise HTTPException(
+            status_code=422,
+            detail=outdated_restart_error(blocking, run.requirement_deleted),
         )
 
     run.status = ExploratoryRunStatus.PENDING

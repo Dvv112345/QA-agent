@@ -31,7 +31,9 @@ from backend.config import (
 )
 from backend.database import new_session
 from backend.models.database import (
+    REQUIREMENT_DELETED_ERROR,
     SPRINT_FINISHED_ERROR,
+    SUPERSEDED_ERROR,
     FindingSeverity,
     TestCaseExecution,
     TestCaseExecutionStatus,
@@ -39,7 +41,7 @@ from backend.models.database import (
     TestExecutionStatus,
     TestPlanStatus,
 )
-from backend.services import llm, script_runner
+from backend.services import finalization, llm, script_runner
 from backend.services.llm_prompts import TestCaseLike
 from backend.utils import environment_utils, github_utils
 from backend.utils.crypto import decrypt_token
@@ -56,8 +58,10 @@ _OUTPUT_MAX_CHARS = 5000
 
 _FILE_TRUNCATION_MARKER = "\n… (truncated)"
 
-# Should be unreachable via normal flow — guarded per this codebase's
-# convention of never trusting a supposedly-impossible state blindly.
+# Both are reachable now that confirmed artifacts are editable: a job can
+# sit queued while the user edits the plan or re-opens the environment.
+# They were unreachable when the pipeline was a one-way ratchet, and the
+# comment here used to say so.
 _PLAN_NOT_APPROVED_ERROR = "Test plan is no longer approved."
 _ENV_VARS_MISSING_ERROR = "Test environment access variables have not been established."
 
@@ -81,6 +85,14 @@ def _record_failure(session: Session, test_execution_id: int, exc: Exception) ->
     if execution.retry_count >= MAX_AUTO_RETRIES:
         execution.status = TestExecutionStatus.FAILED
         execution.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
+        # Terminal, so the cases this attempt never finished never will —
+        # including the one it was mid-way through when it raised, which
+        # was already committed as `running`. Only on this branch: the
+        # retry below must leave that row alone so the next attempt
+        # resumes it.
+        finalization.abandon_unreached_children(
+            session, finalization.TEST_CASE_SPEC, test_execution_id, execution.error
+        )
     else:
         # Back to pending — the reconciler re-enqueues it.
         execution.status = TestExecutionStatus.PENDING
@@ -193,11 +205,20 @@ _NO_FINDING = {
 
 
 def _fail_execution(session: Session, execution: TestExecution, error: str) -> None:
+    """Fail the execution and settle every case it never reached.
+
+    The single chokepoint for all four job-start guards *and* the mid-run
+    supersede exit, which is why the child cleanup belongs here rather than
+    at each call site.
+    """
     execution.status = TestExecutionStatus.FAILED
     execution.error = error
     execution.last_heartbeat = None
     execution.updated_at = _now()
     session.add(execution)
+    finalization.abandon_unreached_children(
+        session, finalization.TEST_CASE_SPEC, execution.id, error
+    )
     session.commit()
 
 
@@ -218,9 +239,18 @@ def execute_test_task(test_execution_id: int) -> None:
 
         requirement = execution.requirement
         sprint = requirement.sprint if requirement is not None else None
-        if sprint is None or not sprint.active:
-            _fail_execution(session, execution, SPRINT_FINISHED_ERROR)
-            logger.info("Test execution %d: sprint inactive — marked failed", test_execution_id)
+        # Deleted requirement and finished sprint share a disposition but
+        # not a cause — name the right one.
+        deleted = requirement is not None and requirement.archived
+        if deleted or sprint is None or not sprint.active:
+            _fail_execution(
+                session, execution, REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR
+            )
+            logger.info(
+                "Test execution %d: %s — marked failed",
+                test_execution_id,
+                "requirement deleted" if deleted else "sprint inactive",
+            )
             return
 
         plan = requirement.test_plan
@@ -232,9 +262,9 @@ def execute_test_task(test_execution_id: int) -> None:
             return
 
         # No LLM call happens here at all — env vars are generated exactly
-        # once, synchronously, inside the test-environment stage. This is a
-        # pure read with a defensive guard (should be unreachable: reaching
-        # this task already implies the test environment was confirmed).
+        # once, synchronously, inside the test-environment stage. Reachable:
+        # the route checks the environment is confirmed, but the user can
+        # re-open it while this job waits in the queue.
         test_env = sprint.test_environment
         env_vars = test_env.env_vars if test_env else None
         if not env_vars:
@@ -296,6 +326,34 @@ def execute_test_task(test_execution_id: int) -> None:
                         case_exec.id,
                     )
                     session.rollback()
+                    return
+
+                # Stop as soon as an upstream artifact moves. Nothing breaks
+                # if we carry on — the cases still resolve and the run is
+                # marked out of date at the end — but every remaining case
+                # costs an LLM call and a subprocess for a result nobody
+                # wants. Checked here rather than blocking the user's edit:
+                # a guard on the route can never be airtight against a
+                # concurrent request anyway, and blocking a legitimate edit
+                # for the length of a run is the worse trade.
+                #
+                # expire_all() because the session cached these rows at the
+                # top of the job — which is exactly the state a mid-run edit
+                # changes.
+                session.expire_all()
+                if execution.outdated:
+                    _fail_execution(
+                        session,
+                        execution,
+                        REQUIREMENT_DELETED_ERROR
+                        if execution.requirement_deleted
+                        else SUPERSEDED_ERROR,
+                    )
+                    logger.info(
+                        "Test execution %d superseded mid-run (%s) — stopping",
+                        test_execution_id,
+                        ", ".join(execution.outdated_reasons),
+                    )
                     return
 
                 case_exec.status = TestCaseExecutionStatus.RUNNING

@@ -18,6 +18,12 @@ tick (``reconcile_once``) does four things, for every job-backed row type
 The database sweeps (2–3) run even while Redis is down; only the enqueue
 sweep (4) needs the queue.
 
+Every branch above that lands a row on ``failed`` also settles that row's
+child rows (``services/finalization.py``) — a failed test execution or
+exploratory run must not leave its cases or charter sessions reading as
+"Queued" forever.  The branches that send a row back to ``pending`` must
+*not*, since the next attempt resumes exactly where the last one stopped.
+
 PostgreSQL is the status of record, so a tick is idempotent and safe to run
 concurrently with user actions: the tasks' own status guards skip rows the
 user confirmed, approved, or edited meanwhile.
@@ -54,6 +60,12 @@ from backend.models.database import (
     TestPlan,
     TestPlanStatus,
 )
+from backend.services.finalization import (
+    EXPLORATORY_SESSION_SPEC,
+    TEST_CASE_SPEC,
+    ChildSpec,
+    abandon_unreached_children,
+)
 from backend.services.queue import get_queue_service, reset_queue_service
 
 logger = logging.getLogger(__name__)
@@ -66,8 +78,8 @@ class _SweepSpec:
     The machinery columns (``status``/``retry_count``/``job_id``/
     ``last_heartbeat``/``error``/``updated_at``) share names across models,
     which is what lets the per-row disposition code below be common — only
-    the selects (sprint join), the "pending user input" field, and the
-    enqueue method differ.
+    the query scoping, the "pending user input" field, and the enqueue
+    method differ.
     """
 
     model: type
@@ -81,7 +93,25 @@ class _SweepSpec:
     clear_field: str | None
     enqueue_name: str  # QueueService method used to (re-)enqueue
     stale_error: str  # user-facing error once retries are exhausted
-    join_to_sprint: Callable[[SelectOfScalar], SelectOfScalar]
+    # Child rows to settle whenever this row type is *failed* here, so a
+    # terminal parent never leaves cases or charter sessions reading as
+    # "Queued" forever. None for Requirement/TestPlan, which have none.
+    #
+    # Deliberately not applied on the re-pend branches: a `running` child
+    # belonging to a row going back to `pending` must stay as it is, since
+    # the next attempt resumes exactly there.
+    child_spec: ChildSpec | None
+    # Joins the row type to Sprint so sprint activity can be filtered on.
+    #
+    # Deliberately does *not* exclude rows belonging to an archived
+    # requirement. That filter was here and caused a row on a deleted
+    # requirement to be swept by nothing: never re-enqueued, so never picked
+    # up by the task that would fail it, and never failed by these sweeps
+    # either — leaving a `pending` execution forever and a run page polling
+    # `running` with nothing behind it. The tasks already refuse an archived
+    # requirement before spending any LLM call, so enqueuing one costs a
+    # no-op job and converges, which is the cheaper mistake.
+    scope_query: Callable[[SelectOfScalar], SelectOfScalar]
 
 
 _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
@@ -97,7 +127,8 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Analysis worker died repeatedly while processing this requirement. "
             "Use Restart to try again."
         ),
-        join_to_sprint=lambda stmt: stmt.join(Sprint),
+        child_spec=None,
+        scope_query=lambda stmt: stmt.join(Sprint),
     ),
     _SweepSpec(
         model=TestPlan,
@@ -111,7 +142,8 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Generation worker died repeatedly while processing this test plan. "
             "Use Restart to try again."
         ),
-        join_to_sprint=lambda stmt: stmt.join(
+        child_spec=None,
+        scope_query=lambda stmt: stmt.join(
             Requirement, TestPlan.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
     ),
@@ -127,7 +159,8 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Execution worker died repeatedly while processing this test run. "
             "Use Restart to try again."
         ),
-        join_to_sprint=lambda stmt: stmt.join(
+        child_spec=TEST_CASE_SPEC,
+        scope_query=lambda stmt: stmt.join(
             Requirement, TestExecution.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
     ),
@@ -143,9 +176,10 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             "Exploration worker died repeatedly while processing this run. "
             "Use Restart to try again."
         ),
+        child_spec=EXPLORATORY_SESSION_SPEC,
         # Joins straight to Sprint — unlike plans and executions, an
         # exploratory run carries its own sprint_id.
-        join_to_sprint=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
+        scope_query=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
     ),
 )
 
@@ -164,6 +198,18 @@ def _is_stale(timestamp: datetime | None, now: datetime, threshold_seconds: int)
     return (now - timestamp).total_seconds() > threshold_seconds
 
 
+def _settle_children(session, spec: _SweepSpec, parent_id: int, reason: str) -> None:
+    """Settle a just-failed row's child rows, if its type has any.
+
+    A no-op for Requirement/TestPlan.  Called only from the branches that
+    reach ``failed_status`` — never from the ones that re-pend a row, which
+    are resumed exactly where they stopped.
+    """
+    if spec.child_spec is None:
+        return
+    abandon_unreached_children(session, spec.child_spec, parent_id, reason)
+
+
 def _sweep_inactive_sprints(session, spec: _SweepSpec, now: datetime) -> None:
     """Fail in-progress rows on finished sprints.
 
@@ -175,7 +221,7 @@ def _sweep_inactive_sprints(session, spec: _SweepSpec, now: datetime) -> None:
     failed, not re-pended.
     """
     orphaned = session.exec(
-        spec.join_to_sprint(select(spec.model)).where(
+        spec.scope_query(select(spec.model)).where(
             spec.model.status.in_([spec.pending_status, spec.running_status]),
             Sprint.active.is_(False),  # type: ignore[attr-defined]
         )
@@ -188,6 +234,7 @@ def _sweep_inactive_sprints(session, spec: _SweepSpec, now: datetime) -> None:
             setattr(row, spec.clear_field, None)
         row.updated_at = now
         session.add(row)
+        _settle_children(session, spec, row.id, SPRINT_FINISHED_ERROR)
         logger.info("%s %d: sprint inactive — marked failed", spec.label, row.id)
 
 
@@ -201,6 +248,7 @@ def _sweep_stale_heartbeats(session, spec: _SweepSpec, now: datetime) -> None:
         if row.retry_count >= MAX_AUTO_RETRIES:
             row.status = spec.failed_status
             row.error = spec.stale_error
+            _settle_children(session, spec, row.id, spec.stale_error)
             logger.warning(
                 "%s %d: worker heartbeat stale, retries exhausted → failed", spec.label, row.id
             )
@@ -226,7 +274,7 @@ def _sweep_pending(session, spec: _SweepSpec, queue_service: Any, now: datetime)
     — their rows were failed by the inactive-sprint sweep)."""
     enqueue: Callable[[int], Any] = getattr(queue_service, spec.enqueue_name)
     pending = session.exec(
-        spec.join_to_sprint(select(spec.model)).where(
+        spec.scope_query(select(spec.model)).where(
             spec.model.status == spec.pending_status, Sprint.active
         )
     ).all()
@@ -248,6 +296,7 @@ def _sweep_pending(session, spec: _SweepSpec, queue_service: Any, now: datetime)
                         row.status = spec.failed_status
                         row.error = spec.stale_error
                         session.add(row)
+                        _settle_children(session, spec, row.id, spec.stale_error)
                         logger.warning(
                             "%s %d: worker crashed before starting, retries exhausted → failed",
                             spec.label,

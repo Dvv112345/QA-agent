@@ -33,6 +33,14 @@ export default function TestPlansPage() {
 
   const fetchingRef = useRef(false)
 
+  // The sprint carries the flags that decide what this page offers
+  // (`test_plans_missing`, `test_plans_complete`), and both move when the
+  // user generates or approves — so every mutation refreshes them. Polling
+  // deliberately does not: generation only moves plans between pending and
+  // draft, and neither flag depends on that, so refetching the sprint every
+  // 2.5s would double the poll traffic for a value that cannot have changed.
+  const refreshFlags = () => fetchSprint(sprintId).then(setSprint)
+
   useEffect(() => {
     let cancelled = false
     Promise.all([fetchSprint(sprintId), fetchTestPlans(sprintId)])
@@ -81,7 +89,10 @@ export default function TestPlansPage() {
     setGenerating(true)
     setActionError(null)
     generateTestPlans(sprintId)
-      .then(setPlans)
+      .then((planData) => {
+        setPlans(planData)
+        return refreshFlags()
+      })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setGenerating(false))
   }
@@ -100,13 +111,21 @@ export default function TestPlansPage() {
     setApprovingAll(true)
     setActionError(null)
     approveAllTestPlans(sprintId)
-      .then(setPlans)
+      .then((planData) => {
+        setPlans(planData)
+        return refreshFlags()
+      })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setApprovingAll(false))
   }
 
   const handleUpdated = (updated: TestPlanResponse) => {
     setPlans((prev) => prev.map((plan) => (plan.id === updated.id ? updated : plan)))
+    // Approving or editing one plan moves `test_plans_complete`, which
+    // gates the Continue link below.
+    refreshFlags().catch(() => {
+      /* the plan itself already updated — the flag catches up on the next read */
+    })
   }
 
   if (loading) return <p className="test-plans-message">Loading test plans&hellip;</p>
@@ -115,10 +134,15 @@ export default function TestPlansPage() {
 
   const active = sprint.active
   // Plans can outlive the lock state (finished sprint stays readable).
-  const guarded = plans.length === 0 && (!active || !sprint.requirements_locked)
+  const guarded = plans.length === 0 && (!active || !sprint.environment_confirmed)
   const draftedCount = plans.filter((plan) => !isInProgress(plan)).length
   const approvedCount = plans.filter((plan) => plan.status === 'approved').length
-  const allApproved = plans.length > 0 && approvedCount === plans.length
+  // Both backend-computed (Convention #10). `allApproved` used to be derived
+  // from `plans` alone, which reported "All test plans approved" for a sprint
+  // whose edited requirement had no plan at all: a requirement without a plan
+  // contributes no row, so there was nothing in the array to fall short.
+  const allApproved = sprint.test_plans_complete
+  const missingPlans = sprint.test_plans_missing
 
   return (
     <div className="test-plans">
@@ -156,6 +180,35 @@ export default function TestPlansPage() {
           <p className="test-plans-summary">
             {draftedCount} of {plans.length} plans drafted &middot; {approvedCount} approved
           </p>
+
+          {/* Editing a confirmed requirement removes the plan written against
+              its old text, and nothing regenerates it. The plan list cannot
+              show this — a requirement with no plan contributes no row — so
+              without this block the page looked complete and the button that
+              rebuilds the plan was unreachable, since it only rendered when
+              there were no plans at all. */}
+          {missingPlans &&
+            active &&
+            (sprint.environment_confirmed ? (
+              <div className="test-plans-generate">
+                <p className="test-plans-hint">
+                  A requirement has no test plan. Editing a requirement removes the plan written
+                  against its earlier text — generate a replacement to cover it again.
+                </p>
+                <button className="btn btn-primary" onClick={handleGenerate} disabled={generating}>
+                  {generating ? 'Starting…' : 'Generate missing test plans'}
+                </button>
+              </div>
+            ) : (
+              <p className="test-plans-notice">
+                A requirement changed, so its test plan was removed and the test environment needs
+                re-checking before a replacement can be generated.{' '}
+                <Link to={`/sprints/${sprintId}/test-environment`}>
+                  Re-check the test environment
+                </Link>
+                , then come back here.
+              </p>
+            ))}
 
           {active && (
             <div className="test-plans-approve-all">

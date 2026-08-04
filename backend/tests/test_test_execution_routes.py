@@ -22,6 +22,7 @@ from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprin
 from backend.tests.test_sprints import (
     _seed_test_case,
     _seed_test_case_execution,
+    _seed_test_env,
     _seed_test_execution,
     _seed_test_plan,
     _seed_test_run,
@@ -130,6 +131,17 @@ def _reload_execution(db_session, execution_id) -> TestExecution:
 # ── POST /api/sprints/{id}/test-runs ──────────────────────────────────
 
 
+def _seed_run_ready_sprint(db_session, active=True, readme_user_provided=False):
+    """A sprint whose test environment is confirmed — a precondition for
+    creating a run, mirroring the exploratory route."""
+    from backend.models.database import TestEnvironmentStatus
+
+    sprint = _seed_sprint(db_session, active=active, readme_user_provided=readme_user_provided)
+    _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+    db_session.refresh(sprint)
+    return sprint
+
+
 class TestCreateTestRun:
     @pytest.mark.asyncio
     async def test_404_unknown_sprint(self, async_client, stub_queue):
@@ -140,7 +152,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_finished_sprint(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session, active=False)
+        sprint = _seed_run_ready_sprint(db_session, active=False)
         requirement = _seed_runnable_requirement(db_session, sprint)
 
         resp = await async_client.post(
@@ -150,8 +162,53 @@ class TestCreateTestRun:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_422_empty_requirement_ids(self, async_client, db_session, stub_queue):
+    async def test_422_when_environment_not_confirmed(self, async_client, db_session, stub_queue):
+        """Scripted runs need a confirmed environment as much as exploratory
+        ones do — the worker injects its variables into every subprocess.
+
+        Newly reachable: adding a requirement un-confirms the environment
+        without removing plans, so an approved plan can outlive confirmation.
+        Without this the run is created and every case fails on missing
+        variables.
+        """
+        from backend.models.database import TestEnvironmentStatus
+
         sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.READY)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id]},
+        )
+
+        assert resp.status_code == 422
+        assert "Confirm the test environment" in resp.json()["detail"]
+        assert stub_queue.enqueued_executions == []
+
+    @pytest.mark.asyncio
+    async def test_422_when_environment_has_no_variables(
+        self, async_client, db_session, stub_queue
+    ):
+        from backend.models.database import TestEnvironmentStatus
+
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(
+            db_session, sprint, status=TestEnvironmentStatus.CONFIRMED, env_vars_json=None
+        )
+        requirement = _seed_runnable_requirement(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id]},
+        )
+
+        assert resp.status_code == 422
+        assert "variables" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_422_empty_requirement_ids(self, async_client, db_session, stub_queue):
+        sprint = _seed_run_ready_sprint(db_session)
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/test-runs", json={"requirement_ids": []}
@@ -163,7 +220,7 @@ class TestCreateTestRun:
     async def test_422_foreign_or_unconfirmed_requirement(
         self, async_client, db_session, stub_queue
     ):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         not_confirmed = _seed_requirement(db_session, sprint, status=RequirementStatus.READY)
 
         resp = await async_client.post(
@@ -176,7 +233,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_plan_not_approved(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_requirement(
             db_session, sprint, status=RequirementStatus.CONFIRMED, name="No Plan"
         )
@@ -190,7 +247,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_plan_draft_not_approved(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_requirement(
             db_session, sprint, status=RequirementStatus.CONFIRMED, name="Draft Plan"
         )
@@ -205,7 +262,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_422_already_in_progress(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_runnable_requirement(db_session, sprint)
         run = _seed_test_run(db_session, sprint)
         _seed_test_execution(db_session, run, requirement, status=TestExecutionStatus.RUNNING)
@@ -221,7 +278,7 @@ class TestCreateTestRun:
     async def test_creates_run_with_executions_and_cases_in_position_order(
         self, async_client, db_session, stub_queue
     ):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         login = _seed_runnable_requirement(db_session, sprint, name="Login", case_count=2)
         search = _seed_runnable_requirement(db_session, sprint, name="Search", case_count=1)
 
@@ -245,7 +302,7 @@ class TestCreateTestRun:
 
     @pytest.mark.asyncio
     async def test_enqueues_and_persists_job_id(self, async_client, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(
@@ -266,7 +323,7 @@ class TestCreateTestRun:
         self, async_client, db_session, stub_queue
     ):
         stub_queue.available = False
-        sprint = _seed_sprint(db_session)
+        sprint = _seed_run_ready_sprint(db_session)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(
@@ -284,7 +341,7 @@ class TestCreateTestRun:
     async def test_refreshes_readme_and_file_tree_once_for_multiple_requirements(
         self, async_client, db_session, stub_queue, refresh_stub
     ):
-        sprint = _seed_sprint(db_session, readme_user_provided=False)
+        sprint = _seed_run_ready_sprint(db_session, readme_user_provided=False)
         login = _seed_runnable_requirement(db_session, sprint, name="Login", case_count=1)
         search = _seed_runnable_requirement(db_session, sprint, name="Search", case_count=1)
 
@@ -302,7 +359,7 @@ class TestCreateTestRun:
     async def test_skips_readme_refresh_when_user_provided(
         self, async_client, db_session, stub_queue, refresh_stub
     ):
-        sprint = _seed_sprint(db_session, readme_user_provided=True)
+        sprint = _seed_run_ready_sprint(db_session, readme_user_provided=True)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(
@@ -319,7 +376,7 @@ class TestCreateTestRun:
         self, async_client, db_session, stub_queue, refresh_stub
     ):
         refresh_stub.raise_on_readme = True
-        sprint = _seed_sprint(db_session, readme_user_provided=False)
+        sprint = _seed_run_ready_sprint(db_session, readme_user_provided=False)
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
 
         resp = await async_client.post(
@@ -598,6 +655,251 @@ class TestRestartTestExecution:
         resp = await async_client.post(f"/api/test-executions/{execution.id}/restart")
 
         assert resp.status_code == 422
+
+
+# ── Outdated runs ──────────────────────────────────────────────────────
+
+
+def _seed_stamped_execution(db_session, sprint, requirement, status=None):
+    """A run + execution stamped exactly as the create route would stamp it."""
+    run = _seed_test_run(db_session, sprint)
+    execution = _seed_test_execution(
+        db_session,
+        run,
+        requirement,
+        status=status or TestExecutionStatus.FAILED,
+        requirement_revision=requirement.content_revision,
+        plan_revision=requirement.test_plan.content_revision,
+        env_revision=(sprint.test_environment.content_revision if sprint.test_environment else 0),
+    )
+    return run, execution
+
+
+class TestOutdatedRuns:
+    """A run records the revisions it executed against; a later upstream edit
+    is what makes it read as outdated."""
+
+    def test_fresh_run_is_current(self, db_session):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        assert execution.outdated_reasons == []
+        assert execution.outdated is False
+        assert execution.requirement_deleted is False
+
+    @pytest.mark.parametrize("artifact", ["requirement", "test_plan", "test_environment"])
+    def test_each_edit_is_attributed_alone(self, db_session, artifact):
+        sprint = _seed_sprint(db_session)
+        test_env = _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        target = {
+            "requirement": requirement,
+            "test_plan": requirement.test_plan,
+            "test_environment": test_env,
+        }[artifact]
+        target.content_revision += 1
+        db_session.add(target)
+        db_session.commit()
+
+        assert execution.outdated_reasons == [artifact]
+
+    def test_removing_the_plan_counts_as_outdated(self, db_session):
+        """Not only an edit — a plan removed by a cascade is changed content too."""
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        db_session.delete(requirement.test_plan)
+        db_session.commit()
+        db_session.refresh(requirement)
+
+        assert execution.outdated_reasons == ["test_plan"]
+
+    def test_archived_requirement_reports_requirement_not_plan(self, db_session):
+        """The plan went with the requirement, so reporting it too is noise."""
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        requirement.archived = True
+        db_session.add(requirement)
+        db_session.commit()
+
+        assert execution.outdated_reasons == ["requirement"]
+        assert execution.requirement_deleted is True
+        assert execution.outdated is True
+
+    def test_archived_requirement_plus_environment_edit_reports_both(self, db_session):
+        """The environment comparison survives the deletion — independent facts."""
+        sprint = _seed_sprint(db_session)
+        test_env = _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        requirement.archived = True
+        test_env.content_revision += 1
+        db_session.add_all([requirement, test_env])
+        db_session.commit()
+
+        assert execution.outdated_reasons == ["requirement", "test_environment"]
+
+    def test_missing_environment_row_is_not_a_reason(self, db_session):
+        """Absent is evidence of nothing — unlike a plan, it cannot be deleted."""
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+
+        assert execution.outdated_reasons == []
+
+    def test_run_unions_reasons_without_duplicates(self, db_session):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        first = _seed_runnable_requirement(db_session, sprint, name="Login")
+        second = _seed_runnable_requirement(db_session, sprint, name="Search")
+        run = _seed_test_run(db_session, sprint)
+        for requirement in (first, second):
+            _seed_test_execution(
+                db_session,
+                run,
+                requirement,
+                status=TestExecutionStatus.COMPLETED,
+                requirement_revision=requirement.content_revision,
+                plan_revision=requirement.test_plan.content_revision,
+            )
+        first.content_revision += 1
+        second.content_revision += 1
+        db_session.add_all([first, second])
+        db_session.commit()
+        db_session.refresh(run)
+
+        assert run.outdated_reasons == ["requirement"]  # unioned, not repeated
+        assert run.outdated is True
+
+    def test_preexisting_rows_read_as_current(self, db_session):
+        """Every revision defaults to 0 on both sides — hence no backfill."""
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(
+            db_session, run, requirement, status=TestExecutionStatus.FAILED
+        )
+
+        assert execution.outdated_reasons == []
+
+
+class TestRestartRefusedWhenOutdated:
+    @pytest.mark.asyncio
+    async def test_outdated_execution_cannot_restart(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        resp = await async_client.post(f"/api/test-executions/{execution.id}/restart")
+
+        assert resp.status_code == 422
+        assert "out of date" in resp.json()["detail"]
+        assert "the requirement changed" in resp.json()["detail"]
+        assert stub_queue.enqueued_executions == []
+
+    @pytest.mark.asyncio
+    async def test_deleted_requirement_says_deleted(self, async_client, db_session, stub_queue):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _, execution = _seed_stamped_execution(db_session, sprint, requirement)
+        requirement.archived = True
+        db_session.add(requirement)
+        db_session.commit()
+
+        resp = await async_client.post(f"/api/test-executions/{execution.id}/restart")
+
+        assert resp.status_code == 422
+        assert "the requirement was deleted" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_reasons_serialized_on_the_list_endpoint(self, async_client, db_session):
+        sprint = _seed_sprint(db_session)
+        _seed_test_env(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+        _seed_stamped_execution(
+            db_session, sprint, requirement, status=TestExecutionStatus.COMPLETED
+        )
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        resp = await async_client.get(f"/api/sprints/{sprint.id}/test-runs")
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["outdated_reasons"] == ["requirement"]
+        assert resp.json()[0]["requirement_deleted"] is False
+
+
+class TestListEndpointDoesNotScaleWithRequirements:
+    """`outdated_reasons` walks relationships the list query must eager-load.
+
+    This endpoint polls every 2.5s, and the traversal is invisible from the
+    route — it happens inside a model property — so a lazy load here is easy
+    to reintroduce and hard to notice. Pinned by counting statements rather
+    than by inspecting the query, since that is the thing that actually
+    matters.
+    """
+
+    @pytest.mark.asyncio
+    async def test_query_count_is_flat_in_requirement_count(self, async_client, db_session):
+        from sqlalchemy import event
+
+        counts = {}
+        for requirement_count in (2, 6):
+            sprint = _seed_sprint(db_session)
+            _seed_test_env(db_session, sprint)
+            requirements = [
+                _seed_runnable_requirement(db_session, sprint, name=f"R{i}", case_count=1)
+                for i in range(requirement_count)
+            ]
+            run = _seed_test_run(db_session, sprint)
+            for requirement in requirements:
+                _seed_test_execution(
+                    db_session,
+                    run,
+                    requirement,
+                    status=TestExecutionStatus.COMPLETED,
+                    requirement_revision=requirement.content_revision,
+                    plan_revision=requirement.test_plan.content_revision,
+                    env_revision=sprint.test_environment.content_revision,
+                )
+            db_session.commit()
+            db_session.expire_all()
+
+            counter = {"n": 0}
+            engine = db_session.get_bind()
+
+            @event.listens_for(engine, "before_cursor_execute")
+            def _count(conn, cursor, statement, params, context, executemany, _c=counter):
+                _c["n"] += 1
+
+            resp = await async_client.get(f"/api/sprints/{sprint.id}/test-runs")
+            event.remove(engine, "before_cursor_execute", _count)
+
+            assert resp.status_code == 200
+            counts[requirement_count] = counter["n"]
+
+        # Eager-loaded, so tripling the requirements must not add queries.
+        assert counts[2] == counts[6], (
+            f"query count grew with requirement count: {counts} — "
+            "something outdated_reasons touches is lazy-loading again"
+        )
 
 
 # ── Auth spot-check ────────────────────────────────────────────────────

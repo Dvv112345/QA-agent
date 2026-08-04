@@ -81,9 +81,14 @@ def _sprint_plans(session: Session, sprint_id: int) -> list[TestPlan]:
         session.exec(
             select(TestPlan)
             .join(Requirement, TestPlan.requirement_id == Requirement.id)  # type: ignore[arg-type]
-            .where(Requirement.sprint_id == sprint_id)
+            .where(
+                Requirement.sprint_id == sprint_id,
+                Requirement.archived == False,  # noqa: E712
+            )
             .order_by(Requirement.created_at, Requirement.id)
-            .options(selectinload(TestPlan.cases), selectinload(TestPlan.requirement))
+            # `TestPlan.cases` is the filtered property; eager-load the
+            # underlying collection it reads from.
+            .options(selectinload(TestPlan.all_cases), selectinload(TestPlan.requirement))
         ).all()
     )
 
@@ -100,7 +105,7 @@ async def generate_test_plans(
     """
     sprint = _get_sprint_or_404(session, sprint_id)
     _ensure_sprint_active(sprint)
-    if not sprint.requirements_locked:
+    if not sprint.environment_confirmed:
         raise HTTPException(
             status_code=422,
             detail="Confirm the test environment before generating test plans.",
@@ -157,8 +162,10 @@ async def submit_feedback(
     plan = _get_plan_or_404(session, plan_id)
     _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
 
-    if plan.status != TestPlanStatus.DRAFT:
-        raise HTTPException(status_code=422, detail="Only draft plans can receive feedback.")
+    if plan.status not in (TestPlanStatus.DRAFT, TestPlanStatus.APPROVED):
+        raise HTTPException(
+            status_code=422, detail="Only draft or approved plans can receive feedback."
+        )
     if plan.feedback_cap_reached:
         raise HTTPException(
             status_code=422,
@@ -188,8 +195,8 @@ async def edit_test_plan(
     plan = _get_plan_or_404(session, plan_id)
     _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
 
-    if plan.status != TestPlanStatus.DRAFT:
-        raise HTTPException(status_code=422, detail="Only draft plans can be edited.")
+    if plan.status not in (TestPlanStatus.DRAFT, TestPlanStatus.APPROVED):
+        raise HTTPException(status_code=422, detail="Only draft or approved plans can be edited.")
 
     if body.complexity not in _VALID_COMPLEXITIES:
         raise HTTPException(status_code=422, detail="complexity must be one of: low, medium, high.")
@@ -211,13 +218,21 @@ async def edit_test_plan(
 
     plan.complexity = body.complexity
     plan.summary = body.summary
-    plan.cases.clear()
+    # The case set changed, so any run grounded in the old one is outdated.
+    plan.content_revision += 1
+    # An edited plan needs approving again before it can be run.
+    plan.status = TestPlanStatus.DRAFT
+    # Supersede rather than delete: a run that already executed these cases
+    # reads its titles and steps straight off these rows.
+    for existing in plan.cases:
+        existing.archived = True
+        session.add(existing)
     for position, case in enumerate(body.cases):
         # Stored steps stay canonical (one non-blank line per step) — blank
         # lines would otherwise leak into revision prompts via the
         # serialized plan JSON.
         steps = "\n".join(line.strip() for line in case.steps.splitlines() if line.strip())
-        plan.cases.append(
+        session.add(
             TestCase(
                 test_plan_id=plan.id,
                 position=position,
@@ -279,7 +294,10 @@ async def approve_all_test_plans(
         .where(
             TestPlan.status == TestPlanStatus.DRAFT,
             TestPlan.requirement_id.in_(  # type: ignore[attr-defined]
-                select(Requirement.id).where(Requirement.sprint_id == sprint_id)
+                select(Requirement.id).where(
+                    Requirement.sprint_id == sprint_id,
+                    Requirement.archived == False,  # noqa: E712
+                )
             ),
         )
         .values(status=TestPlanStatus.APPROVED, updated_at=datetime.now(timezone.utc))

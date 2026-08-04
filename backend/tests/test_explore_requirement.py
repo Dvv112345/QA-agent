@@ -572,6 +572,88 @@ class TestGuards:
         assert "No application URL" in refreshed.error
 
 
+class TestUnreachedSessionsAreSettled:
+    """A terminal run must leave no charter session reading as in-flight.
+
+    The mirror of ``test_execute_test.TestUnreachedCasesAreSettled`` — the
+    session rows have exactly one writer (``_run_one_session``), so every
+    early exit used to strand the charters it never reached.
+    """
+
+    def test_job_start_guard_settles_its_sessions(self, db_session, patched):
+        sprint, _, run = _seed_run_with_sessions(db_session, charters=("first", "second"))
+        sprint.active = False
+        db_session.add(sprint)
+        db_session.commit()
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        refreshed = db_session.get(ExploratoryRun, run.id)
+        assert refreshed.status == ExploratoryRunStatus.FAILED
+        assert [s.status for s in refreshed.sessions] == [ExploratorySessionStatus.SKIPPED] * 2
+        assert all(s.error.startswith("Not run.") for s in refreshed.sessions)
+        assert patched["loop_calls"] == []
+
+    def test_superseded_mid_run_settles_the_remaining_charters(
+        self, db_session, patched, monkeypatch
+    ):
+        """The scenario this whole mechanism exists for, on the browser path.
+
+        An upstream edit lands while charter one is exploring; the run stops
+        at the boundary, and charter two must not sit "Queued" forever under
+        a failed run that can no longer be restarted.
+        """
+        from backend.database import new_session
+        from backend.models.database import SUPERSEDED_ERROR, Requirement
+        from backend.tasks import explore_requirement as task_module
+
+        sprint, requirement, run = _seed_run_with_sessions(db_session, charters=("first", "second"))
+        run.requirement_revision = requirement.content_revision
+        run.plan_revision = 0
+        run.env_revision = sprint.test_environment.content_revision
+        db_session.add(run)
+        db_session.commit()
+        requirement_id, run_id = requirement.id, run.id
+
+        def bump_then_explore(**kwargs):
+            # Commit the cascade from another session, as the route would.
+            with new_session() as other:
+                row = other.get(Requirement, requirement_id)
+                row.content_revision += 1
+                other.add(row)
+                other.commit()
+            return patched["loop_result"]
+
+        monkeypatch.setattr(task_module.llm, "run_exploration_loop", bump_then_explore)
+
+        explore_requirement_task(run_id)
+
+        db_session.expire_all()
+        refreshed = db_session.get(ExploratoryRun, run_id)
+        assert refreshed.status == ExploratoryRunStatus.FAILED
+        assert refreshed.error == SUPERSEDED_ERROR
+        assert refreshed.sessions[0].status == ExploratorySessionStatus.COMPLETED
+        assert refreshed.sessions[1].status == ExploratorySessionStatus.SKIPPED
+        assert SUPERSEDED_ERROR in refreshed.sessions[1].error
+
+    def test_findings_survive_a_settled_run(self, db_session, patched):
+        """Settling touches statuses only — recorded observations stay real."""
+        from backend.tests.test_sprints import _seed_exploratory_finding
+
+        sprint, _, run = _seed_run_with_sessions(db_session, charters=("first", "second"))
+        finding = _seed_exploratory_finding(db_session, run.sessions[0])
+        sprint.active = False
+        db_session.add(sprint)
+        db_session.commit()
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        refreshed = db_session.get(ExploratoryRun, run.id)
+        assert [f.id for f in refreshed.sessions[0].findings] == [finding.id]
+
+
 class TestRetryDisposition:
     def test_repends_below_the_retry_cap(self, db_session, patched, monkeypatch):
         from backend.tasks import explore_requirement as task_module
@@ -609,6 +691,9 @@ class TestRetryDisposition:
         refreshed = db_session.get(ExploratoryRun, run.id)
         assert refreshed.status == ExploratoryRunStatus.FAILED
         assert "kaput" in refreshed.error
+        # Terminal, so nothing may stay in flight. The one charter here had
+        # already completed, so it keeps its result — only unreached rows move.
+        assert refreshed.sessions[0].status == ExploratorySessionStatus.COMPLETED
 
 
 class TestHeartbeat:

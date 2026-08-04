@@ -188,6 +188,52 @@ class TestIdempotencyGuards:
         analyze_requirement_task(99999)
         assert llm_stub.check_calls == []
 
+    def test_archived_row_is_noop(self, db_session, llm_stub):
+        """Deleted while queued — analyzing it would spend an LLM call on a
+        row nothing can display."""
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint)
+        req.archived = True
+        db_session.add(req)
+        db_session.commit()
+
+        analyze_requirement_task(req.id)
+
+        assert llm_stub.check_calls == []
+        assert _reload(db_session, req.id).status == RequirementStatus.PENDING
+
+    def test_archived_mid_analysis_discards_the_result(self, db_session, llm_stub, monkeypatch):
+        """Deleting during the LLM call must not write the answer back.
+
+        Archiving leaves `status` untouched, so the mid-flight re-check has
+        to look at `archived` too or it would see ANALYZING and proceed.
+        """
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint)
+        requirement_id = req.id
+
+        original = llm_stub.check_clarity
+
+        def _archive_then_check(*args, **kwargs):
+            from backend.database import new_session
+
+            with new_session() as other:
+                row = other.get(Requirement, requirement_id)
+                row.archived = True
+                other.add(row)
+                other.commit()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(llm_stub, "check_clarity", _archive_then_check)
+        import backend.services.llm as llm_module
+
+        monkeypatch.setattr(llm_module, "check_clarity", _archive_then_check)
+
+        analyze_requirement_task(requirement_id)
+
+        row = _reload(db_session, requirement_id)
+        assert row.status == RequirementStatus.ANALYZING  # result discarded, not written
+
 
 class TestFinishedSprintGuards:
     def test_inactive_sprint_marks_row_failed(self, db_session, llm_stub):
@@ -278,3 +324,59 @@ class TestReadmeResolution:
         sprint = _seed_sprint(db_session)
 
         assert asyncio.run(readme_utils.resolve_readme(sprint)) == "# Downloaded README"
+
+
+class TestRewriteCascades:
+    """An LLM rewrite is a content change and takes the full cascade.
+
+    Bumping `content_revision` alone left the plan approved and the
+    environment confirmed against text that no longer existed — reachable
+    because a no-op edit deliberately skips the cascade but still
+    re-enqueues analysis, so the rewrite can land with the plan intact.
+    """
+
+    def test_revision_removes_the_plan_and_reopens_the_environment(self, db_session, llm_stub):
+        from backend.models.database import (
+            TestEnvironmentStatus,
+            TestPlan,
+            TestPlanStatus,
+        )
+        from backend.tests.test_sprints import _seed_test_env, _seed_test_plan
+
+        sprint = _seed_sprint(db_session)
+        test_env = _seed_test_env(db_session, sprint, status=TestEnvironmentStatus.CONFIRMED)
+        req = _seed_requirement(
+            db_session,
+            sprint,
+            status=RequirementStatus.PENDING,
+            clarifying_question="Which users?",
+            pending_answer="All of them.",
+        )
+        plan_id = _seed_test_plan(db_session, req, status=TestPlanStatus.APPROVED).id
+        llm_stub.result = ClarityResult(
+            clear=True, clarifying_question=None, rewritten_description="Rewritten text."
+        )
+
+        analyze_requirement_task(req.id)
+
+        db_session.expire_all()
+        row = _reload(db_session, req.id)
+        assert row.description == "Rewritten text."
+        assert row.content_revision == 1
+        assert db_session.get(TestPlan, plan_id) is None
+        assert db_session.get(type(test_env), test_env.id).status == TestEnvironmentStatus.READY
+
+    def test_an_initial_check_does_not_cascade(self, db_session, llm_stub):
+        """Only a rewrite changes the text; a clarity check does not."""
+        from backend.models.database import TestPlan, TestPlanStatus
+        from backend.tests.test_sprints import _seed_test_plan
+
+        sprint = _seed_sprint(db_session)
+        req = _seed_requirement(db_session, sprint)
+        plan_id = _seed_test_plan(db_session, req, status=TestPlanStatus.APPROVED).id
+
+        analyze_requirement_task(req.id)
+
+        db_session.expire_all()
+        assert _reload(db_session, req.id).content_revision == 0
+        assert db_session.get(TestPlan, plan_id) is not None

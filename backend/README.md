@@ -1,6 +1,6 @@
 # QA Agent Backend
 
-FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM, which also extracts the access details into structured, editable environment variables — and confirming it locks the sprint's requirement set. Next, an LLM generates a test plan per requirement on the same worker infrastructure — grounded in the requirement rather than the implementation, and written for automated execution; each draft plan goes through a capped feedback loop or uncapped direct edit until approved. Finally, running the approved plans generates (or reuses) a Playwright script per test case, reading repository files through a bounded tool loop to get real endpoints and response shapes right, executes it in a subprocess against the confirmed environment, and self-heals script bugs via an LLM diagnosis loop — stopping as soon as a failure looks like a genuine application bug and reporting it as a structured finding, in the same shape exploratory testing produces.
+FastAPI + PostgreSQL backend for the QA Agent — manages GitHub repositories and QA sprints. Registering a repo validates it against the GitHub API; creating a sprint downloads the repo's README (or accepts an uploaded one) and captures a filtered file-tree listing, both stored as LLM context. Sprint requirements are entered manually or extracted from an uploaded PRD document (split into requirements by a synchronous LLM call), then analyzed for QA-clarity by an LLM via Redis/RQ background workers, with a clarification question/answer loop per requirement. Once every requirement is confirmed, the user describes test environment access in free text — judged synchronously by the LLM, which also extracts the access details into structured, editable environment variables — and confirming it opens the test-planning stage. Next, an LLM generates a test plan per requirement on the same worker infrastructure — grounded in the requirement rather than the implementation, and written for automated execution; each draft plan goes through a capped feedback loop or uncapped direct edit until approved. Finally, running the approved plans generates (or reuses) a Playwright script per test case, reading repository files through a bounded tool loop to get real endpoints and response shapes right, executes it in a subprocess against the confirmed environment, and self-heals script bugs via an LLM diagnosis loop — stopping as soon as a failure looks like a genuine application bug and reporting it as a structured finding, in the same shape exploratory testing produces. Every confirmed artifact stays editable: correcting a requirement removes its test plan and sends the environment back for re-checking, changing the environment removes the sprint's plans, and editing an approved plan returns it to draft. Test runs that already executed are never deleted — they are kept and marked as out of date, naming which artifact moved.
 
 ## Quick Start
 
@@ -168,14 +168,15 @@ Create a sprint linked to a repo. Refreshes repo metadata from GitHub and captur
   "repo": { "id": 1, "name": "owner/repo", "...": "..." },
   "requirements_complete": false,
   "has_test_environment_submission": false,
-  "requirements_locked": false,
+  "environment_confirmed": false,
   "has_test_plans": false,
+  "test_plans_missing": false,
   "test_plans_complete": false,
   "has_test_runs": false
 }
 ```
 
-The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `requirements_locked` (the test environment is confirmed, freezing the requirement set), `has_test_plans` (≥1 requirement has a test-plan row), `test_plans_complete` (every requirement has an `approved` plan), and `has_test_runs` (≥1 test run has been submitted).
+The boolean flags are computed by the backend: `requirements_complete` (≥1 requirement and all `confirmed`), `has_test_environment_submission` (a test-environment row exists), `environment_confirmed` (the test environment is confirmed — the precondition for generating test plans), `has_test_plans` (≥1 requirement has a test-plan row), `test_plans_missing` (a `confirmed` requirement has _no_ plan — what a requirement edit leaves behind, and invisible in the plan list itself), `test_plans_complete` (every requirement has an `approved` plan), and `has_test_runs` (≥1 test run has been submitted).
 
 **Errors:** 404 (repo not found), 422 (empty name, deactivated repo, invalid README, or no README available), 502 (GitHub API failure).
 
@@ -189,7 +190,7 @@ Get a single sprint with its repo info. 404 if not found.
 
 #### `PATCH /api/sprints/{sprint_id}`
 
-Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements, `pending`/`generating` test plans, `pending`/`running` test executions, and `pending`/`running` exploratory runs are marked `failed` — nothing runs on a finished sprint.
+Finish a sprint. Body: `{ "active": false }` (the only supported transition). Any `pending`/`analyzing` requirements, `pending`/`generating` test plans, `pending`/`running` test executions, and `pending`/`running` exploratory runs are marked `failed` — nothing runs on a finished sprint. The test cases and charter sessions those runs never reached are marked `skipped` in the same commit, so nothing is left reading as queued under a run that can no longer proceed.
 
 **Errors:** 404 (not found), 422 (already finished or `active` not `false`).
 
@@ -199,7 +200,7 @@ Requirements belong to a sprint and carry a lifecycle status: `pending → analy
 
 #### `POST /api/sprints/{sprint_id}/requirements`
 
-Create a batch of requirements (JSON body: `[{ "name": "...", "description": "..." }, …]`). Rows start `pending` and are enqueued for analysis. **Errors:** 404 (sprint), 422 (empty list, blank fields, finished sprint, or requirements locked by a confirmed test environment).
+Create a batch of requirements (JSON body: `[{ "name": "...", "description": "..." }, …]`). Rows start `pending` and are enqueued for analysis. Adding a requirement to a sprint whose test environment is already `confirmed` sends that environment back to `ready` for re-checking — a new requirement may need access the confirmed description never covered. **Errors:** 404 (sprint), 422 (empty list, blank fields, finished sprint).
 
 #### `POST /api/sprints/{sprint_id}/requirements/from-prd`
 
@@ -215,7 +216,7 @@ Upload a PRD document and have an LLM split it into requirements — the alterna
 
 Re-uploading a PRD **replaces** the previous upload's `from_prd` rows (in the same transaction as the new inserts); manually entered requirements are never touched. Every failure — invalid file, unreadable/empty document, text over `PRD_MAX_CHARS`, zero or more than `MAX_PRD_REQUIREMENTS` extracted requirements, LLM failure — happens before that transaction, so a failed upload never destroys existing requirements. When `STORE_OFFLINE=true` the original file is saved to the sprint directory as `PRD<ext>` (best-effort).
 
-**Errors:** 404 (sprint), 422 (finished sprint, requirements locked, unsupported/corrupt/empty/oversized file, no requirements found, too many requirements), 502 (LLM failure — nothing persisted).
+A re-upload is simultaneously a bulk delete and a bulk add, so both cascades apply: the superseded rows lose their test plans, and the test environment goes back for re-checking. **Errors:** 404 (sprint), 422 (finished sprint, unsupported/corrupt/empty/oversized file, no requirements found, too many requirements), 502 (LLM failure — nothing persisted).
 
 #### `GET /api/sprints/{sprint_id}/requirements`
 
@@ -243,7 +244,7 @@ Restart a `failed` requirement (clears the error; uncapped).
 
 #### `DELETE /api/requirements/{id}`
 
-Remove a requirement (204). Allowed in **every** status, including `confirmed` and mid-analysis — until the sprint's test environment is confirmed (then 422, the requirement set is locked). Also 422 on finished sprints.
+Remove a requirement (204). Allowed in **every** status, including `confirmed`, and after the test environment is confirmed. Removes that requirement's test plan but leaves the environment `confirmed` — removal can only shrink what needs access. A requirement referenced by a test run or exploratory run is _archived_ rather than deleted so those runs stay readable; one with no runs behind it is deleted outright. 422 on finished sprints. Work already in flight does not block the removal — the worker stops itself instead (see the run-staleness note under test runs).
 
 ### Test Environment
 
@@ -280,7 +281,7 @@ Create or update the access description (`{ "content": "..." }`) and run a fresh
 }
 ```
 
-**Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, already confirmed, or empty content), 502 (LLM failure — nothing is persisted).
+Resubmitting a **confirmed** description is allowed and re-runs the sufficiency check. If the description changed, or the check now comes back insufficient (which clears the variables), every test plan in the sprint is removed and existing runs are marked out of date. Resubmitting **identical** text changes nothing and costs only the one check call: the variable extraction is skipped entirely, since the variables are derived from a description that did not move. That is what makes the UI's Re-check button (offered when a requirement changed since the last check) safe to press — a fresh extraction is non-deterministic, and re-running it would let harmless rewording delete the sprint's plans and silently overwrite any variables you corrected by hand. **Errors:** 404 (sprint), 422 (finished sprint, requirements not all confirmed, or empty content), 502 (LLM failure — nothing is persisted).
 
 #### `POST /api/test-environment/{te_id}/answer`
 
@@ -292,25 +293,27 @@ Answer the clarifying question (`{ "answer": "..." }`); the LLM rewrites the des
 
 Directly correct the LLM-extracted variables — no LLM call, uncapped, doesn't touch `content`/`status`/`revision_count`. Body: `{ "variables": { "NAME": "value", … } }`.
 
-**Errors:** 404, 422 (finished sprint, already confirmed, empty `variables`, or a blank name/value).
+Editable after confirmation: changing the variables removes every test plan in the sprint, returns the row to `ready` for re-confirmation, and marks existing runs out of date. `updated_at` is deliberately _not_ stamped — on this row it means "last LLM check" and drives `requirements_stale`. **Errors:** 404, 422 (finished sprint, empty `variables`, or a blank name/value).
 
 #### `POST /api/test-environment/{te_id}/confirm`
 
-Finalize the access description. Terminal — and it **locks the sprint's requirement set** (requirement create/delete return 422 afterwards).
+Finalize the access description. This is the precondition for generating test plans (`SprintResponse.environment_confirmed`). Not terminal: the description and its variables stay editable, and adding a requirement returns the row to `ready` for re-checking.
 
 **Errors:** 404, 422 (not `ready`, finished sprint, requirements incomplete, `requirements_stale` — a confirmed requirement changed since the last check; re-POST the current content to re-check first — or environment variables not yet extracted, which should be unreachable).
 
 ### Test Plans
 
-The third sprint stage, available once the test environment is confirmed (`requirements_locked`). One plan per confirmed requirement, generated asynchronously on the RQ worker by a single LLM call returning a structured plan — complexity (`low`/`medium`/`high`), summary, and ≥1 test case (title, optional preconditions, newline-joined steps, expected result, type, priority).
+The third sprint stage, available once the test environment is confirmed (`environment_confirmed`). One plan per confirmed requirement, generated asynchronously on the RQ worker by a single LLM call returning a structured plan — complexity (`low`/`medium`/`high`), summary, and ≥1 test case (title, optional preconditions, newline-joined steps, expected result, type, priority).
 
 Planning is deliberately **code-blind**: it is grounded in the requirement, README, captured file tree, and confirmed test-environment description, but never reads repository files. A plan defines what "correct" means, so reading the implementation is where that judgment drifts into restating what the code already does; the endpoint paths and response shapes a script needs are resolved later by test-script generation, which does have repo access. The prompt instead states what it is planning for — each case becomes one Playwright script, so expected results must be script-checkable, preconditions must be seedable from the confirmed environment, cases must be repeatable, and steps describe _what_ to verify rather than naming endpoints or selectors. Checks no script could make are left to exploratory testing.
 
-Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) → approved` (terminal), plus `failed` (restartable). Poll the list endpoint to observe progress.
+Lifecycle: `pending → generating → draft ⇄ generating (feedback revision) → approved`, plus `failed` (restartable). Approval gates _running_, not editing — an approved plan can still be edited or given feedback, which returns it to `draft`. Poll the list endpoint to observe progress.
 
 #### `POST /api/sprints/{sprint_id}/test-plans/generate`
 
 Create a `pending` plan for every confirmed requirement and enqueue one generation job each. Idempotent — requirements that already have a plan are skipped, `failed` plans are reset like Restart (keeping any interrupted feedback), and the sprint's full plan list is returned either way.
+
+This is also how a plan removed by a requirement edit comes back: editing a confirmed requirement deletes the plan written against its old text and nothing regenerates it automatically. Once that requirement is confirmed again, `SprintResponse.test_plans_missing` flips to `true` and this endpoint rebuilds only the missing plan, leaving existing ones untouched.
 
 **Response** (200): `list[TestPlanResponse]`
 
@@ -346,19 +349,19 @@ List a sprint's plans, ordered by requirement creation — the polling endpoint 
 
 Send free-text feedback on a `draft` plan (`{ "feedback": "..." }`); the plan re-enters generation and the LLM produces a full revised plan. Capped at `MAX_TEST_PLAN_FEEDBACK_ROUNDS` (default 3) per plan — past the cap this returns 422 and the plan must be edited directly (uncapped).
 
-**Errors:** 404, 422 (not `draft`, cap reached, empty feedback, finished sprint).
+**Errors:** 404, 422 (not `draft` or `approved`, cap reached, empty feedback, finished sprint).
 
 #### `PATCH /api/test-plans/{plan_id}`
 
 Directly edit a `draft` plan — no LLM involved, uncapped, never increments `revision_count`, stays `draft`. Body: `{ "complexity": "low|medium|high", "summary": "...", "cases": [{ "title": "...", "preconditions": null, "steps": "one step per line", "expected_result": "...", "case_type": "...", "priority": "high|medium|low" }, …] }`. Cases are replaced wholesale.
 
-**Errors:** 404, 422 (not `draft`, finished sprint, or field validation: no cases, blank title/steps/expected result/type, invalid priority/complexity).
+**Errors:** 404, 422 (not `draft` or `approved`, finished sprint, or field validation: no cases, blank title/steps/expected result/type, invalid priority/complexity).
 
 #### `POST /api/test-plans/{plan_id}/approve`
 
-Approve a `draft` plan. Terminal — no unapprove, no regenerate; feedback/edit return 422 afterwards. When every requirement's plan is approved, `SprintResponse.test_plans_complete` flips to `true`.
+Approve a `draft` plan. There is no unapprove, but editing an approved plan returns it to `draft` and requires approving again. When every requirement's plan is approved, `SprintResponse.test_plans_complete` flips to `true`.
 
-**Errors:** 404, 422 (not `draft`, finished sprint).
+**Errors:** 404, 422 (already approved, not `draft`, finished sprint).
 
 #### `POST /api/sprints/{sprint_id}/test-plans/approve-all`
 
@@ -372,9 +375,11 @@ Restart a `failed` plan (clears the error and retry counter; keeps pending feedb
 
 ### Test Execution
 
-The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), or `error` (self-heal exhausted, still looks like a script bug). Generated scripts may use Playwright, `requests`, `Faker`, `psycopg2` (Postgres), `sqlite3`, or the standard library — nothing else, since only those are installed in the worker's own venv that scripts execute under.
+The fourth and final sprint stage, available once every requirement's plan is `approved` (`test_plans_complete`). Each run covers one or more requirements: one `TestExecution` row (and RQ job) per selected requirement, each walking that requirement's approved test cases in order — reusing a cached script per case or generating one, executing it in a subprocess with the confirmed environment variables injected, and self-healing script bugs via an LLM diagnosis loop (capped). Lifecycle per execution: `pending → running → completed` (terminal), plus `failed` (restartable). Per-case outcomes: `passed`, `failed` (a genuine application bug), `error` (self-heal exhausted, still looks like a script bug), or `skipped` (the execution ended before reaching this case — see below). Generated scripts may use Playwright, `requests`, `Faker`, `psycopg2` (Postgres), `sqlite3`, or the standard library — nothing else, since only those are installed in the worker's own venv that scripts execute under.
 
 Both terminal failures also carry a **structured finding** on `TestCaseExecutionResponse.finding`, in the same shape exploratory testing uses (severity, title, reproduction steps, expected vs actual, environment): a `failed` case reports a `bug`, an `error` case reports an `issue` — the product was wrong, versus the testing never got off the ground. The bug report costs no extra LLM call; the diagnosis that classified the failure returns it alongside the classification. A `passed` case reports no finding, and its finding fields are cleared, so a restarted run that now passes stops reporting a fixed bug. Raw `output`, `error`, and the downloadable script are unchanged — the finding is the report, the output is the debugging surface.
+
+An execution can stop before it has walked every case — superseded by an upstream edit, a finished sprint, a plan no longer approved, or a worker that died with its retries exhausted. Whenever that happens the cases it never reached are marked `skipped` rather than left `pending`/`running`, and each carries a one-line `error` saying why: "Not run. …" for a case that never started, "Interrupted before it finished…" for the one that was in flight when a worker was killed (only that one may have partially touched the test environment). `skipped` is not a verdict about the product and is counted in none of `passed_cases`/`failed_cases`/`error_cases`; a restart re-runs those cases normally.
 
 > **Unsandboxed execution:** generated test scripts run as a plain subprocess with no sandboxing beyond a wall-clock timeout (`SCRIPT_EXECUTION_TIMEOUT`) — an accepted risk, not an oversight.
 
@@ -389,6 +394,7 @@ Create a run covering the selected requirements. Body: `{ "requirement_ids": [1,
 #### `GET /api/sprints/{sprint_id}/test-runs`
 
 List a sprint's runs, newest first. Each row includes rolled-up `status`, `requirement_names`, and case counts (`total_cases`, `passed_cases`, `failed_cases`, `error_cases`). 404 on unknown sprint.
+Every run — scripted and exploratory — also carries `outdated_reasons` and `requirement_deleted`. A run records the content revisions of the requirement, test plan, and test environment it executed against; if any has since changed, the corresponding reason (`requirement`, `test_plan`, `test_environment`) appears. An empty list means the run still reflects the current sprint — there is no separate `outdated` boolean, since it would just be `outdated_reasons.length > 0`. `requirement_deleted` only selects the wording for the `requirement` reason (deletion is one of the ways a requirement can differ, not a separate state). **An outdated run cannot be restarted** — start a new one to test the current state. A run that goes outdated _while in progress_ stops itself at the next case (or charter) boundary and records `Superseded — …`, rather than spending LLM calls on a result already known to be stale. Editing is never blocked on a run being in flight.
 
 #### `GET /api/test-runs/{run_id}`
 
@@ -397,6 +403,8 @@ Fetch one run's full detail (same shape as the create response). 404 if not foun
 #### `GET /api/test-case-executions/{id}/script`
 
 Download the exact script that produced this case's result as a `.py` file attachment — credential-free by construction (scripts only ever read `os.environ["NAME"]`). 404 if the row or its script doesn't exist yet.
+
+Refused (422) when the execution is outdated — restarting would re-run against content it was never planned for.
 
 #### `POST /api/test-executions/{execution_id}/restart`
 
@@ -412,7 +420,7 @@ Two frameworks shape it. **SBTM** (Session-Based Test Management) organizes expl
 
 A run covers **exactly one requirement** — unlike a scripted run, which can batch several. Exploration is expensive and meant to be read, not glanced at. Within a run, charters execute **sequentially** in a single RQ job: charters for one requirement touch the same feature by construction, so running them concurrently would collide on the same records and manufacture false findings.
 
-Lifecycle per run: `pending → running → completed` (terminal), plus `failed` (restartable). Per session: `pending → running → completed`, plus `error` when the session machinery itself broke. A session that finds twenty bugs is still `completed` — findings drive their own counts, not the status.
+Lifecycle per run: `pending → running → completed` (terminal), plus `failed` (restartable). Per session: `pending → running → completed`, plus `error` when the session machinery itself broke and `skipped` when the run ended before that charter was ever explored (the mirror of a scripted `skipped` case — same reason text, same non-verdict meaning). A session that finds twenty bugs is still `completed` — findings drive their own counts, not the status.
 
 Findings are typed, following SBTM's distinction:
 
@@ -463,7 +471,7 @@ Serve the PNG captured when the finding was recorded. 404 when the finding has n
 
 #### `POST /api/exploratory-runs/{run_id}/restart`
 
-Restart a `failed` run (uncapped). Charter-level resumability is automatic: already-`completed` sessions are skipped and the in-flight charter restarts from scratch, since a half-explored browser died with the worker. Findings already recorded are kept — they were real observations regardless.
+Restart a `failed` run (uncapped), provided it is not outdated. Charter-level resumability is automatic: already-`completed` sessions are skipped and the in-flight charter restarts from scratch, since a half-explored browser died with the worker. Findings already recorded are kept — they were real observations regardless.
 
 **Errors:** 404, 422 (not `failed`, finished sprint).
 

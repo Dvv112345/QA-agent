@@ -57,6 +57,22 @@ export default function TestPlanCard({ plan, sprintActive, onUpdated }: Props) {
 
   const handleRestart = () => runAction(restartTestPlan(plan.id))
 
+  const handleStartEditing = () => {
+    // Editing an approved plan un-approves it and strands any run that used
+    // the old cases, so name both before the form opens.
+    if (
+      status === 'approved' &&
+      !window.confirm(
+        `Editing the approved plan for "${plan.requirement_name}" will return it to draft ` +
+          'and require re-approval. Existing test runs are kept, but marked as out of date. ' +
+          'Continue?',
+      )
+    ) {
+      return
+    }
+    setEditing(true)
+  }
+
   return (
     <article className={`test-plan-card test-plan-card-${status}`}>
       <header className="test-plan-card-header">
@@ -145,7 +161,7 @@ export default function TestPlanCard({ plan, sprintActive, onUpdated }: Props) {
             ))}
           </ol>
 
-          {sprintActive && status === 'draft' && (
+          {sprintActive && (status === 'draft' || status === 'approved') && (
             <>
               <div className="test-plan-card-feedback">
                 {plan.feedback_cap_reached ? (
@@ -173,14 +189,12 @@ export default function TestPlanCard({ plan, sprintActive, onUpdated }: Props) {
                 )}
               </div>
               <div className="test-plan-card-actions">
-                <button className="btn btn-primary" onClick={handleApprove} disabled={busy}>
-                  Approve
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => setEditing(true)}
-                  disabled={busy}
-                >
+                {status === 'draft' && (
+                  <button className="btn btn-primary" onClick={handleApprove} disabled={busy}>
+                    Approve
+                  </button>
+                )}
+                <button className="btn btn-secondary" onClick={handleStartEditing} disabled={busy}>
                   Edit
                 </button>
               </div>

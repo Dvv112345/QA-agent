@@ -144,9 +144,9 @@ def _seed_setup(db_session, *, active=True, file_tree="src/app.py\nsrc/db.py", c
     return sprint, requirement, plan, cases
 
 
-def _seed_execution(db_session, sprint, requirement, cases):
+def _seed_execution(db_session, sprint, requirement, cases, **kwargs):
     run = _seed_test_run(db_session, sprint)
-    execution = _seed_test_execution(db_session, run, requirement)
+    execution = _seed_test_execution(db_session, run, requirement, **kwargs)
     case_execs = [_seed_test_case_execution(db_session, execution, c) for c in cases]
     return execution, case_execs
 
@@ -460,6 +460,20 @@ class TestFinishedSprintGuard:
         assert row.error == SPRINT_FINISHED_ERROR
         assert llm_stub.generate_calls == []
 
+    def test_archived_requirement_marks_failed(self, db_session, llm_stub, script_runner_stub):
+        """A deleted requirement must never have scripts generated or run."""
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        requirement.archived = True
+        db_session.add(requirement)
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        row = _reload_execution(db_session, execution.id)
+        assert row.status == TestExecutionStatus.FAILED
+        assert llm_stub.generate_calls == []
+
 
 class TestPlanNotApprovedGuard:
     def test_marks_failed(self, db_session, llm_stub, script_runner_stub):
@@ -491,7 +505,10 @@ class TestEnvVarsMissingGuard:
         assert "not been established" in row.error
         assert llm_stub.generate_calls == []
         results = _reload_case_execs(db_session, execution.id)
-        assert results[0].status == TestCaseExecutionStatus.PENDING  # untouched
+        # Never started, and the parent is terminal — so settled, not left
+        # reading as "Queued" under a failed run.
+        assert results[0].status == TestCaseExecutionStatus.SKIPPED
+        assert "not been established" in results[0].error
 
 
 class TestContextPassedToLLM:
@@ -574,8 +591,14 @@ class TestFailureHandling:
         assert row.retry_count == 1
         assert row.last_heartbeat is None
 
+        # The case the attempt died inside stays `running`: the parent is
+        # going to be re-enqueued, and resumability is derived from exactly
+        # this status. Settling it here would be the bug in reverse.
+        results = _reload_case_execs(db_session, execution.id)
+        assert results[0].status == TestCaseExecutionStatus.RUNNING
+
     def test_retries_exhausted_marks_failed(self, db_session, llm_stub, script_runner_stub):
-        sprint, requirement, plan, cases = _seed_setup(db_session)
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=3)
         execution, _ = _seed_execution(db_session, sprint, requirement, cases)
         execution.retry_count = MAX_AUTO_RETRIES - 1
         db_session.add(execution)
@@ -588,3 +611,184 @@ class TestFailureHandling:
         assert row.status == TestExecutionStatus.FAILED
         assert row.retry_count == MAX_AUTO_RETRIES
         assert len(row.error) <= 300
+
+        # Terminal now, so no case may stay in flight — including the one
+        # that was already committed as `running` when the job raised.
+        results = _reload_case_execs(db_session, execution.id)
+        assert [r.status for r in results] == [TestCaseExecutionStatus.SKIPPED] * 3
+        # The one that was mid-flight says so: it may have run a script
+        # against the live environment, the other two provably did not.
+        assert results[0].error.startswith("Interrupted before it finished")
+        assert "partially run against the test environment" in results[0].error
+        assert all(r.error.startswith("Not run.") for r in results[1:])
+
+
+class TestUnreachedCasesAreSettled:
+    """A terminal execution must leave no case reading as in-flight.
+
+    The case rows have exactly one writer — the loop in the task — so every
+    way the loop can stop early used to strand them, showing "Queued" (or a
+    live spinner) forever under a run that had already failed.
+    """
+
+    @pytest.mark.parametrize(
+        "break_setup",
+        [
+            pytest.param(
+                lambda db, sprint, requirement, plan: setattr(sprint, "active", False),
+                id="sprint_finished",
+            ),
+            pytest.param(
+                lambda db, sprint, requirement, plan: setattr(requirement, "archived", True),
+                id="requirement_deleted",
+            ),
+            pytest.param(
+                lambda db, sprint, requirement, plan: setattr(plan, "status", TestPlanStatus.DRAFT),
+                id="plan_unapproved",
+            ),
+        ],
+    )
+    def test_every_job_start_guard_settles_its_cases(
+        self, db_session, llm_stub, script_runner_stub, break_setup
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        break_setup(db_session, sprint, requirement, plan)
+        db_session.add_all([sprint, requirement, plan])
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.FAILED
+        results = _reload_case_execs(db_session, execution.id)
+        assert [r.status for r in results] == [TestCaseExecutionStatus.SKIPPED] * 2
+        # The parent's reason is repeated on each case, so the row explains
+        # itself without the reader having to look up.
+        assert all(r.error.startswith("Not run.") for r in results)
+        assert llm_stub.generate_calls == []
+
+    def test_finalized_cases_keep_their_verdict(self, db_session, llm_stub, script_runner_stub):
+        """Settling must never overwrite a case that already has a result."""
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, case_execs = _seed_execution(db_session, sprint, requirement, cases)
+        case_execs[0].status = TestCaseExecutionStatus.PASSED
+        case_execs[0].error = None
+        db_session.add(case_execs[0])
+        plan.status = TestPlanStatus.DRAFT
+        db_session.add(plan)
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        results = _reload_case_execs(db_session, execution.id)
+        assert results[0].status == TestCaseExecutionStatus.PASSED
+        assert results[0].error is None
+        assert results[1].status == TestCaseExecutionStatus.SKIPPED
+
+    def test_restart_re_runs_skipped_cases(self, db_session, llm_stub, script_runner_stub):
+        """`skipped` is not a finalized status — a restart picks it back up.
+
+        This is why the status is safe to write without a matching reset in
+        the restart route: the task's resumability check only skips
+        passed/failed/error.
+        """
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, case_execs = _seed_execution(db_session, sprint, requirement, cases)
+        for case_exec in case_execs:
+            case_exec.status = TestCaseExecutionStatus.SKIPPED
+            case_exec.error = "Not run. Something stopped the last attempt."
+            db_session.add(case_exec)
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.COMPLETED
+        results = _reload_case_execs(db_session, execution.id)
+        assert [r.status for r in results] == [TestCaseExecutionStatus.PASSED] * 2
+        assert all(r.error is None for r in results)
+
+
+class TestSupersededMidRun:
+    """An upstream edit stops the run at the next case boundary.
+
+    Nothing breaks if it carries on — the cases still resolve and the run is
+    marked out of date at the end — but each remaining case costs an LLM
+    call and a subprocess for a result nobody wants. This replaced a
+    route-level guard that blocked the user's edit instead, which could
+    never be airtight against a concurrent request anyway.
+    """
+
+    def _bump_requirement_elsewhere(self, requirement_id):
+        """Commit the cascade from another session, as the route would."""
+        from backend.database import new_session
+        from backend.models.database import Requirement
+
+        with new_session() as other:
+            row = other.get(Requirement, requirement_id)
+            row.content_revision += 1
+            other.add(row)
+            other.commit()
+
+    def test_stops_before_the_next_case_and_says_why(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        from backend.models.database import SUPERSEDED_ERROR
+
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=3)
+        execution, case_execs = _seed_execution(
+            db_session,
+            sprint,
+            requirement,
+            cases,
+            requirement_revision=requirement.content_revision,
+            plan_revision=plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+        requirement_id = requirement.id
+
+        import backend.services.llm as llm_module
+
+        original = llm_stub.generate_test_script
+        calls = {"n": 0}
+
+        def _bump_after_first(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                self._bump_requirement_elsewhere(requirement_id)
+            return original(**kwargs)
+
+        llm_module.generate_test_script = _bump_after_first
+
+        execute_test_task(execution.id)
+
+        row = _reload_execution(db_session, execution.id)
+        assert row.status == TestExecutionStatus.FAILED
+        assert row.error == SUPERSEDED_ERROR
+        statuses = [c.status for c in row.cases]
+        # First case finished; the rest were never started — and must not be
+        # left `pending` under a failed parent, since this execution is also
+        # outdated and can therefore never be restarted.
+        assert statuses[0] == TestCaseExecutionStatus.PASSED
+        assert statuses[1:] == [TestCaseExecutionStatus.SKIPPED] * 2
+        assert all(c.error.startswith("Not run.") for c in row.cases[1:])
+        assert all(SUPERSEDED_ERROR in c.error for c in row.cases[1:])
+        # Only one script was generated — the saving this exists for.
+        assert calls["n"] == 1
+
+    def test_a_current_run_is_untouched(self, db_session, llm_stub, script_runner_stub):
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, _ = _seed_execution(
+            db_session,
+            sprint,
+            requirement,
+            cases,
+            requirement_revision=requirement.content_revision,
+            plan_revision=plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+
+        execute_test_task(execution.id)
+
+        row = _reload_execution(db_session, execution.id)
+        assert row.status == TestExecutionStatus.COMPLETED
+        assert all(c.status == TestCaseExecutionStatus.PASSED for c in row.cases)

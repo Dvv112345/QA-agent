@@ -60,8 +60,9 @@ const fakeSprint: SprintResponse = {
   },
   requirements_complete: false,
   has_test_environment_submission: false,
-  requirements_locked: false,
+  environment_confirmed: false,
   has_test_plans: false,
+  test_plans_missing: false,
   test_plans_complete: false,
   has_test_runs: false,
   has_exploratory_runs: false,
@@ -416,12 +417,12 @@ describe('SprintDetailPage', () => {
     })
   })
 
-  describe('requirement lock', () => {
-    it('hides the form and Remove buttons when requirements are locked', async () => {
+  describe('after the environment is confirmed', () => {
+    it('keeps the forms and Remove buttons available', async () => {
       mockFetchSprint.mockResolvedValue({
         ...fakeSprint,
         requirements_complete: true,
-        requirements_locked: true,
+        environment_confirmed: true,
       })
       mockFetchRequirements.mockResolvedValue([makeRequirement({ status: 'confirmed' })])
       renderPage()
@@ -429,9 +430,11 @@ describe('SprintDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Login')).toBeInTheDocument()
       })
-      expect(screen.queryByText('Add Requirements')).not.toBeInTheDocument()
-      expect(screen.queryByText('Upload a PRD')).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+      // The set is no longer frozen: adding sends the environment back for
+      // re-checking, and deleting leaves it confirmed.
+      expect(screen.getByText('Add Requirements')).toBeInTheDocument()
+      expect(screen.getByText('Upload a PRD')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
     })
   })
 

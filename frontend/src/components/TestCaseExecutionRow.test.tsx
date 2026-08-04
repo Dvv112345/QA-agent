@@ -109,4 +109,27 @@ describe('TestCaseExecutionRow', () => {
 
     expect(screen.queryByRole('link', { name: 'Download script' })).not.toBeInTheDocument()
   })
+
+  it('reads a case the run never reached as "Not run", with the reason inline', () => {
+    // The whole point of the status: before it existed this row said
+    // "Queued" forever under a run that had already failed.
+    render(
+      <TestCaseExecutionRow
+        caseExecution={makeCase({
+          status: 'skipped',
+          attempts: 0,
+          error: 'Not run. Superseded — the requirement changed while this was running.',
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Not run')).toBeInTheDocument()
+    expect(screen.queryByText('Queued')).not.toBeInTheDocument()
+    // Inline, not behind "Show output" — there is no output, only a reason.
+    expect(screen.getByText(/Superseded/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show output' })).not.toBeInTheDocument()
+    // Nothing ran, so there is no script to download and no finding to show.
+    expect(screen.queryByRole('link', { name: 'Download script' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Steps to reproduce')).not.toBeInTheDocument()
+  })
 })

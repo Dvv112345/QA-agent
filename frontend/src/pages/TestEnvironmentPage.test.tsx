@@ -47,8 +47,9 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     repo: null,
     requirements_complete: true,
     has_test_environment_submission: false,
-    requirements_locked: false,
+    environment_confirmed: false,
     has_test_plans: false,
+    test_plans_missing: false,
     test_plans_complete: false,
     has_test_runs: false,
     has_exploratory_runs: false,
@@ -207,7 +208,9 @@ describe('TestEnvironmentPage', () => {
     })
     expect(await screen.findByText('Confirmed')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    // Editing stays available — a resubmit re-runs the check and clears the
+    // sprint's plans, which the page warns about before opening the form.
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
   })
 
   it('stale requirements disable Confirm and Re-check re-submits current content', async () => {
@@ -311,7 +314,7 @@ describe('TestEnvironmentPage', () => {
 
   it('shows the Continue to Test Plans link when confirmed', async () => {
     mockFetchSprint.mockResolvedValue(
-      makeSprint({ has_test_environment_submission: true, requirements_locked: true }),
+      makeSprint({ has_test_environment_submission: true, environment_confirmed: true }),
     )
     mockFetchTestEnvironment.mockResolvedValue(
       makeTestEnv({ status: 'confirmed', clarifying_question: null }),
@@ -439,9 +442,9 @@ describe('TestEnvironmentPage', () => {
       })
     })
 
-    it('is read-only once confirmed', async () => {
+    it('stays editable once confirmed', async () => {
       mockFetchSprint.mockResolvedValue(
-        makeSprint({ has_test_environment_submission: true, requirements_locked: true }),
+        makeSprint({ has_test_environment_submission: true, environment_confirmed: true }),
       )
       mockFetchTestEnvironment.mockResolvedValue(
         makeTestEnv({
@@ -454,7 +457,9 @@ describe('TestEnvironmentPage', () => {
 
       await screen.findByText('Detected environment variables')
       expect(screen.getByText('BASE_URL')).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Edit variables' })).not.toBeInTheDocument()
+      // Correctable after confirmation too — the edit removes the sprint's
+      // plans and sends the environment back for re-confirming.
+      expect(screen.getByRole('button', { name: 'Edit variables' })).toBeInTheDocument()
     })
   })
 })

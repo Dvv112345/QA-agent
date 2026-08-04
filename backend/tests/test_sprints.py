@@ -507,6 +507,46 @@ class TestFinishSprint:
             assert row.status == status
             assert row.error is None
 
+    @pytest.mark.asyncio
+    async def test_settles_the_cases_a_failed_execution_never_reached(
+        self, async_client, db_session
+    ):
+        """A finished sprint can run nothing, so no case may stay queued."""
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            RequirementStatus,
+            TestCaseExecution,
+            TestCaseExecutionStatus,
+            TestExecutionStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        plan = _seed_test_plan(db_session, requirement)
+        run = _seed_test_run(db_session, sprint)
+        execution = _seed_test_execution(
+            db_session, run, requirement, status=TestExecutionStatus.RUNNING
+        )
+        done = _seed_test_case_execution(
+            db_session,
+            execution,
+            _seed_test_case(db_session, plan, position=0, title="Done"),
+            status=TestCaseExecutionStatus.PASSED,
+        )
+        queued = _seed_test_case_execution(
+            db_session, execution, _seed_test_case(db_session, plan, position=1, title="Queued")
+        )
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        assert db_session.get(TestCaseExecution, done.id).status == TestCaseExecutionStatus.PASSED
+        settled = db_session.get(TestCaseExecution, queued.id)
+        assert settled.status == TestCaseExecutionStatus.SKIPPED
+        assert SPRINT_FINISHED_ERROR in settled.error
+
 
 # == Repo file-tree capture during sprint creation ====================
 
@@ -587,8 +627,14 @@ class TestSprintFileTreeCapture:
 
 
 def _seed_test_env(db_session, sprint, status=None, **kwargs):
+    import json as _json
+
     from backend.models.database import TestEnvironmentAccess, TestEnvironmentStatus
 
+    # A confirmed row always has extracted variables — confirm() refuses
+    # without them — so seed a realistic one unless the test says otherwise.
+    if status == TestEnvironmentStatus.CONFIRMED:
+        kwargs.setdefault("env_vars_json", _json.dumps({"BASE_URL": "https://staging.example.com"}))
     row = TestEnvironmentAccess(
         sprint_id=sprint.id,
         content=kwargs.pop("content", "SSH into staging as qa@staging."),
@@ -600,6 +646,80 @@ def _seed_test_env(db_session, sprint, status=None, **kwargs):
     db_session.commit()
     db_session.refresh(row)
     return row
+
+
+class TestArchivedRequirements:
+    """`Sprint.requirements` is the live view; archived rows stay in the table."""
+
+    def test_archived_requirement_drops_out_of_the_collection(self, db_session):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, name="Login")
+        gone = _seed_requirement(db_session, sprint, name="Search")
+
+        gone.archived = True
+        db_session.add(gone)
+        db_session.commit()
+        db_session.refresh(sprint)
+
+        assert [r.name for r in sprint.requirements] == ["Login"]
+        assert {r.name for r in sprint.all_requirements} == {"Login", "Search"}
+
+    def test_completion_flags_ignore_archived_rows(self, db_session):
+        """An archived unconfirmed row must not hold the sprint back."""
+        from backend.models.database import RequirementStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, name="Login")
+        pending = _seed_requirement(db_session, sprint, name="Search")  # not confirmed
+
+        assert sprint.requirements_complete is False
+
+        pending.archived = True
+        db_session.add(pending)
+        db_session.commit()
+        db_session.refresh(sprint)
+
+        assert sprint.requirements_complete is True
+
+    @pytest.mark.asyncio
+    async def test_archived_requirement_absent_from_the_list_endpoint(
+        self, async_client, db_session
+    ):
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        _seed_requirement(db_session, sprint, name="Login")
+        gone = _seed_requirement(db_session, sprint, name="Search")
+        gone.archived = True
+        db_session.add(gone)
+        db_session.commit()
+
+        resp = await async_client.get(f"/api/sprints/{sprint.id}/requirements")
+
+        assert resp.status_code == 200
+        assert [row["name"] for row in resp.json()] == ["Login"]
+
+
+class TestForeignKeyEnforcement:
+    """The test database must reject dangling references, like PostgreSQL does.
+
+    Without ``PRAGMA foreign_keys=ON`` SQLite silently accepts them, and a
+    whole class of orphaning bug would pass the suite and fail in production.
+    """
+
+    def test_dangling_test_case_reference_is_rejected(self, db_session):
+        import pytest as _pytest
+        from sqlalchemy.exc import IntegrityError
+
+        from backend.models.database import TestCaseExecution
+
+        db_session.add(TestCaseExecution(test_execution_id=9999, test_case_id=9999))
+        with _pytest.raises(IntegrityError):
+            db_session.commit()
+        db_session.rollback()
 
 
 class TestSprintFlags:
@@ -618,7 +738,7 @@ class TestSprintFlags:
             row = data[0] if isinstance(data, list) else data
             assert row["requirements_complete"] is False
             assert row["has_test_environment_submission"] is False
-            assert row["requirements_locked"] is False
+            assert row["environment_confirmed"] is False
 
     @pytest.mark.asyncio
     async def test_requirements_complete_when_all_confirmed(self, async_client, db_session):
@@ -659,7 +779,7 @@ class TestSprintFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_environment_submission"] is True
-            assert row["requirements_locked"] is False
+            assert row["environment_confirmed"] is False
 
     @pytest.mark.asyncio
     async def test_locked_when_test_env_confirmed(self, async_client, db_session):
@@ -674,7 +794,7 @@ class TestSprintFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_environment_submission"] is True
-            assert row["requirements_locked"] is True
+            assert row["environment_confirmed"] is True
 
 
 class TestTestEnvironmentModelProperties:
@@ -815,7 +935,13 @@ class TestTestPlanModelProperties:
         assert plan.requirement_name == ""
         assert plan.requirement_description == ""
 
-    def test_deleting_plan_cascades_to_cases(self, db_session):
+    def test_deleting_plan_detaches_cases_instead_of_deleting_them(self, db_session):
+        """Cases outlive their plan — a past run still reads its content off them.
+
+        The delete-orphan cascade that used to remove them is gone: a
+        ``TestCaseExecution`` points at these rows, and deleting them would
+        rewrite the record of a run that already happened.
+        """
         from sqlmodel import select
 
         from backend.models.database import TestCase, TestPlan
@@ -831,7 +957,27 @@ class TestTestPlanModelProperties:
         db_session.commit()
 
         assert db_session.get(TestPlan, plan.id) is None
-        assert db_session.exec(select(TestCase)).all() == []
+        surviving = db_session.exec(select(TestCase)).all()
+        assert len(surviving) == 2
+        assert all(case.test_plan_id is None for case in surviving)
+
+    def test_archived_cases_drop_out_of_plan_cases(self, db_session):
+        """`cases` is the live view; `all_cases` is everything."""
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint)
+        plan = _seed_test_plan(db_session, requirement)
+        _seed_test_case(db_session, plan, position=0, title="Live")
+        superseded = _seed_test_case(db_session, plan, position=1, title="Superseded")
+
+        superseded.archived = True
+        db_session.add(superseded)
+        db_session.commit()
+        db_session.refresh(plan)
+
+        assert [c.title for c in plan.cases] == ["Live"]
+        assert {c.title for c in plan.all_cases} == {"Live", "Superseded"}
 
     def test_cases_ordered_by_position(self, db_session):
         from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
@@ -912,6 +1058,58 @@ class TestSprintTestPlanFlags:
         assert sprint.has_test_plans is True
         assert sprint.test_plans_complete is True
 
+    def test_missing_is_true_for_a_confirmed_requirement_without_a_plan(self, db_session):
+        """The state a requirement edit leaves behind.
+
+        Every plan that exists is approved, so `test_plans_complete` alone
+        cannot be trusted to mean "nothing left to do" — a requirement with
+        no plan contributes no row for it to fall short on.
+        """
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        planned = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED, name="Search")
+        _seed_test_plan(db_session, planned, status=TestPlanStatus.APPROVED)
+
+        db_session.refresh(sprint)
+        assert sprint.test_plans_missing is True
+        assert sprint.test_plans_complete is False
+
+    def test_missing_is_false_once_every_confirmed_requirement_has_one(self, db_session):
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        for name in ("Login", "Search"):
+            requirement = _seed_requirement(
+                db_session, sprint, status=RequirementStatus.CONFIRMED, name=name
+            )
+            _seed_test_plan(db_session, requirement, status=TestPlanStatus.PENDING)
+
+        db_session.refresh(sprint)
+        # A pending plan is still a plan — generating again would create
+        # nothing, which is exactly what this flag reports.
+        assert sprint.test_plans_missing is False
+
+    def test_missing_ignores_unconfirmed_requirements(self, db_session):
+        """Generation only ever creates plans for confirmed requirements.
+
+        A requirement still being analyzed must not make the page offer a
+        button that would leave it without a plan anyway.
+        """
+        from backend.models.database import RequirementStatus, TestPlanStatus
+        from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        planned = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        _seed_requirement(db_session, sprint, status=RequirementStatus.ANALYZING, name="Search")
+        _seed_test_plan(db_session, planned, status=TestPlanStatus.APPROVED)
+
+        db_session.refresh(sprint)
+        assert sprint.test_plans_missing is False
+
     @pytest.mark.asyncio
     async def test_flags_serialized_on_list_and_detail(self, async_client, db_session):
         from backend.models.database import RequirementStatus, TestPlanStatus
@@ -926,6 +1124,7 @@ class TestSprintTestPlanFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_plans"] is False
+            assert row["test_plans_missing"] is True
             assert row["test_plans_complete"] is False
 
         plan = _seed_test_plan(db_session, requirement, status=TestPlanStatus.DRAFT)
@@ -935,6 +1134,7 @@ class TestSprintTestPlanFlags:
             data = resp.json()
             row = data[0] if isinstance(data, list) else data
             assert row["has_test_plans"] is True
+            assert row["test_plans_missing"] is False
             assert row["test_plans_complete"] is False
 
         plan.status = TestPlanStatus.APPROVED
@@ -1332,3 +1532,24 @@ class TestFinishSprintSweepsExploratoryRuns:
             row = db_session.get(ExploratoryRun, run_id)
             assert row.status == status
             assert row.error is None
+
+    @pytest.mark.asyncio
+    async def test_settles_the_charters_a_failed_run_never_explored(self, async_client, db_session):
+        from backend.models.database import (
+            SPRINT_FINISHED_ERROR,
+            ExploratorySession,
+            ExploratorySessionStatus,
+        )
+        from backend.tests.test_requirement_routes import _seed_sprint
+
+        sprint = _seed_sprint(db_session)
+        run = self._run(db_session, sprint)
+        queued = _seed_exploratory_session(db_session, run, position=0)
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        settled_session = db_session.get(ExploratorySession, queued.id)
+        assert settled_session.status == ExploratorySessionStatus.SKIPPED
+        assert SPRINT_FINISHED_ERROR in settled_session.error

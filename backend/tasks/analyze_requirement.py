@@ -25,7 +25,7 @@ from backend.models.database import (
     Requirement,
     RequirementStatus,
 )
-from backend.services import llm
+from backend.services import invalidation, llm
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,10 @@ def analyze_requirement_task(requirement_id: int) -> None:
     """Analyze one requirement's clarity (initial check or revision)."""
     with new_session() as session:
         requirement = session.get(Requirement, requirement_id)
-        if requirement is None:
+        if requirement is None or requirement.archived:
+            # Archived counts as gone: the user deleted this requirement
+            # while the job was queued, and analyzing it would spend an LLM
+            # call on a row nothing can display.
             logger.info("Requirement %d no longer exists — skipping", requirement_id)
             return
         if requirement.status not in (RequirementStatus.PENDING, RequirementStatus.ANALYZING):
@@ -101,7 +104,8 @@ def analyze_requirement_task(requirement_id: int) -> None:
             session.add(requirement)
             session.commit()
 
-            if requirement.clarifying_question and requirement.pending_answer:
+            is_revision = bool(requirement.clarifying_question and requirement.pending_answer)
+            if is_revision:
                 result = llm.revise_requirement(
                     requirement.name,
                     requirement.description,
@@ -110,9 +114,6 @@ def analyze_requirement_task(requirement_id: int) -> None:
                     readme,
                     file_tree,
                 )
-                requirement.description = result.rewritten_description
-                requirement.revision_count += 1
-                requirement.pending_answer = None
             else:
                 result = llm.check_clarity(
                     requirement.name, requirement.description, readme, file_tree
@@ -121,11 +122,16 @@ def analyze_requirement_task(requirement_id: int) -> None:
             # The LLM call is the long wait — the row may have been failed
             # (sprint finished), deleted, or reset meanwhile. Re-read the
             # status and discard a stale result rather than overwrite it.
+            # `archived` rides along: deleting a requirement mid-analysis
+            # leaves its status untouched, so status alone would not notice.
             with session.no_autoflush:
-                current_status = session.exec(
-                    select(Requirement.status).where(Requirement.id == requirement_id)
+                current = session.exec(
+                    select(Requirement.status, Requirement.archived).where(
+                        Requirement.id == requirement_id
+                    )
                 ).one_or_none()
-            if current_status != RequirementStatus.ANALYZING:
+            current_status = current[0] if current else None
+            if current is None or current[1] or current_status != RequirementStatus.ANALYZING:
                 logger.info(
                     "Requirement %d changed to '%s' mid-analysis — discarding result",
                     requirement_id,
@@ -133,6 +139,19 @@ def analyze_requirement_task(requirement_id: int) -> None:
                 )
                 session.rollback()
                 return
+
+            if is_revision:
+                # A rewrite is a content change like any the user could make,
+                # so it takes the same cascade. Bumping the revision alone
+                # would leave the plan approved and the environment confirmed
+                # against text that no longer exists — and a run started from
+                # there would stamp the unchanged plan revision and report as
+                # current. Applied after the staleness check above so a
+                # discarded result never stages a destructive cascade.
+                invalidation.invalidate_for_requirement_change(session, requirement)
+                requirement.description = result.rewritten_description
+                requirement.revision_count += 1
+                requirement.pending_answer = None
 
             if result.clear:
                 requirement.status = RequirementStatus.READY

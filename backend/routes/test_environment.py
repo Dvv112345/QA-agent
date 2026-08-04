@@ -26,7 +26,7 @@ from backend.models.types import (
     TestEnvironmentSubmitRequest,
     TestEnvironmentVarsEditRequest,
 )
-from backend.services import llm
+from backend.services import invalidation, llm
 from backend.services.llm import LLMError
 from backend.utils.auth import verify_auth
 from backend.utils.readme_utils import resolve_readme
@@ -68,6 +68,46 @@ def _ensure_requirements_complete(sprint: Sprint) -> None:
         raise HTTPException(status_code=422, detail=_REQUIREMENTS_INCOMPLETE_ERROR)
 
 
+def _apply_check_result(
+    session: Session,
+    sprint: Sprint,
+    test_env: TestEnvironmentAccess,
+    content: str,
+    env_vars_json: str | None,
+) -> None:
+    """Store a checked description with its variables, invalidating the old pair.
+
+    **Both fields move together and neither may be written past this
+    function.** The description is what plans were generated against; the
+    variables are what runs actually execute against. Changing either without
+    invalidating leaves plans describing an environment that no longer exists
+    and runs reporting as current.
+
+    Every path that can change either — a resubmission, and an LLM rewrite
+    from answering a clarifying question — goes through here. They were
+    hand-rolled separately at first, and each hand-rolled version omitted a
+    different half of the rule.
+
+    No-ops when both are unchanged. That comparison is a backstop, not the
+    defence: it can only recognise sameness the LLM happened to produce, and
+    `generate_env_vars` is free to word the same access description
+    differently on any call. The Re-check button re-POSTs the *current*
+    content, so what actually keeps it from destroying the sprint's plans is
+    `_resolve_env_vars_json` declining to re-extract at all.
+    """
+    # Compared as decoded values, not as JSON text: `json.dumps` preserves
+    # whatever key order the model happened to emit, so identical variables
+    # would otherwise read as a change and destroy every plan in the sprint
+    # on a Re-check — the exact thing this guard exists to prevent.
+    new_vars = json.loads(env_vars_json) if env_vars_json else None
+    if test_env.content == content and test_env.env_vars == new_vars:
+        return
+    test_env.content = content
+    test_env.env_vars_json = env_vars_json
+    test_env.content_revision += 1
+    invalidation.invalidate_for_environment_change(session, sprint)
+
+
 def _touch(test_env: TestEnvironmentAccess) -> None:
     test_env.updated_at = datetime.now(timezone.utc)
 
@@ -99,7 +139,51 @@ async def _extract_env_vars_json(
         vars_result = await asyncio.to_thread(llm.generate_env_vars, content, readme, file_tree)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return json.dumps(vars_result.variables)
+    # Sorted so the stored text is stable across calls; the
+    # comparison in `_apply_check_result` decodes anyway.
+    return json.dumps(vars_result.variables, sort_keys=True)
+
+
+async def _resolve_env_vars_json(
+    sufficient: bool,
+    test_env: TestEnvironmentAccess | None,
+    content: str,
+    readme: str | None,
+    file_tree: str | None,
+) -> str | None:
+    """Extraction for a resubmission — kept as-is when the text is identical.
+
+    The variables are *derived from* the description, so byte-identical
+    content already has its correct derivation stored and re-deriving it buys
+    nothing.  It costs two things.
+
+    First, plans. The Re-check button exists to re-run the sufficiency
+    judgment after the requirement set moved; it re-POSTs the current text
+    unchanged.  A fresh `generate_env_vars` on that text need not come back
+    identical — one renamed key, one extra variable, one trailing slash — and
+    any drift reads as a content change in `_apply_check_result`, which
+    deletes every test plan in the sprint and marks every run outdated.  A
+    button whose whole purpose is "nothing changed, re-verify" must not be
+    able to do that, and comparing after the fact cannot prevent it.
+
+    Second, and quieter: `PATCH /test-environment/{id}/env-vars` lets the user
+    hand-correct a value the model got wrong.  Re-extracting would overwrite
+    that correction with no warning and no record of it.
+
+    An insufficient verdict still clears the variables, and genuinely new text
+    still gets a fresh extraction — both flow through `_extract_env_vars_json`
+    below.  So does a row that has none yet, which is reachable on unchanged
+    text: a description judged insufficient before can come back sufficient
+    once the requirements it is judged against have changed.
+    """
+    if (
+        sufficient
+        and test_env is not None
+        and test_env.content == content
+        and test_env.env_vars_json
+    ):
+        return test_env.env_vars_json
+    return await _extract_env_vars_json(sufficient, content, readme, file_tree)
 
 
 @router.get(
@@ -134,11 +218,6 @@ async def submit_test_environment(
     _ensure_requirements_complete(sprint)
 
     test_env = sprint.test_environment
-    if test_env is not None and test_env.status == TestEnvironmentStatus.CONFIRMED:
-        raise HTTPException(
-            status_code=422,
-            detail="The test environment has been confirmed and can no longer be edited.",
-        )
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
@@ -151,16 +230,19 @@ async def submit_test_environment(
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    env_vars_json = await _extract_env_vars_json(result.sufficient, content, readme, file_tree)
+    env_vars_json = await _resolve_env_vars_json(
+        result.sufficient, test_env, content, readme, file_tree
+    )
 
     if test_env is None:
         test_env = TestEnvironmentAccess(
             sprint_id=sprint_id,
             content=content,
             original_content=content,
+            env_vars_json=env_vars_json,
         )
     else:
-        test_env.content = content
+        _apply_check_result(session, sprint, test_env, content, env_vars_json)
 
     if result.sufficient:
         test_env.status = TestEnvironmentStatus.READY
@@ -168,7 +250,6 @@ async def submit_test_environment(
     else:
         test_env.status = TestEnvironmentStatus.NEEDS_INFO
         test_env.clarifying_question = result.clarifying_question
-    test_env.env_vars_json = env_vars_json
 
     _touch(test_env)
     session.add(test_env)
@@ -222,7 +303,12 @@ async def answer_test_environment(
         result.sufficient, result.rewritten_content, readme, file_tree
     )
 
-    test_env.content = result.rewritten_content
+    # The rewrite is a content change like any other: plans written against
+    # the old description go, and runs grounded in it become outdated.
+    # Reachable with plans intact — a Re-check that comes back insufficient
+    # leaves them in place (correctly, nothing changed yet), and answering
+    # from there is what changes the text.
+    _apply_check_result(session, sprint, test_env, result.rewritten_content, env_vars_json)
     test_env.revision_count += 1
     if result.sufficient:
         test_env.status = TestEnvironmentStatus.READY
@@ -230,7 +316,6 @@ async def answer_test_environment(
     else:
         test_env.status = TestEnvironmentStatus.NEEDS_INFO
         test_env.clarifying_question = result.clarifying_question
-    test_env.env_vars_json = env_vars_json
 
     _touch(test_env)
     session.add(test_env)
@@ -251,11 +336,6 @@ async def edit_test_environment_vars(
     sprint = test_env.sprint
     _ensure_sprint_active(sprint)
 
-    if test_env.status == TestEnvironmentStatus.CONFIRMED:
-        raise HTTPException(
-            status_code=422,
-            detail="Environment variables are locked once the test environment is confirmed.",
-        )
     if not body.variables:
         raise HTTPException(status_code=422, detail="At least one variable is required.")
     for key, value in body.variables.items():
@@ -264,7 +344,22 @@ async def edit_test_environment_vars(
                 status_code=422, detail="Variable names and values cannot be blank."
             )
 
-    test_env.env_vars_json = json.dumps(body.variables)
+    new_json = json.dumps(body.variables, sort_keys=True)
+    if body.variables != test_env.env_vars:
+        test_env.env_vars_json = new_json
+        # A variables edit changes what a run executes against, so it is a
+        # content change for staleness purposes and every plan goes.
+        test_env.content_revision += 1
+        invalidation.invalidate_for_environment_change(session, sprint)
+        if test_env.status == TestEnvironmentStatus.CONFIRMED:
+            # Back for re-confirmation, but never to needs_info: no LLM call
+            # ran, so there is no clarifying question to answer.
+            test_env.status = TestEnvironmentStatus.READY
+
+    # Deliberately no _touch(): `updated_at` on this row means "last LLM
+    # check", and that is what `requirements_stale` compares against.
+    # Stamping it here would silently clear a real staleness flag when no
+    # check has actually happened.
     session.add(test_env)
     session.commit()
     session.refresh(test_env)

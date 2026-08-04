@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlmodel import Session, delete, select, update
+from sqlmodel import Session, select, update
 
 from backend.config import MAX_PRD_REQUIREMENTS, MAX_UPLOAD_SIZE_MB, PRD_MAX_CHARS
 from backend.database import get_session
@@ -16,7 +16,7 @@ from backend.models.types import (
     RequirementEditRequest,
     RequirementResponse,
 )
-from backend.services import llm
+from backend.services import invalidation, llm
 from backend.services.llm import LLMError
 from backend.services.queue import get_queue_service
 from backend.services.storage import StorageService
@@ -37,8 +37,15 @@ def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
 
 
 def _get_requirement_or_404(session: Session, requirement_id: int) -> Requirement:
+    """Fetch a live requirement, 404ing on one the user has deleted.
+
+    An archived row is still in the table, so a bare ``session.get`` would
+    happily hand back a requirement the user removed and let every
+    per-requirement route mutate it. Deleted means gone to every caller
+    except the archive machinery itself.
+    """
     requirement = session.get(Requirement, requirement_id)
-    if requirement is None:
+    if requirement is None or requirement.archived:
         raise HTTPException(status_code=404, detail="Requirement not found.")
     return requirement
 
@@ -48,14 +55,6 @@ def _ensure_sprint_active(sprint: Sprint) -> None:
         raise HTTPException(
             status_code=422,
             detail="Sprint is finished — requirements can no longer be modified.",
-        )
-
-
-def _ensure_requirements_unlocked(sprint: Sprint) -> None:
-    if sprint.requirements_locked:
-        raise HTTPException(
-            status_code=422,
-            detail="Requirements are locked once the test environment access has been confirmed.",
         )
 
 
@@ -95,7 +94,6 @@ async def create_requirements(
     """Create a batch of requirements for a sprint (all start ``pending``)."""
     sprint = _get_sprint_or_404(session, sprint_id)
     _ensure_sprint_active(sprint)
-    _ensure_requirements_unlocked(sprint)
 
     if not body:
         raise HTTPException(status_code=422, detail="At least one requirement is required.")
@@ -119,6 +117,10 @@ async def create_requirements(
         )
 
     session.add_all(rows)
+    # A new requirement may need access the confirmed description never
+    # covered, so the environment goes back for re-checking — in the same
+    # transaction as the insert.
+    invalidation.invalidate_for_requirement_add(session, sprint)
     session.commit()
     for row in rows:
         session.refresh(row)
@@ -148,7 +150,6 @@ async def create_requirements_from_prd(
     """
     sprint = _get_sprint_or_404(session, sprint_id)
     _ensure_sprint_active(sprint)
-    _ensure_requirements_unlocked(sprint)
 
     filename = prd_file.filename or ""
     # Read one byte past the cap so an oversized body is rejected without
@@ -198,13 +199,24 @@ async def create_requirements_from_prd(
         )
 
     # Replace the previous upload's rows and insert the new split in one
-    # transaction.
-    session.exec(
-        delete(Requirement).where(
-            Requirement.sprint_id == sprint_id,
-            Requirement.from_prd == True,  # noqa: E712
-        )
+    # transaction. This is simultaneously a bulk delete and a bulk add, so
+    # both cascades apply — routed through the invalidation module rather
+    # than hand-rolled, since the archive-vs-hard-delete rule must match the
+    # single-row route exactly.
+    superseded = list(
+        session.exec(
+            select(Requirement).where(
+                Requirement.sprint_id == sprint_id,
+                Requirement.from_prd == True,  # noqa: E712
+                # Rows the user already deleted stay deleted — a re-upload
+                # replaces the live PRD set, not the archive.
+                Requirement.archived == False,  # noqa: E712
+            )
+        ).all()
     )
+    for row in superseded:
+        invalidation.invalidate_for_requirement_delete(session, row)
+    invalidation.invalidate_for_requirement_add(session, sprint)
     rows = [
         Requirement(
             sprint_id=sprint_id,
@@ -244,7 +256,10 @@ async def list_requirements(
     return list(
         session.exec(
             select(Requirement)
-            .where(Requirement.sprint_id == sprint_id)
+            .where(
+                Requirement.sprint_id == sprint_id,
+                Requirement.archived == False,  # noqa: E712
+            )
             .order_by(Requirement.created_at, Requirement.id)
         ).all()
     )
@@ -270,6 +285,7 @@ async def confirm_all_requirements(
         update(Requirement)
         .where(
             Requirement.sprint_id == sprint_id,
+            Requirement.archived == False,  # noqa: E712
             Requirement.status.in_(  # type: ignore[attr-defined]
                 [RequirementStatus.NEEDS_CLARIFICATION, RequirementStatus.READY]
             ),
@@ -281,7 +297,10 @@ async def confirm_all_requirements(
     return list(
         session.exec(
             select(Requirement)
-            .where(Requirement.sprint_id == sprint_id)
+            .where(
+                Requirement.sprint_id == sprint_id,
+                Requirement.archived == False,  # noqa: E712
+            )
             .order_by(Requirement.created_at, Requirement.id)
         ).all()
     )
@@ -360,14 +379,22 @@ async def edit_requirement(
     if requirement.status not in (
         RequirementStatus.NEEDS_CLARIFICATION,
         RequirementStatus.READY,
+        RequirementStatus.CONFIRMED,
     ):
         raise HTTPException(
             status_code=422,
-            detail="Only requirements awaiting clarification or ready can be edited.",
+            detail="Only requirements awaiting clarification, ready, or confirmed can be edited.",
         )
     description = body.description.strip()
     if not description:
         raise HTTPException(status_code=422, detail="Description cannot be empty.")
+    if description != requirement.description:
+        # Editing the text invalidates everything written against the old
+        # text: the plan goes, and the environment returns for re-checking.
+        # Staged on this session so the edit and its cascade commit together.
+        # Skipped when the text is unchanged, matching the environment path —
+        # resubmitting identical text must not destroy an approved plan.
+        invalidation.invalidate_for_requirement_change(session, requirement)
 
     requirement.description = description
     requirement.clarifying_question = None
@@ -415,8 +442,9 @@ async def delete_requirement(
     """Remove a requirement from its sprint (allowed in every status)."""
     requirement = _get_requirement_or_404(session, requirement_id)
     _ensure_sprint_active(requirement.sprint)
-    _ensure_requirements_unlocked(requirement.sprint)
-
-    session.delete(requirement)
+    # Removes its plan; the environment stays confirmed (removal can only
+    # shrink what needs access). Archived rather than deleted when runs
+    # reference it — see services/invalidation.py.
+    invalidation.invalidate_for_requirement_delete(session, requirement)
     session.commit()
     logger.info("Requirement deleted: id=%d", requirement_id)

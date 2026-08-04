@@ -53,8 +53,11 @@ class SprintResponse(SQLModel):
     repo: RepoResponse | None = None
     requirements_complete: bool = False
     has_test_environment_submission: bool = False
-    requirements_locked: bool = False
+    environment_confirmed: bool = False
     has_test_plans: bool = False
+    # A confirmed requirement with no plan — the state a requirement edit
+    # leaves behind, and invisible in the plan list itself.
+    test_plans_missing: bool = False
     test_plans_complete: bool = False
     has_test_runs: bool = False
     has_exploratory_runs: bool = False
@@ -231,6 +234,13 @@ class TestExecutionResponse(SQLModel):
     requirement_name: str
     status: str
     error: str | None = None
+    # Upstream artifacts that have changed since the run executed, from
+    # {"requirement", "test_plan", "test_environment"}. Empty means current;
+    # the frontend derives its boolean from this rather than a second field.
+    outdated_reasons: list[str] = []
+    # Selects the wording for the "requirement" reason ("deleted" rather
+    # than "changed"). Never a correctness branch on its own.
+    requirement_deleted: bool = False
     cases: list[TestCaseExecutionResponse] = []
     created_at: datetime
     updated_at: datetime
@@ -241,6 +251,13 @@ class TestRunResponse(SQLModel):
     sprint_id: int
     created_at: datetime
     status: str
+    # Upstream artifacts that have changed since the run executed, from
+    # {"requirement", "test_plan", "test_environment"}. Empty means current;
+    # the frontend derives its boolean from this rather than a second field.
+    outdated_reasons: list[str] = []
+    # Selects the wording for the "requirement" reason ("deleted" rather
+    # than "changed"). Never a correctness branch on its own.
+    requirement_deleted: bool = False
     requirement_names: list[str]
     total_cases: int
     passed_cases: int
@@ -253,6 +270,13 @@ class TestRunDetailResponse(SQLModel):
     sprint_id: int
     created_at: datetime
     status: str
+    # Upstream artifacts that have changed since the run executed, from
+    # {"requirement", "test_plan", "test_environment"}. Empty means current;
+    # the frontend derives its boolean from this rather than a second field.
+    outdated_reasons: list[str] = []
+    # Selects the wording for the "requirement" reason ("deleted" rather
+    # than "changed"). Never a correctness branch on its own.
+    requirement_deleted: bool = False
     executions: list[TestExecutionResponse] = []
 
 
@@ -313,6 +337,13 @@ class ExploratoryRunResponse(SQLModel):
     status: str
     summary: str | None = None
     error: str | None = None
+    # Upstream artifacts that have changed since the run executed, from
+    # {"requirement", "test_plan", "test_environment"}. Empty means current;
+    # the frontend derives its boolean from this rather than a second field.
+    outdated_reasons: list[str] = []
+    # Selects the wording for the "requirement" reason ("deleted" rather
+    # than "changed"). Never a correctness branch on its own.
+    requirement_deleted: bool = False
     session_count: int = 0
     bug_count: int = 0
     issue_count: int = 0
@@ -329,6 +360,13 @@ class ExploratoryRunDetailResponse(SQLModel):
     status: str
     summary: str | None = None
     error: str | None = None
+    # Upstream artifacts that have changed since the run executed, from
+    # {"requirement", "test_plan", "test_environment"}. Empty means current;
+    # the frontend derives its boolean from this rather than a second field.
+    outdated_reasons: list[str] = []
+    # Selects the wording for the "requirement" reason ("deleted" rather
+    # than "changed"). Never a correctness branch on its own.
+    requirement_deleted: bool = False
     base_url_env_vars: list[str] = []
     sessions: list[ExploratorySessionSummaryResponse] = []
     bug_count: int = 0

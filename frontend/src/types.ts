@@ -25,8 +25,10 @@ export interface SprintResponse {
   repo: RepoResponse | null
   requirements_complete: boolean
   has_test_environment_submission: boolean
-  requirements_locked: boolean
+  environment_confirmed: boolean
   has_test_plans: boolean
+  /** A confirmed requirement has no plan — what a requirement edit leaves behind. */
+  test_plans_missing: boolean
   test_plans_complete: boolean
   has_test_runs: boolean
   has_exploratory_runs: boolean
@@ -149,11 +151,17 @@ export interface Finding {
   environment: string | null
 }
 
+// ── Run staleness (shared by scripted and exploratory runs) ─────────
+
+export type OutdatedReason = 'requirement' | 'test_plan' | 'test_environment'
+
 // ── Test execution ──────────────────────────────────────────────────
 
 export type TestExecutionStatus = 'pending' | 'running' | 'completed' | 'failed'
 
-export type TestCaseExecutionStatus = 'pending' | 'running' | 'passed' | 'failed' | 'error'
+/** `skipped` = the execution finished without ever reaching this case. */
+export type TestCaseExecutionStatus =
+  'pending' | 'running' | 'passed' | 'failed' | 'error' | 'skipped'
 
 export interface TestCaseExecutionResponse {
   id: number
@@ -173,6 +181,14 @@ export interface TestExecutionResponse {
   requirement_name: string
   status: TestExecutionStatus
   error: string | null
+  /**
+   * Upstream artifacts that changed since the run executed. Empty means
+   * current — there is no separate `outdated` field, since it would just be
+   * `outdated_reasons.length > 0` and could disagree with this.
+   */
+  outdated_reasons: OutdatedReason[]
+  /** Picks the wording for the `requirement` reason. Never a lone signal. */
+  requirement_deleted: boolean
   cases: TestCaseExecutionResponse[]
   created_at: string
   updated_at: string
@@ -183,6 +199,14 @@ export interface TestRunResponse {
   sprint_id: number
   created_at: string
   status: TestExecutionStatus
+  /**
+   * Upstream artifacts that changed since the run executed. Empty means
+   * current — there is no separate `outdated` field, since it would just be
+   * `outdated_reasons.length > 0` and could disagree with this.
+   */
+  outdated_reasons: OutdatedReason[]
+  /** Picks the wording for the `requirement` reason. Never a lone signal. */
+  requirement_deleted: boolean
   requirement_names: string[]
   total_cases: number
   passed_cases: number
@@ -195,6 +219,14 @@ export interface TestRunDetailResponse {
   sprint_id: number
   created_at: string
   status: TestExecutionStatus
+  /**
+   * Upstream artifacts that changed since the run executed. Empty means
+   * current — there is no separate `outdated` field, since it would just be
+   * `outdated_reasons.length > 0` and could disagree with this.
+   */
+  outdated_reasons: OutdatedReason[]
+  /** Picks the wording for the `requirement` reason. Never a lone signal. */
+  requirement_deleted: boolean
   executions: TestExecutionResponse[]
 }
 
@@ -202,7 +234,8 @@ export interface TestRunDetailResponse {
 
 export type ExploratoryRunStatus = 'pending' | 'running' | 'completed' | 'failed'
 
-export type ExploratorySessionStatus = 'pending' | 'running' | 'completed' | 'error'
+/** `skipped` = the run ended before this charter was ever explored. */
+export type ExploratorySessionStatus = 'pending' | 'running' | 'completed' | 'error' | 'skipped'
 
 export type SfdipotArea =
   'Structure' | 'Function' | 'Data' | 'Interfaces' | 'Platform' | 'Operations' | 'Time'
@@ -261,6 +294,8 @@ export interface ExploratoryRunResponse {
   status: ExploratoryRunStatus
   summary: string | null
   error: string | null
+  outdated_reasons: OutdatedReason[]
+  requirement_deleted: boolean
   session_count: number
   bug_count: number
   issue_count: number
@@ -277,6 +312,8 @@ export interface ExploratoryRunDetailResponse {
   status: ExploratoryRunStatus
   summary: string | null
   error: string | null
+  outdated_reasons: OutdatedReason[]
+  requirement_deleted: boolean
   base_url_env_vars: string[]
   sessions: ExploratorySessionSummaryResponse[]
   bug_count: number

@@ -126,11 +126,12 @@ describe('RequirementCard', () => {
       expect(screen.getByRole('button', { name: 'Restart' })).toBeInTheDocument()
     })
 
-    it('renders confirmed cards with Remove as the only action', () => {
+    it('offers Edit and Remove on confirmed cards', () => {
       renderCard(makeRequirement({ status: 'confirmed' }))
       expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+      // Confirming twice is still meaningless.
       expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     })
 
     it('shows Remove even while analyzing', () => {
@@ -138,9 +139,20 @@ describe('RequirementCard', () => {
       expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
     })
 
-    it('hides Remove when the requirement set is locked', () => {
-      renderCard(makeRequirement({ status: 'confirmed' }), { locked: true })
-      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument()
+    it('keeps Remove available once the environment is confirmed', () => {
+      renderCard(makeRequirement({ status: 'confirmed' }), { cascades: true })
+      expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
+    })
+
+    it('names the cascade before editing a confirmed requirement', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      renderCard(makeRequirement({ status: 'confirmed' }), { cascades: true })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('delete its test plan'))
+      expect(screen.queryByLabelText('Edit description')).not.toBeInTheDocument()
+      confirmSpy.mockRestore()
     })
 
     it('hides all actions on finished sprints', () => {

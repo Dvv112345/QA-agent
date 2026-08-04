@@ -170,13 +170,26 @@ describe('TestPlanCard', () => {
     expect(onUpdated).toHaveBeenCalledWith(restarted)
   })
 
-  it('renders approved plans read-only', () => {
+  it('keeps approved plans editable but not re-approvable', () => {
     renderCard(makePlan({ status: 'approved' }))
 
     expect(screen.getByText('Approved')).toBeInTheDocument()
+    // Approval gates running, not editing — a reviewer can still fix a plan.
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Test plan feedback')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Test plan feedback')).toBeInTheDocument()
+  })
+
+  it('warns before editing an approved plan', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderCard(makePlan({ status: 'approved' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('return it to draft'))
+    // Declining leaves the card alone.
+    expect(screen.queryByLabelText('Complexity')).not.toBeInTheDocument()
+    confirmSpy.mockRestore()
   })
 
   it('renders draft plans read-only when the sprint is inactive', () => {
