@@ -884,3 +884,63 @@ class TestExploratoryOutdated:
 
         assert resp.status_code == 422
         assert "out of date" in resp.json()["detail"]
+
+
+class TestExportFindingsToggle:
+    """Mirrors the scripted route — one rule, worded identically."""
+
+    def _connect_tracker(self, db_session, sprint):
+        from backend.models.database import IssueTrackerConfig
+        from backend.utils.crypto import encrypt_token
+
+        db_session.add(
+            IssueTrackerConfig(
+                sprint_id=sprint.id,
+                provider="github",
+                target="acme/shop",
+                api_token=encrypt_token("dummy-token"),
+            )
+        )
+        db_session.commit()
+        db_session.refresh(sprint)
+
+    def _reload_run(self, db_session, run_id):
+        db_session.expire_all()
+        return db_session.get(ExploratoryRun, run_id)
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_false(self, async_client, db_session, stub_queue):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json=_charter_payload(requirement.id),
+        )
+
+        assert resp.status_code == 201
+        assert self._reload_run(db_session, resp.json()["id"]).export_findings is False
+
+    @pytest.mark.asyncio
+    async def test_422_when_on_with_no_tracker(self, async_client, db_session, stub_queue):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json={**_charter_payload(requirement.id), "export_findings": True},
+        )
+
+        assert resp.status_code == 422
+        assert "Connect an issue tracker" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_persisted_on_the_run(self, async_client, db_session, stub_queue):
+        sprint, requirement = _ready_sprint(db_session)
+        self._connect_tracker(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json={**_charter_payload(requirement.id), "export_findings": True},
+        )
+
+        assert resp.status_code == 201
+        assert self._reload_run(db_session, resp.json()["id"]).export_findings is True

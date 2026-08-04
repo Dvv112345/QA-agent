@@ -913,3 +913,65 @@ class TestAuth:
         async with _make_client(monkeypatch, db_session) as client:
             resp = await client.get("/api/sprints/1/test-runs")
         assert resp.status_code == 401
+
+
+class TestExportFindingsToggle:
+    """The run carries the decision, so it is made once at run start."""
+
+    def _connect_tracker(self, db_session, sprint):
+        from backend.models.database import IssueTrackerConfig
+        from backend.utils.crypto import encrypt_token
+
+        db_session.add(
+            IssueTrackerConfig(
+                sprint_id=sprint.id,
+                provider="jira",
+                target="QA",
+                api_token=encrypt_token("dummy-token"),
+                base_url="https://acme.atlassian.net",
+                account_email="qa@acme.test",
+                issue_type="Bug",
+            )
+        )
+        db_session.commit()
+        db_session.refresh(sprint)
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_false(self, async_client, db_session, stub_queue):
+        sprint = _seed_run_ready_sprint(db_session)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id]},
+        )
+
+        assert resp.status_code == 201
+        assert _reload_run(db_session, resp.json()["id"]).export_findings is False
+
+    @pytest.mark.asyncio
+    async def test_422_when_on_with_no_tracker(self, async_client, db_session, stub_queue):
+        sprint = _seed_run_ready_sprint(db_session)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id], "export_findings": True},
+        )
+
+        assert resp.status_code == 422
+        assert "Connect an issue tracker" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_persisted_on_the_run(self, async_client, db_session, stub_queue):
+        sprint = _seed_run_ready_sprint(db_session)
+        self._connect_tracker(db_session, sprint)
+        requirement = _seed_runnable_requirement(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/test-runs",
+            json={"requirement_ids": [requirement.id], "export_findings": True},
+        )
+
+        assert resp.status_code == 201
+        assert _reload_run(db_session, resp.json()["id"]).export_findings is True

@@ -336,6 +336,12 @@ class TestRunDetailResponse(SQLModel):
 
 class TestRunCreateRequest(SQLModel):
     requirement_ids: list[int]
+    # Whether this run's bug findings are filed to the sprint's issue
+    # tracker when it completes. Decided at run start and never after:
+    # the run is what carries the decision, so a tracker connected (or
+    # disconnected) later cannot retroactively change what a finished run
+    # was supposed to do.
+    export_findings: bool = False
 
 
 # ── Exploratory testing ───────────────────────────────────────────────
@@ -462,3 +468,5 @@ class ExploratoryRunCreateRequest(SQLModel):
     requirement_id: int
     charters: list[CharterDraft]
     base_url_env_vars: list[str]
+    # See TestRunCreateRequest.export_findings.
+    export_findings: bool = False

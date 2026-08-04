@@ -41,7 +41,7 @@ from backend.models.database import (
     TestExecutionStatus,
     TestPlanStatus,
 )
-from backend.services import finalization, llm, script_runner
+from backend.services import finalization, finding_export, llm, script_runner
 from backend.services.llm_prompts import TestCaseLike
 from backend.utils import environment_utils, github_utils
 from backend.utils.crypto import decrypt_token
@@ -464,3 +464,24 @@ def execute_test_task(test_execution_id: int) -> None:
             # is the recovery mechanism.
             logger.exception("Test execution failed for execution %d", test_execution_id)
             _record_failure(session, test_execution_id, exc)
+            return
+
+        # Deliberately *after* the COMPLETED commit and outside the try
+        # above: a slow or failing tracker must never turn a finished run
+        # into a retry that re-executes every case. `export_findings`
+        # fast-exits when the run's toggle is off.
+        #
+        # Equally deliberately, this is not called from `_fail_execution`
+        # or `_record_failure`'s terminal branch. An unfinished run's
+        # finding set is incomplete by definition, and the run page's
+        # file/retry button is where a human decides to file it anyway.
+        #
+        # `export_findings` guarantees it never raises; this is a second
+        # guard on that guarantee rather than a substitute for it. The
+        # cost of being wrong is asymmetric — a job in RQ's failed
+        # registry for a run that plainly succeeded is exactly the kind
+        # of contradiction someone debugging spends an hour on.
+        try:
+            finding_export.export_findings(session, execution)
+        except Exception:
+            logger.exception("Exporting findings failed for execution %d", test_execution_id)

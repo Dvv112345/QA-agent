@@ -52,6 +52,7 @@ from backend.models.types import (
     ExploratorySessionSummaryResponse,
 )
 from backend.services import llm
+from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.llm_prompts import TestCaseLike
 from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
@@ -380,6 +381,9 @@ async def create_exploratory_run(
     _validate_charters(body.charters)
     _validate_url_vars(body.base_url_env_vars, env_vars, status_code=422)
 
+    if body.export_findings and sprint.issue_tracker is None:
+        raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)
+
     if any(
         run.status in (ExploratoryRunStatus.PENDING, ExploratoryRunStatus.RUNNING)
         for run in requirement.exploratory_runs
@@ -409,6 +413,7 @@ async def create_exploratory_run(
         plan_revision=requirement.test_plan.content_revision,
         env_revision=sprint.test_environment.content_revision,
         base_url_env_vars_csv=",".join(body.base_url_env_vars),
+        export_findings=body.export_findings,
     )
     for position, charter in enumerate(body.charters):
         ExploratorySession(

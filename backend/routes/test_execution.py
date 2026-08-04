@@ -28,6 +28,7 @@ from backend.models.types import (
     TestRunDetailResponse,
     TestRunResponse,
 )
+from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
 from backend.utils.readme_utils import refresh_file_tree, resolve_readme
@@ -141,6 +142,9 @@ async def create_test_run(
     if not body.requirement_ids:
         raise HTTPException(status_code=422, detail="At least one requirement must be selected.")
 
+    if body.export_findings and sprint.issue_tracker is None:
+        raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)
+
     # Scripted runs need this as much as exploratory ones do — the worker
     # injects `env_vars` into every script's subprocess. It went unchecked
     # while a confirmed environment was permanent; now that adding a
@@ -220,7 +224,7 @@ async def create_test_run(
     # Each execution records the content revisions it is about to run
     # against; a later edit upstream is what makes it read as outdated.
     env_revision = test_env.content_revision
-    run = TestRun(sprint_id=sprint_id)
+    run = TestRun(sprint_id=sprint_id, export_findings=body.export_findings)
     executions: list[TestExecution] = []
     for requirement in selected:
         execution = TestExecution(
