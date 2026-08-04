@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createTestRun, fetchTestPlans } from '../services/api'
-import type { TestPlanResponse } from '../types'
+import type { IssueTrackerConfig, TestPlanResponse } from '../types'
 import './RunTestModal.css'
 
 interface Props {
   sprintId: number
+  /** The sprint's tracker, passed down so the modal needs no second fetch. */
+  tracker?: IssueTrackerConfig | null
   onClose: () => void
 }
 
-export default function RunTestModal({ sprintId, onClose }: Props) {
+export default function RunTestModal({ sprintId, tracker, onClose }: Props) {
   const navigate = useNavigate()
   const [plans, setPlans] = useState<TestPlanResponse[]>([])
   const [loading, setLoading] = useState(true)
@@ -17,6 +19,10 @@ export default function RunTestModal({ sprintId, onClose }: Props) {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Checked by default when a tracker is connected: connecting one is
+  // itself the statement that findings should go there, so making the
+  // user re-affirm it per run would be asking twice.
+  const [exportFindings, setExportFindings] = useState(Boolean(tracker))
 
   useEffect(() => {
     let cancelled = false
@@ -51,7 +57,7 @@ export default function RunTestModal({ sprintId, onClose }: Props) {
     if (selected.size === 0) return
     setBusy(true)
     setError(null)
-    createTestRun(sprintId, Array.from(selected))
+    createTestRun(sprintId, Array.from(selected), exportFindings)
       .then((run) => {
         navigate(`/sprints/${sprintId}/test-runs/${run.id}`)
       })
@@ -89,6 +95,18 @@ export default function RunTestModal({ sprintId, onClose }: Props) {
             ))}
           </ul>
         )}
+
+        <label className="run-test-export">
+          <input
+            type="checkbox"
+            checked={exportFindings}
+            onChange={(e) => setExportFindings(e.target.checked)}
+            disabled={busy || !tracker}
+          />
+          {tracker
+            ? `File bug findings to ${tracker.target_label}`
+            : 'File bug findings to an issue tracker (none connected)'}
+        </label>
 
         {error && <p className="run-test-error">{error}</p>}
 

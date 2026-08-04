@@ -16,14 +16,21 @@ vi.mock('../services/api', async (importOriginal) => {
     fetchSprint: vi.fn(),
     fetchTestRun: vi.fn(),
     restartTestExecution: vi.fn(),
+    exportTestRunFindings: vi.fn(),
   }
 })
 
-import { fetchSprint, fetchTestRun, restartTestExecution } from '../services/api'
+import {
+  exportTestRunFindings,
+  fetchSprint,
+  fetchTestRun,
+  restartTestExecution,
+} from '../services/api'
 
 const mockFetchSprint = fetchSprint as ReturnType<typeof vi.fn>
 const mockFetchTestRun = fetchTestRun as ReturnType<typeof vi.fn>
 const mockRestartTestExecution = restartTestExecution as ReturnType<typeof vi.fn>
+const mockExport = exportTestRunFindings as ReturnType<typeof vi.fn>
 
 function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
   return {
@@ -96,6 +103,11 @@ function makeRun(overrides: Partial<TestRunDetailResponse> = {}): TestRunDetailR
     outdated_reasons: [],
     requirement_deleted: false,
     executions: [makeExecution()],
+    exported_finding_count: 0,
+    exported_issue_count: 0,
+    export_error_count: 0,
+    unexported_finding_count: 0,
+    export_groups: [],
     ...overrides,
   }
 }
@@ -229,5 +241,55 @@ describe('TestRunDetailPage', () => {
 
     await screen.findByText('Valid login')
     expect(screen.queryByRole('link', { name: 'Download script' })).not.toBeInTheDocument()
+  })
+
+  describe('finding export', () => {
+    it('shows nothing when the run has no bug findings', async () => {
+      mockFetchTestRun.mockResolvedValue(makeRun())
+      renderPage()
+
+      await screen.findByText('Test Run')
+      expect(screen.queryByRole('button', { name: /File \d+ bug/ })).not.toBeInTheDocument()
+    })
+
+    it('states both totals and lists the tickets', async () => {
+      mockFetchTestRun.mockResolvedValue(
+        makeRun({
+          exported_finding_count: 4,
+          exported_issue_count: 1,
+          export_groups: [{ issue_key: 'QA-142', issue_url: 'https://x/QA-142', finding_count: 4 }],
+        }),
+      )
+      renderPage()
+
+      expect(await screen.findByText('4 bugs filed as 1 issue')).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /QA-142/ })).toBeInTheDocument()
+    })
+
+    it('offers to file the bugs of a run that never filed', async () => {
+      // A run failed by a finished sprint, or superseded mid-flight —
+      // both reach this page with their findings unfiled by design.
+      mockFetchTestRun.mockResolvedValue(makeRun({ unexported_finding_count: 3 }))
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'File 3 bugs' })).toBeInTheDocument()
+    })
+
+    it('files on click and adopts the refreshed run', async () => {
+      mockFetchTestRun.mockResolvedValue(makeRun({ unexported_finding_count: 3 }))
+      mockExport.mockResolvedValue(
+        makeRun({
+          exported_finding_count: 3,
+          exported_issue_count: 1,
+          export_groups: [{ issue_key: 'QA-9', issue_url: 'https://x/QA-9', finding_count: 3 }],
+        }),
+      )
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'File 3 bugs' }))
+
+      expect(await screen.findByText('3 bugs filed as 1 issue')).toBeInTheDocument()
+      expect(mockExport).toHaveBeenCalledWith(1)
+    })
   })
 })

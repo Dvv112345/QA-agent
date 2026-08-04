@@ -545,6 +545,55 @@ class FindingSeverity(str, Enum):
         return value if value in {member.value for member in cls} else cls.MEDIUM.value
 
 
+# ── Export roll-up (shared by scripted and exploratory runs) ─────────
+
+
+def export_rollup(findings: list) -> dict:
+    """Summarize what a run's bug findings did on their way to a tracker.
+
+    Computed at response time, never stored — the same treatment the case
+    counts already get (Convention #10 applied one level down).
+
+    *findings* is any sequence of objects carrying the tracker receipt
+    columns, so one definition serves both carriers and the run page
+    cannot come to mean two different things depending on which mode
+    produced the run.
+
+    The counts are deliberately nested rather than disjoint:
+    ``export_error_count`` is a subset of ``unexported_finding_count``.
+    That is what lets the page use one condition to decide whether to
+    offer the button and the other to word it — "File 6 bugs" for a run
+    that never filed, "Retry" for one that tried and failed.
+
+    ``groups`` is exposed rather than only counts because the whole point
+    of grouping is that six findings can be two tickets, and a reader
+    should not have to open every card to work out which four became
+    QA-142.
+    """
+    exported = [f for f in findings if f.tracker_issue_key]
+    unexported = [f for f in findings if not f.tracker_issue_key]
+
+    groups: dict[str, dict] = {}
+    for finding in exported:
+        group = groups.setdefault(
+            finding.tracker_issue_key,
+            {
+                "issue_key": finding.tracker_issue_key,
+                "issue_url": finding.tracker_issue_url or "",
+                "finding_count": 0,
+            },
+        )
+        group["finding_count"] += 1
+
+    return {
+        "exported_finding_count": len(exported),
+        "exported_issue_count": len(groups),
+        "export_error_count": sum(1 for f in unexported if f.tracker_error),
+        "unexported_finding_count": len(unexported),
+        "export_groups": list(groups.values()),
+    }
+
+
 # ── Run staleness (shared by scripted and exploratory runs) ───────────
 
 
@@ -718,6 +767,48 @@ class TestRun(SQLModel, table=True):
     def requirement_deleted(self) -> bool:
         """Whether *any* of this run's requirements has since been deleted."""
         return any(e.requirement_deleted for e in self.executions)
+
+    @property
+    def bug_findings(self) -> list["TestCaseExecution"]:
+        """Every case in this run that reported the product being wrong.
+
+        Gated on ``finding_title`` for the same reason ``finding`` is:
+        rows written before findings were structured are ``failed`` with
+        nothing to report.
+        """
+        return [
+            case
+            for execution in self.executions
+            for case in execution.cases
+            if case.finding_type == FindingType.BUG and case.finding_title
+        ]
+
+    # The export roll-up as five attributes rather than one nested object,
+    # because several routes return this row directly and FastAPI builds
+    # the response from attributes. `TestRunResponse`/`TestRunDetailResponse`
+    # inherit the field names from `ExportRollup`, so these line up by name.
+    # The exploratory side needs no equivalent: its routes compose their
+    # responses explicitly and splat `export_rollup(...)` in.
+
+    @property
+    def exported_finding_count(self) -> int:
+        return export_rollup(self.bug_findings)["exported_finding_count"]
+
+    @property
+    def exported_issue_count(self) -> int:
+        return export_rollup(self.bug_findings)["exported_issue_count"]
+
+    @property
+    def export_error_count(self) -> int:
+        return export_rollup(self.bug_findings)["export_error_count"]
+
+    @property
+    def unexported_finding_count(self) -> int:
+        return export_rollup(self.bug_findings)["unexported_finding_count"]
+
+    @property
+    def export_groups(self) -> list[dict]:
+        return export_rollup(self.bug_findings)["export_groups"]
 
 
 class TestExecution(SQLModel, table=True):
@@ -1055,6 +1146,16 @@ class ExploratoryRun(SQLModel, table=True):
     def outdated(self) -> bool:
         """See ``TestExecution.outdated`` — backend-only, gates restart."""
         return bool(self.outdated_reasons)
+
+    @property
+    def bug_findings(self) -> list["ExploratoryFinding"]:
+        """Every finding in this run reporting the product being wrong."""
+        return [
+            finding
+            for exploratory_session in self.sessions
+            for finding in exploratory_session.findings
+            if finding.finding_type == FindingType.BUG
+        ]
 
 
 class ExploratorySession(SQLModel, table=True):

@@ -202,6 +202,34 @@ class IssueTrackerConfigRequest(SQLModel):
     issue_type: str | None = None  # Jira issue type name
 
 
+class TrackerIssueGroup(SQLModel):
+    """One filed ticket and how many of a run's findings it stands for.
+
+    Exposed alongside the counts because grouping is the whole point: six
+    findings can be two tickets, and a reader should not have to open
+    every card to work out which four became QA-142.
+    """
+
+    issue_key: str
+    issue_url: str
+    finding_count: int
+
+
+class ExportRollup(SQLModel):
+    """A run's export state, computed at response time and never stored.
+
+    ``export_error_count`` is a **subset** of ``unexported_finding_count``
+    rather than disjoint from it: one condition decides whether the page
+    offers the button, the other words it.
+    """
+
+    exported_finding_count: int = 0
+    exported_issue_count: int = 0
+    export_error_count: int = 0
+    unexported_finding_count: int = 0
+    export_groups: list[TrackerIssueGroup] = []
+
+
 class IssueTrackerConfigResponse(SQLModel):
     """The connection as the UI sees it — never the token."""
 
@@ -300,7 +328,7 @@ class TestExecutionResponse(SQLModel):
     updated_at: datetime
 
 
-class TestRunResponse(SQLModel):
+class TestRunResponse(ExportRollup):
     id: int
     sprint_id: int
     created_at: datetime
@@ -319,7 +347,7 @@ class TestRunResponse(SQLModel):
     error_cases: int
 
 
-class TestRunDetailResponse(SQLModel):
+class TestRunDetailResponse(ExportRollup):
     id: int
     sprint_id: int
     created_at: datetime
@@ -387,7 +415,7 @@ class ExploratorySessionResponse(SQLModel):
     updated_at: datetime
 
 
-class ExploratoryRunResponse(SQLModel):
+class ExploratoryRunResponse(ExportRollup):
     """List-page shape — aggregates computed at response time, never stored."""
 
     id: int
@@ -412,7 +440,7 @@ class ExploratoryRunResponse(SQLModel):
     updated_at: datetime
 
 
-class ExploratoryRunDetailResponse(SQLModel):
+class ExploratoryRunDetailResponse(ExportRollup):
     id: int
     sprint_id: int
     requirement_id: int

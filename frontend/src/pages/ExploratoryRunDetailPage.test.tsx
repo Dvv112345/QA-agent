@@ -11,10 +11,12 @@ vi.mock('../services/api', async (importOriginal) => {
     fetchExploratoryRun: vi.fn(),
     restartExploratoryRun: vi.fn(),
     summarizeExploratoryRun: vi.fn(),
+    exportExploratoryRunFindings: vi.fn(),
   }
 })
 
 import {
+  exportExploratoryRunFindings,
   fetchExploratoryRun,
   restartExploratoryRun,
   summarizeExploratoryRun,
@@ -23,6 +25,7 @@ import {
 const mockFetchRun = fetchExploratoryRun as ReturnType<typeof vi.fn>
 const mockRestart = restartExploratoryRun as ReturnType<typeof vi.fn>
 const mockSummarize = summarizeExploratoryRun as ReturnType<typeof vi.fn>
+const mockExport = exportExploratoryRunFindings as ReturnType<typeof vi.fn>
 
 function makeRun(
   overrides: Partial<ExploratoryRunDetailResponse> = {},
@@ -55,6 +58,11 @@ function makeRun(
     bug_count: 1,
     issue_count: 1,
     high_severity_count: 1,
+    exported_finding_count: 0,
+    exported_issue_count: 0,
+    export_error_count: 0,
+    unexported_finding_count: 0,
+    export_groups: [],
     created_at: '2026-07-28T00:00:00Z',
     updated_at: '2026-07-28T00:00:00Z',
     ...overrides,
@@ -159,5 +167,53 @@ describe('ExploratoryRunDetailPage', () => {
     renderPage()
 
     expect(await screen.findByText('run vanished')).toBeInTheDocument()
+  })
+
+  describe('finding export', () => {
+    it('shows nothing when the run has no bug findings', async () => {
+      mockFetchRun.mockResolvedValue(makeRun())
+      renderPage()
+
+      await screen.findByText('Export reports')
+      expect(screen.queryByRole('button', { name: /File \d+ bug/ })).not.toBeInTheDocument()
+    })
+
+    it('states both totals and lists the tickets', async () => {
+      mockFetchRun.mockResolvedValue(
+        makeRun({
+          exported_finding_count: 4,
+          exported_issue_count: 1,
+          export_groups: [{ issue_key: '7', issue_url: 'https://gh/7', finding_count: 4 }],
+        }),
+      )
+      renderPage()
+
+      expect(await screen.findByText('4 bugs filed as 1 issue')).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /7/ })).toHaveAttribute('href', 'https://gh/7')
+    })
+
+    it('offers to file the bugs of a run that never filed', async () => {
+      mockFetchRun.mockResolvedValue(makeRun({ unexported_finding_count: 2 }))
+      renderPage()
+
+      expect(await screen.findByRole('button', { name: 'File 2 bugs' })).toBeInTheDocument()
+    })
+
+    it('files on click and adopts the refreshed run', async () => {
+      mockFetchRun.mockResolvedValue(makeRun({ unexported_finding_count: 2 }))
+      mockExport.mockResolvedValue(
+        makeRun({
+          exported_finding_count: 2,
+          exported_issue_count: 1,
+          export_groups: [{ issue_key: '9', issue_url: 'https://gh/9', finding_count: 2 }],
+        }),
+      )
+      renderPage()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'File 2 bugs' }))
+
+      expect(await screen.findByText('2 bugs filed as 1 issue')).toBeInTheDocument()
+      expect(mockExport).toHaveBeenCalledWith(5)
+    })
   })
 })

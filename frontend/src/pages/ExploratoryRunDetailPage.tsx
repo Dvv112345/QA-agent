@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
 import { isOutdated } from '../outdated'
 import {
+  exportExploratoryRunFindings,
   fetchExploratoryRun,
   restartExploratoryRun,
   summarizeExploratoryRun,
@@ -116,6 +118,11 @@ export default function ExploratoryRunDetailPage() {
         {run.issue_count === 1 ? '' : 's'}
         {run.high_severity_count > 0 && ` · ${run.high_severity_count} high severity`}
       </p>
+
+      <ExportSummary
+        rollup={run}
+        onExport={() => exportExploratoryRunFindings(exploratoryRunId).then(setRun)}
+      />
 
       {run.error && <p className="exp-run-error">{run.error}</p>}
 

@@ -235,7 +235,29 @@ export interface TestExecutionResponse {
   updated_at: string
 }
 
-export interface TestRunResponse {
+/** One filed ticket and how many of a run's findings it stands for. */
+export interface TrackerIssueGroup {
+  issue_key: string
+  issue_url: string
+  finding_count: number
+}
+
+/**
+ * A run's export state, computed server-side and never stored.
+ *
+ * `export_error_count` is a **subset** of `unexported_finding_count`, not
+ * disjoint from it: one decides whether the page offers the button, the
+ * other words it.
+ */
+export interface ExportRollup {
+  exported_finding_count: number
+  exported_issue_count: number
+  export_error_count: number
+  unexported_finding_count: number
+  export_groups: TrackerIssueGroup[]
+}
+
+export interface TestRunResponse extends ExportRollup {
   id: number
   sprint_id: number
   created_at: string
@@ -255,7 +277,7 @@ export interface TestRunResponse {
   error_cases: number
 }
 
-export interface TestRunDetailResponse {
+export interface TestRunDetailResponse extends ExportRollup {
   id: number
   sprint_id: number
   created_at: string
@@ -327,7 +349,7 @@ export interface ExploratorySessionResponse {
   updated_at: string
 }
 
-export interface ExploratoryRunResponse {
+export interface ExploratoryRunResponse extends ExportRollup {
   id: number
   sprint_id: number
   requirement_id: number
@@ -345,7 +367,7 @@ export interface ExploratoryRunResponse {
   updated_at: string
 }
 
-export interface ExploratoryRunDetailResponse {
+export interface ExploratoryRunDetailResponse extends ExportRollup {
   id: number
   sprint_id: number
   requirement_id: number

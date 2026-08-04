@@ -57,6 +57,28 @@ export default function FindingCard({ finding, screenshotUrl }: Props) {
         )}
       </dl>
 
+      {/* The issue-tracker receipt. Absent on a finding that was never
+          filed — the run's toggle was off, or the run did not reach the
+          completion path — which is a normal state, not a failure, so the
+          section disappears rather than reading "not filed". */}
+      {finding.tracker_issue_url && (
+        <p className="finding-tracker">
+          <a href={finding.tracker_issue_url} target="_blank" rel="noreferrer">
+            {finding.tracker_issue_key} ↗
+          </a>
+          {/* Named so the reader knows this finding did not get its own
+              ticket, rather than wondering why several cards link to one. */}
+          {finding.tracker_is_duplicate && (
+            <span className="finding-tracker-grouped"> (grouped)</span>
+          )}
+        </p>
+      )}
+      {finding.tracker_error && !finding.tracker_issue_url && (
+        <p className="finding-tracker finding-tracker-error">
+          Could not file this finding: {finding.tracker_error}
+        </p>
+      )}
+
       {/* No screenshot is the normal case when STORE_OFFLINE is disabled,
           and always the case for a scripted finding — the card must read
           cleanly without one rather than showing a broken image. */}

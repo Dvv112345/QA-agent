@@ -259,9 +259,19 @@ export default function TestRunsPage() {
         </>
       )}
 
-      {showRunModal && <RunTestModal sprintId={sprintId} onClose={() => setShowRunModal(false)} />}
+      {showRunModal && (
+        <RunTestModal
+          sprintId={sprintId}
+          tracker={tracker}
+          onClose={() => setShowRunModal(false)}
+        />
+      )}
       {showCharterModal && (
-        <ExploratoryCharterModal sprintId={sprintId} onClose={() => setShowCharterModal(false)} />
+        <ExploratoryCharterModal
+          sprintId={sprintId}
+          tracker={tracker}
+          onClose={() => setShowCharterModal(false)}
+        />
       )}
       {showTrackerModal && (
         <IssueTrackerModal

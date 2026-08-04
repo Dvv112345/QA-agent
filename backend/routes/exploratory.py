@@ -38,6 +38,7 @@ from backend.models.database import (
     Sprint,
     TestEnvironmentStatus,
     TestPlanStatus,
+    export_rollup,
     outdated_restart_error,
 )
 from backend.models.types import (
@@ -51,7 +52,7 @@ from backend.models.types import (
     ExploratorySessionResponse,
     ExploratorySessionSummaryResponse,
 )
-from backend.services import llm
+from backend.services import finding_export, llm
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.llm_prompts import TestCaseLike
 from backend.services.queue import get_queue_service
@@ -238,6 +239,7 @@ def _run_response(run: ExploratoryRun) -> ExploratoryRunResponse:
         bug_count=bugs,
         issue_count=issues,
         high_severity_count=high,
+        **export_rollup(run.bug_findings),
         created_at=run.created_at,
         updated_at=run.updated_at,
     )
@@ -260,6 +262,7 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
         bug_count=bugs,
         issue_count=issues,
         high_severity_count=high,
+        **export_rollup(run.bug_findings),
         created_at=run.created_at,
         updated_at=run.updated_at,
     )
@@ -591,4 +594,28 @@ async def summarize_exploratory_run(
     session.add(run)
     session.commit()
     session.refresh(run)
+    return _run_detail(_get_run_or_404(session, run_id))
+
+
+@router.post(
+    "/exploratory-runs/{run_id}/export-findings",
+    response_model=ExploratoryRunDetailResponse,
+)
+async def export_exploratory_run_findings(
+    run_id: int,
+    session: Session = Depends(get_session),
+) -> ExploratoryRunDetailResponse:
+    """File this run's unfiled bug findings, on request.
+
+    The exploratory twin of ``POST /test-runs/{id}/export-findings`` —
+    see it for why this is the manual half of the export rule rather than
+    a fallback.
+    """
+    run = _get_run_or_404(session, run_id)
+    if run.sprint is not None and run.sprint.issue_tracker is None:
+        raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)
+
+    await asyncio.to_thread(finding_export.export_findings, session, run)
+
+    session.expire_all()
     return _run_detail(_get_run_or_404(session, run_id))

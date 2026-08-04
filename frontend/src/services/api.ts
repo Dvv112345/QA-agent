@@ -320,11 +320,15 @@ export async function restartTestPlan(id: number): Promise<TestPlanResponse> {
 export async function createTestRun(
   sprintId: number,
   requirementIds: number[],
+  exportFindings = false,
 ): Promise<TestRunDetailResponse> {
   const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/test-runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requirement_ids: requirementIds }),
+    body: JSON.stringify({
+      requirement_ids: requirementIds,
+      export_findings: exportFindings,
+    }),
   })
   return handleResponse<TestRunDetailResponse>(response)
 }
@@ -395,6 +399,7 @@ export async function createExploratoryRun(
   requirementId: number,
   charters: CharterDraft[],
   baseUrlEnvVars: string[],
+  exportFindings = false,
 ): Promise<ExploratoryRunDetailResponse> {
   const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/exploratory-runs`, {
     method: 'POST',
@@ -403,6 +408,7 @@ export async function createExploratoryRun(
       requirement_id: requirementId,
       charters,
       base_url_env_vars: baseUrlEnvVars,
+      export_findings: exportFindings,
     }),
   })
   return handleResponse<ExploratoryRunDetailResponse>(response)
@@ -469,4 +475,20 @@ export async function deleteIssueTracker(sprintId: number): Promise<void> {
     method: 'DELETE',
   })
   await handleResponse(response)
+}
+
+export async function exportTestRunFindings(runId: number): Promise<TestRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/test-runs/${runId}/export-findings`, {
+    method: 'POST',
+  })
+  return handleResponse<TestRunDetailResponse>(response)
+}
+
+export async function exportExploratoryRunFindings(
+  runId: number,
+): Promise<ExploratoryRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/exploratory-runs/${runId}/export-findings`, {
+    method: 'POST',
+  })
+  return handleResponse<ExploratoryRunDetailResponse>(response)
 }

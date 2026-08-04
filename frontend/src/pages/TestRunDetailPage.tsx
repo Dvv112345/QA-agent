@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
 import { isOutdated } from '../outdated'
 import TestCaseExecutionRow from '../components/TestCaseExecutionRow'
-import { fetchSprint, fetchTestRun, restartTestExecution } from '../services/api'
+import {
+  exportTestRunFindings,
+  fetchSprint,
+  fetchTestRun,
+  restartTestExecution,
+} from '../services/api'
 import type { SprintResponse, TestExecutionResponse, TestRunDetailResponse } from '../types'
 import './TestRunDetailPage.css'
 
@@ -116,6 +122,8 @@ export default function TestRunDetailPage() {
       </header>
 
       <p className="test-run-detail-meta">{new Date(run.created_at).toLocaleString()}</p>
+
+      <ExportSummary rollup={run} onExport={() => exportTestRunFindings(runIdNum).then(setRun)} />
 
       {actionError && <p className="test-run-detail-error">{actionError}</p>}
 

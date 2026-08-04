@@ -4,6 +4,7 @@ import { createExploratoryRun, fetchTestPlans, generateCharters } from '../servi
 import type {
   CharterDraft,
   ExploratoryCharterDraftResponse,
+  IssueTrackerConfig,
   SfdipotArea,
   TestPlanResponse,
 } from '../types'
@@ -12,10 +13,12 @@ import './ExploratoryCharterModal.css'
 
 interface Props {
   sprintId: number
+  /** The sprint's tracker, passed down so the modal needs no second fetch. */
+  tracker?: IssueTrackerConfig | null
   onClose: () => void
 }
 
-export default function ExploratoryCharterModal({ sprintId, onClose }: Props) {
+export default function ExploratoryCharterModal({ sprintId, tracker, onClose }: Props) {
   const navigate = useNavigate()
   const [plans, setPlans] = useState<TestPlanResponse[]>([])
   const [loading, setLoading] = useState(true)
@@ -25,6 +28,8 @@ export default function ExploratoryCharterModal({ sprintId, onClose }: Props) {
   const [charters, setCharters] = useState<CharterDraft[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // See RunTestModal — checked by default when a tracker is connected.
+  const [exportFindings, setExportFindings] = useState(Boolean(tracker))
 
   useEffect(() => {
     let cancelled = false
@@ -66,7 +71,13 @@ export default function ExploratoryCharterModal({ sprintId, onClose }: Props) {
     if (draft === null) return
     setBusy(true)
     setError(null)
-    createExploratoryRun(sprintId, draft.requirement_id, charters, draft.base_url_env_vars)
+    createExploratoryRun(
+      sprintId,
+      draft.requirement_id,
+      charters,
+      draft.base_url_env_vars,
+      exportFindings,
+    )
       .then((run) => {
         navigate(`/sprints/${sprintId}/exploratory-runs/${run.id}`)
       })
@@ -204,6 +215,20 @@ export default function ExploratoryCharterModal({ sprintId, onClose }: Props) {
               Add charter
             </button>
           </>
+        )}
+
+        {draft !== null && (
+          <label className="charter-export">
+            <input
+              type="checkbox"
+              checked={exportFindings}
+              onChange={(e) => setExportFindings(e.target.checked)}
+              disabled={busy || !tracker}
+            />
+            {tracker
+              ? `File bug findings to ${tracker.target_label}`
+              : 'File bug findings to an issue tracker (none connected)'}
+          </label>
         )}
 
         {error && <p className="charter-error">{error}</p>}

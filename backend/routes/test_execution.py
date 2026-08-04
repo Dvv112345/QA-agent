@@ -1,5 +1,6 @@
 """Test-execution routes — create runs, list/detail, script download, restart."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -20,6 +21,7 @@ from backend.models.database import (
     TestExecutionStatus,
     TestPlanStatus,
     TestRun,
+    export_rollup,
     outdated_restart_error,
 )
 from backend.models.types import (
@@ -28,6 +30,7 @@ from backend.models.types import (
     TestRunDetailResponse,
     TestRunResponse,
 )
+from backend.services import finding_export
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
@@ -123,6 +126,7 @@ def _run_response(run: TestRun) -> TestRunResponse:
         passed_cases=passed,
         failed_cases=failed,
         error_cases=error,
+        **export_rollup(run.bug_findings),
     )
 
 
@@ -339,3 +343,32 @@ async def restart_test_execution(
     session.refresh(execution)
     _enqueue_executions(session, [execution])
     return execution
+
+
+@router.post("/test-runs/{run_id}/export-findings", response_model=TestRunDetailResponse)
+async def export_test_run_findings(
+    run_id: int,
+    session: Session = Depends(get_session),
+) -> TestRun:
+    """File this run's unfiled bug findings, on request.
+
+    The manual half of the export rule, and not a fallback: a run that
+    ended any way other than ``completed`` reaches its page with the bugs
+    it *did* find unfiled by design, and this is how they get filed.
+    Retrying a run whose filing failed is the same operation.
+
+    Synchronous via ``asyncio.to_thread`` — like
+    ``POST /exploratory-runs/{id}/summarize``, this is user-initiated,
+    uncapped, and cheap enough that a queue would only add a place for it
+    to get lost.  A run with nothing pending is a no-op that still
+    returns the refreshed detail, so the button is never a trap.
+    """
+    run = _get_run_or_404(session, run_id)
+    if run.sprint is not None and run.sprint.issue_tracker is None:
+        raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)
+
+    for execution in run.executions:
+        await asyncio.to_thread(finding_export.export_findings, session, execution)
+
+    session.expire_all()
+    return _get_run_or_404(session, run_id)

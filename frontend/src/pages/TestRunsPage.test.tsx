@@ -69,6 +69,11 @@ function makeRun(overrides: Partial<TestRunResponse> = {}): TestRunResponse {
     passed_cases: 2,
     failed_cases: 0,
     error_cases: 0,
+    exported_finding_count: 0,
+    exported_issue_count: 0,
+    export_error_count: 0,
+    unexported_finding_count: 0,
+    export_groups: [],
     ...overrides,
   }
 }
@@ -194,11 +199,13 @@ describe('TestRunsPage', () => {
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Run new test' }))
-    fireEvent.click(await screen.findByRole('checkbox'))
+    // The modal now holds two checkboxes — the requirement and the
+    // export toggle — so this one is selected by name.
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Login' }))
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
     await waitFor(() => {
-      expect(mockCreateTestRun).toHaveBeenCalledWith(1, [100])
+      expect(mockCreateTestRun).toHaveBeenCalledWith(1, [100], false)
     })
   })
 })
