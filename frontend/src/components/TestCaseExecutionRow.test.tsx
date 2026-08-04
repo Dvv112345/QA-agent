@@ -12,6 +12,10 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
     expected: 'The user reaches the dashboard',
     actual: 'A 401 is returned',
     environment: 'Windows-10 · Python 3.12.4',
+    tracker_issue_key: null,
+    tracker_issue_url: null,
+    tracker_error: null,
+    tracker_is_duplicate: false,
     ...overrides,
   }
 }

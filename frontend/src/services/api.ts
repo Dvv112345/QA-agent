@@ -5,6 +5,8 @@ import type {
   ExploratoryRunDetailResponse,
   ExploratoryRunResponse,
   ExploratorySessionResponse,
+  IssueTrackerConfig,
+  IssueTrackerConfigInput,
   ReadmeStatusResponse,
   RepoResponse,
   RequirementInput,
@@ -441,4 +443,30 @@ export async function summarizeExploratoryRun(
 
 export function findingScreenshotUrl(findingId: number): string {
   return `${API_BASE}/api/exploratory-findings/${findingId}/screenshot`
+}
+
+// ── Issue tracker ────────────────────────────────────────────────────
+
+export async function fetchIssueTracker(sprintId: number): Promise<IssueTrackerConfig | null> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/issue-tracker`)
+  return handleResponse<IssueTrackerConfig | null>(response)
+}
+
+export async function saveIssueTracker(
+  sprintId: number,
+  config: IssueTrackerConfigInput,
+): Promise<IssueTrackerConfig> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/issue-tracker`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  return handleResponse<IssueTrackerConfig>(response)
+}
+
+export async function deleteIssueTracker(sprintId: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/issue-tracker`, {
+    method: 'DELETE',
+  })
+  await handleResponse(response)
 }

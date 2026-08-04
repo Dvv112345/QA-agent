@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
+import IssueTrackerModal from '../components/IssueTrackerModal'
 import OutdatedBadge from '../components/OutdatedBadge'
 import RunTestModal from '../components/RunTestModal'
-import { fetchExploratoryRuns, fetchSprint, fetchTestRuns } from '../services/api'
-import type { ExploratoryRunResponse, SprintResponse, TestRunResponse } from '../types'
+import {
+  fetchExploratoryRuns,
+  fetchIssueTracker,
+  fetchSprint,
+  fetchTestRuns,
+} from '../services/api'
+import type {
+  ExploratoryRunResponse,
+  IssueTrackerConfig,
+  SprintResponse,
+  TestRunResponse,
+} from '../types'
 import './TestRunsPage.css'
 
 const POLL_INTERVAL_MS = 2500
@@ -51,17 +62,27 @@ export default function TestRunsPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showRunModal, setShowRunModal] = useState(false)
   const [showCharterModal, setShowCharterModal] = useState(false)
+  const [tracker, setTracker] = useState<IssueTrackerConfig | null>(null)
+  const [showTrackerModal, setShowTrackerModal] = useState(false)
 
   const fetchingRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([fetchSprint(sprintId), fetchTestRuns(sprintId), fetchExploratoryRuns(sprintId)])
-      .then(([sprintData, runData, exploratoryData]) => {
+    Promise.all([
+      fetchSprint(sprintId),
+      fetchTestRuns(sprintId),
+      fetchExploratoryRuns(sprintId),
+      // Fetched once here and passed down as a prop, so neither run modal
+      // needs a second round trip to decide its export toggle.
+      fetchIssueTracker(sprintId),
+    ])
+      .then(([sprintData, runData, exploratoryData, trackerData]) => {
         if (!cancelled) {
           setSprint(sprintData)
           setRuns(runData)
           setExploratoryRuns(exploratoryData)
+          setTracker(trackerData)
           setLoading(false)
         }
       })
@@ -129,6 +150,31 @@ export default function TestRunsPage() {
       </header>
 
       <p className="test-runs-sprint-name">{sprint.name}</p>
+
+      <div className="issue-tracker-panel">
+        {tracker ? (
+          <>
+            <span className="issue-tracker-panel-label">{tracker.target_label}</span>
+            <span className="issue-tracker-panel-none">receives bug findings from a run</span>
+            <button
+              className="btn btn-secondary btn-small"
+              onClick={() => setShowTrackerModal(true)}
+            >
+              Change
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="issue-tracker-panel-none">No issue tracker connected.</span>
+            <button
+              className="btn btn-secondary btn-small"
+              onClick={() => setShowTrackerModal(true)}
+            >
+              Connect Jira or GitHub Issues
+            </button>
+          </>
+        )}
+      </div>
 
       {guarded ? (
         <p className="test-runs-notice">
@@ -216,6 +262,14 @@ export default function TestRunsPage() {
       {showRunModal && <RunTestModal sprintId={sprintId} onClose={() => setShowRunModal(false)} />}
       {showCharterModal && (
         <ExploratoryCharterModal sprintId={sprintId} onClose={() => setShowCharterModal(false)} />
+      )}
+      {showTrackerModal && (
+        <IssueTrackerModal
+          sprintId={sprintId}
+          config={tracker}
+          onSaved={setTracker}
+          onClose={() => setShowTrackerModal(false)}
+        />
       )}
     </div>
   )

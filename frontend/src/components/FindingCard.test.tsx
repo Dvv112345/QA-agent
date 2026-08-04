@@ -12,6 +12,10 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
     expected: 'A CSV containing a header row',
     actual: 'A zero-byte file',
     environment: null,
+    tracker_issue_key: null,
+    tracker_issue_url: null,
+    tracker_error: null,
+    tracker_is_duplicate: false,
     ...overrides,
   }
 }

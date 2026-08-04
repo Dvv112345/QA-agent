@@ -13,12 +13,16 @@ vi.mock('../services/api', async (importOriginal) => {
     fetchTestPlans: vi.fn(),
     createTestRun: vi.fn(),
     fetchExploratoryRuns: vi.fn(),
+    fetchIssueTracker: vi.fn(),
+    saveIssueTracker: vi.fn(),
+    deleteIssueTracker: vi.fn(),
   }
 })
 
 import {
   createTestRun,
   fetchExploratoryRuns,
+  fetchIssueTracker,
   fetchSprint,
   fetchTestPlans,
   fetchTestRuns,
@@ -29,6 +33,7 @@ const mockFetchTestRuns = fetchTestRuns as ReturnType<typeof vi.fn>
 const mockFetchTestPlans = fetchTestPlans as ReturnType<typeof vi.fn>
 const mockCreateTestRun = createTestRun as ReturnType<typeof vi.fn>
 const mockFetchExploratoryRuns = fetchExploratoryRuns as ReturnType<typeof vi.fn>
+const mockFetchIssueTracker = fetchIssueTracker as ReturnType<typeof vi.fn>
 
 function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
   return {
@@ -104,6 +109,7 @@ describe('TestRunsPage', () => {
     mockFetchTestRuns.mockResolvedValue([])
     mockFetchTestPlans.mockResolvedValue([])
     mockFetchExploratoryRuns.mockResolvedValue([])
+    mockFetchIssueTracker.mockResolvedValue(null)
   })
 
   it('shows guard notice when ungated', async () => {
@@ -204,6 +210,9 @@ describe('TestRunsPage — exploratory list', () => {
     mockFetchTestPlans.mockResolvedValue([])
     mockFetchExploratoryRuns.mockResolvedValue([])
     mockFetchSprint.mockResolvedValue(makeSprint())
+    // clearAllMocks clears calls but keeps implementations, so a config
+    // set by one test would otherwise leak into the next.
+    mockFetchIssueTracker.mockResolvedValue(null)
   })
 
   function makeExploratoryRun(overrides = {}) {
@@ -312,5 +321,67 @@ describe('TestRunsPage — exploratory list', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+  describe('issue tracker panel', () => {
+    it('offers to connect when nothing is configured', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint())
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('No issue tracker connected.')).toBeInTheDocument()
+      })
+      expect(
+        screen.getByRole('button', { name: 'Connect Jira or GitHub Issues' }),
+      ).toBeInTheDocument()
+    })
+
+    it('names the connected tracker and offers to change it', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint())
+      mockFetchIssueTracker.mockResolvedValue({
+        id: 1,
+        sprint_id: 1,
+        provider: 'jira',
+        target: 'QA',
+        target_label: 'Jira · QA',
+        base_url: 'https://acme.atlassian.net',
+        account_email: 'qa@acme.test',
+        issue_type: 'Bug',
+        verified_at: '2026-01-01T00:00:00Z',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Jira · QA')).toBeInTheDocument()
+      })
+      expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument()
+    })
+
+    it('shows the panel even when the run lists are gated', async () => {
+      // Connecting a tracker is sprint configuration, not a run action —
+      // gating it behind approved plans would hide the setup step behind
+      // the work it exists to serve.
+      mockFetchSprint.mockResolvedValue(makeSprint({ test_plans_complete: false }))
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Approve every test plan first.')).toBeInTheDocument()
+      })
+      expect(screen.getByText('No issue tracker connected.')).toBeInTheDocument()
+    })
+
+    it('opens the modal on click', async () => {
+      mockFetchSprint.mockResolvedValue(makeSprint())
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('No issue tracker connected.')).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Connect Jira or GitHub Issues' }))
+
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      expect(screen.getByText('Connect an issue tracker')).toBeInTheDocument()
+    })
   })
 })

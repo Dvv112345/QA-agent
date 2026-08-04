@@ -149,6 +149,47 @@ export interface Finding {
   actual: string
   /** Where it was observed. Null on findings recorded before capture existed. */
   environment: string | null
+  /**
+   * Issue-tracker receipt. All null/false on a finding that was never
+   * filed: the run's toggle was off, the run did not reach the completion
+   * path, or filing has not run yet. The URL is absolute, so the card
+   * needs nothing else to link the ticket.
+   */
+  tracker_issue_key: string | null
+  tracker_issue_url: string | null
+  tracker_error: string | null
+  /** Grouped into another finding's ticket rather than getting its own. */
+  tracker_is_duplicate: boolean
+}
+
+// ── Issue tracker ───────────────────────────────────────────────────
+
+export type IssueTrackerProvider = 'jira' | 'github'
+
+export interface IssueTrackerConfig {
+  id: number
+  sprint_id: number
+  provider: IssueTrackerProvider
+  /** Jira project key, or "owner/repo". */
+  target: string
+  /** "Jira · QA" — composed server-side, never reassembled here. */
+  target_label: string
+  base_url: string | null
+  account_email: string | null
+  issue_type: string | null
+  verified_at: string
+  created_at: string
+  updated_at: string
+}
+
+/** The token is write-only: blank means "keep the stored one". */
+export interface IssueTrackerConfigInput {
+  provider: IssueTrackerProvider
+  target: string
+  base_url?: string | null
+  account_email?: string | null
+  api_token?: string | null
+  issue_type?: string | null
 }
 
 // ── Run staleness (shared by scripted and exploratory runs) ─────────

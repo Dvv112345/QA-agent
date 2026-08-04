@@ -1,0 +1,110 @@
+.issue-tracker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.issue-tracker-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 460px;
+  margin: 0 1rem;
+  padding: 1.5rem;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.issue-tracker-card h2 {
+  margin: 0;
+}
+
+.issue-tracker-hint {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #666);
+}
+
+.issue-tracker-providers {
+  display: flex;
+  gap: 1rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem 0.75rem;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+}
+
+.issue-tracker-providers legend {
+  padding: 0 0.25rem;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #666);
+}
+
+.issue-tracker-providers label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  cursor: pointer;
+}
+
+.issue-tracker-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.issue-tracker-field input {
+  padding: 0.5rem;
+  font: inherit;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 4px;
+}
+
+.issue-tracker-error {
+  margin: 0;
+  color: var(--color-error, #c00);
+}
+
+.issue-tracker-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* Pushes Disconnect away from Save/Cancel — it is the one irreversible
+   action in the dialog. */
+.issue-tracker-actions .btn-danger {
+  margin-left: auto;
+}
+
+/* ── Connect panel on the test-runs page ── */
+
+.issue-tracker-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--color-surface-alt, #f7f7f8);
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.issue-tracker-panel-label {
+  font-weight: 600;
+}
+
+.issue-tracker-panel-none {
+  color: var(--color-text-secondary, #666);
+}
