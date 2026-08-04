@@ -810,3 +810,88 @@ def exploration_summary_context(
             f"Findings:\n{findings}"
         )
     return parts
+
+
+# ── Finding grouping (issue-tracker de-duplication) ───────────────────
+
+FINDING_GROUPING_SYSTEM_PROMPT = (
+    "You are a QA lead triaging bug reports before they are filed into an "
+    "issue tracker. You are given new findings from one sprint, and the "
+    "findings already filed as tickets for that sprint. Decide which of the "
+    "new findings describe the SAME underlying defect as each other, and "
+    "which describe a defect that already has a ticket.\n\n"
+    "Group only when the same root cause is evident from the reports "
+    "themselves — the same broken behaviour, reached the same way, failing "
+    "the same expectation. Two findings that merely sound similar, or that "
+    "touch the same feature, are NOT the same defect.\n\n"
+    "Err strongly toward keeping findings apart. A defect wrongly split into "
+    "two tickets costs a few minutes of triage; a defect wrongly merged into "
+    "another one disappears — nobody reading the ticket will ever learn it "
+    "existed. When in doubt, do not group.\n\n"
+    "You are not judging whether a finding is real, severe, or worth fixing. "
+    "That verdict was made by the tester that recorded it. You are only "
+    "deciding what is a duplicate of what.\n\n"
+    "Each finding is identified by an integer index. Respond with a JSON "
+    'object of the shape {"groups": [{"indices": [int, ...], '
+    '"existing_key": string | null}]}, where:\n'
+    "- every new finding's index appears in exactly one group;\n"
+    "- a group holding one index means that finding is on its own;\n"
+    "- `existing_key` is the key of an already-filed ticket describing the "
+    "same defect, or null when this defect has no ticket yet."
+)
+
+
+@dataclass(frozen=True)
+class FindingCandidate:
+    """One finding awaiting a ticket, as the grouping prompt sees it.
+
+    Plain fields rather than a row, keeping ``services/llm.py`` DB-free —
+    the same arrangement ``TestCaseLike`` and ``FindingLike`` already use.
+    """
+
+    severity: str
+    title: str
+    steps_to_reproduce: str
+    expected: str
+    actual: str
+
+
+@dataclass(frozen=True)
+class FiledFinding:
+    """An already-filed finding, offered as a de-duplication target."""
+
+    issue_key: str
+    title: str
+    expected: str
+    actual: str
+
+
+def _finding_block(index: int, candidate: FindingCandidate) -> str:
+    return (
+        f"[{index}] ({candidate.severity}) {candidate.title}\n"
+        f"    Steps: {' | '.join(candidate.steps_to_reproduce.split(chr(10))) or '(none)'}\n"
+        f"    Expected: {candidate.expected}\n"
+        f"    Actual: {candidate.actual}"
+    )
+
+
+def finding_grouping_context(
+    candidates: list[FindingCandidate],
+    already_filed: list[FiledFinding],
+) -> list[str]:
+    """User-prompt blocks for the grouping call."""
+    parts = [
+        "New findings awaiting a ticket:\n"
+        + "\n".join(_finding_block(index, c) for index, c in enumerate(candidates))
+    ]
+    if already_filed:
+        parts.append(
+            "Already filed for this sprint:\n"
+            + "\n".join(
+                f"[{f.issue_key}] {f.title}\n    Expected: {f.expected}\n    Actual: {f.actual}"
+                for f in already_filed
+            )
+        )
+    else:
+        parts.append("Already filed for this sprint: (nothing yet)")
+    return parts

@@ -24,7 +24,12 @@ from backend.services.llm import (
     revise_test_plan,
     split_prd,
 )
-from backend.services.llm_prompts import EXPLORATION_SYSTEM_PROMPT, TestCaseLike
+from backend.services.llm_prompts import (
+    EXPLORATION_SYSTEM_PROMPT,
+    FiledFinding,
+    FindingCandidate,
+    TestCaseLike,
+)
 
 
 class _StubClient:
@@ -1988,3 +1993,85 @@ class TestSnapshotPruning:
             m["content"] for m in messages if isinstance(m, dict) and m.get("role") == "tool"
         ]
         assert "CLICK-RESULT" in tool_contents[0]
+
+
+class TestGroupFindings:
+    """One completion, no tools — grouping never reads the repository."""
+
+    def _candidates(self):
+        return [
+            FindingCandidate(
+                severity="high",
+                title="Checkout returns 500",
+                steps_to_reproduce="Open /checkout\nSubmit",
+                expected="The order is created",
+                actual="HTTP 500",
+            ),
+            FindingCandidate(
+                severity="medium",
+                title="The order endpoint errors on submit",
+                steps_to_reproduce="POST /api/orders",
+                expected="201 Created",
+                actual="500 Internal Server Error",
+            ),
+        ]
+
+    def test_parses_groups(self, stub_client):
+        stub_client.content = json.dumps(
+            {"groups": [{"indices": [0, 1], "existing_key": "QA-142"}]}
+        )
+
+        result = llm.group_findings(self._candidates(), [])
+
+        assert len(result.groups) == 1
+        assert result.groups[0].indices == [0, 1]
+        assert result.groups[0].existing_key == "QA-142"
+
+    def test_existing_key_defaults_to_none(self, stub_client):
+        stub_client.content = json.dumps({"groups": [{"indices": [0]}, {"indices": [1]}]})
+
+        result = llm.group_findings(self._candidates(), [])
+
+        assert [group.existing_key for group in result.groups] == [None, None]
+
+    def test_prompt_carries_indices_and_filed_tickets(self, stub_client):
+        stub_client.content = json.dumps({"groups": [{"indices": [0, 1]}]})
+
+        llm.group_findings(
+            self._candidates(),
+            [
+                FiledFinding(
+                    issue_key="QA-142",
+                    title="Orders cannot be placed",
+                    expected="The order is created",
+                    actual="HTTP 500",
+                )
+            ],
+        )
+
+        prompt = _user_prompt(stub_client)
+        assert "[0]" in prompt and "[1]" in prompt
+        assert "[QA-142]" in prompt
+        assert "Orders cannot be placed" in prompt
+
+    def test_says_so_when_nothing_is_filed_yet(self, stub_client):
+        stub_client.content = json.dumps({"groups": [{"indices": [0, 1]}]})
+
+        llm.group_findings(self._candidates(), [])
+
+        assert "(nothing yet)" in _user_prompt(stub_client)
+
+    def test_sends_no_tools(self, stub_client):
+        """Grouping judges sameness only. Repo access is what turns that
+        into re-judging whether a finding was real."""
+        stub_client.content = json.dumps({"groups": [{"indices": [0, 1]}]})
+
+        llm.group_findings(self._candidates(), [])
+
+        assert "tools" not in stub_client.requests[-1]
+        assert stub_client.requests[-1]["response_format"] == {"type": "json_object"}
+
+    def test_malformed_output_raises(self, stub_client):
+        stub_client.content = "not json"
+        with pytest.raises(LLMError):
+            llm.group_findings(self._candidates(), [])

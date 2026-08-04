@@ -43,6 +43,7 @@ from backend.services.llm_prompts import (
     ENV_VARS_SYSTEM_PROMPT,
     EXPLORATION_SUMMARY_SYSTEM_PROMPT,
     EXPLORATION_SYSTEM_PROMPT,
+    FINDING_GROUPING_SYSTEM_PROMPT,
     HISTORY_COMPACTION_PROMPT,
     READ_FILE_TOOL,
     REVISE_SYSTEM_PROMPT,
@@ -55,12 +56,15 @@ from backend.services.llm_prompts import (
     TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
     TEST_SCRIPT_SYSTEM_PROMPT,
     ExploratorySessionLike,
+    FiledFinding,
+    FindingCandidate,
     TestCaseLike,
     charter_context,
     context_sections,
     env_vars_context,
     exploration_context,
     exploration_summary_context,
+    finding_grouping_context,
     requirements_section,
     test_plan_context,
     test_script_context,
@@ -572,6 +576,40 @@ def diagnose_and_fix_script(
         TEST_EXECUTION_TOOL_ROUNDS,
     )
     return _validate_diagnosis(result)
+
+
+# ── Finding grouping (issue-tracker de-duplication) ───────────────────
+
+
+class FindingGroupItem(SQLModel):
+    """One group of new findings, optionally matched to a filed ticket."""
+
+    indices: list[int]
+    existing_key: str | None = None
+
+
+class FindingGroupingResult(SQLModel):
+    groups: list[FindingGroupItem]
+
+
+def group_findings(
+    candidates: list[FindingCandidate],
+    already_filed: list[FiledFinding],
+) -> FindingGroupingResult:
+    """Decide which findings describe one defect, and which already have a ticket.
+
+    A single completion with no tools and no repository access.  Nothing
+    is judged here except sameness: whether a finding is real was settled
+    by the run that recorded it, and re-opening that question is exactly
+    how a genuine bug gets talked out of existence on the way to the
+    tracker.
+
+    ``LLMError`` propagates — ``services/finding_dedup.py`` catches it and
+    falls back to its deterministic prefilter, which is a worse grouping
+    rather than no grouping.
+    """
+    parts = finding_grouping_context(candidates, already_filed)
+    return _complete(FINDING_GROUPING_SYSTEM_PROMPT, "\n\n".join(parts), FindingGroupingResult)
 
 
 # ── Exploratory testing ───────────────────────────────────────────────
