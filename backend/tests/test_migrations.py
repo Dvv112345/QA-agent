@@ -39,6 +39,22 @@ _FINDING_COLUMNS = {
     "environment",
 }
 
+_TRACKER_COLUMNS = {
+    "tracker_issue_key",
+    "tracker_issue_url",
+    "tracker_error",
+    "tracker_target",
+    "tracker_is_duplicate",
+}
+
+
+def _test_run_columns(engine) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns("testrun")}
+
+
+def _exploratory_run_columns(engine) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns("exploratoryrun")}
+
 
 def test_noop_on_fresh_schema(db_session):
     """A schema built by create_all already has every column — twice is safe."""
@@ -55,6 +71,10 @@ def test_noop_on_fresh_schema(db_session):
     assert "archived" in _testcase_columns(engine)
     assert "content_revision" in _requirement_columns(engine)
     assert "content_revision" in _test_environment_access_columns(engine)
+    assert _test_case_execution_columns(engine) >= _TRACKER_COLUMNS
+    assert _exploratory_finding_columns(engine) >= _TRACKER_COLUMNS
+    assert "export_findings" in _test_run_columns(engine)
+    assert "export_findings" in _exploratory_run_columns(engine)
 
 
 def _test_execution_columns(engine) -> set[str]:
@@ -229,6 +249,77 @@ def test_converges_on_partially_migrated_test_case_execution():
 
     run_migrations(engine)
     assert _test_case_execution_columns(engine) >= _FINDING_COLUMNS
+
+
+def test_adds_missing_tracker_columns_to_both_carriers():
+    """A database predating the integration gets the receipt columns on both.
+
+    Both finding carriers are migrated by one parametrized step, so this
+    asserts them together — a step that reached only the scripted side
+    would leave exploratory findings unable to record where they were filed.
+    """
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        for table in ("testcaseexecution", "exploratoryfinding"):
+            for name in _TRACKER_COLUMNS:
+                connection.execute(text(f"ALTER TABLE {table} DROP COLUMN {name}"))
+    assert not (_TRACKER_COLUMNS & _test_case_execution_columns(engine))
+    assert not (_TRACKER_COLUMNS & _exploratory_finding_columns(engine))
+
+    run_migrations(engine)
+    assert _test_case_execution_columns(engine) >= _TRACKER_COLUMNS
+    assert _exploratory_finding_columns(engine) >= _TRACKER_COLUMNS
+    run_migrations(engine)  # idempotent on the migrated schema too
+    assert _test_case_execution_columns(engine) >= _TRACKER_COLUMNS
+
+
+def test_converges_on_partially_migrated_tracker_columns():
+    """A run interrupted midway leaves some columns — the next boot finishes.
+
+    Includes the boolean specifically: it is added by a separate branch
+    from the four TEXT columns, so a check that only counted the latter
+    would skip it forever once they were present.
+    """
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        for name in ("tracker_error", "tracker_target", "tracker_is_duplicate"):
+            connection.execute(text(f"ALTER TABLE testcaseexecution DROP COLUMN {name}"))
+        connection.execute(text("ALTER TABLE exploratoryfinding DROP COLUMN tracker_is_duplicate"))
+
+    run_migrations(engine)
+    assert _test_case_execution_columns(engine) >= _TRACKER_COLUMNS
+    assert _exploratory_finding_columns(engine) >= _TRACKER_COLUMNS
+
+
+def test_adds_missing_export_findings_to_both_run_types():
+    """Existing runs get the flag defaulting to false — which is what they were."""
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        for table in ("testrun", "exploratoryrun"):
+            connection.execute(text(f"ALTER TABLE {table} DROP COLUMN export_findings"))
+    assert "export_findings" not in _test_run_columns(engine)
+    assert "export_findings" not in _exploratory_run_columns(engine)
+
+    run_migrations(engine)
+    assert "export_findings" in _test_run_columns(engine)
+    assert "export_findings" in _exploratory_run_columns(engine)
+    run_migrations(engine)  # idempotent on the migrated schema too
+    assert "export_findings" in _test_run_columns(engine)
+
+
+def test_converges_when_only_one_run_type_was_migrated():
+    """Each table is checked on its own, so a half-applied pair converges."""
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE exploratoryrun DROP COLUMN export_findings"))
+
+    run_migrations(engine)
+    assert "export_findings" in _exploratory_run_columns(engine)
+    assert "export_findings" in _test_run_columns(engine)
 
 
 def _seed_orphan_case(db_session, *, parent_status, case_status):

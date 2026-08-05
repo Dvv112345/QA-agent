@@ -148,6 +148,12 @@ EXPLORATORY_JOB_TIMEOUT: int = _get_int("EXPLORATORY_JOB_TIMEOUT", 7200)
 # Headed mode is for local debugging — watching the agent explore.
 EXPLORATORY_HEADLESS: bool = _get_bool("EXPLORATORY_HEADLESS", True)
 
+# ── Issue tracker (Jira / GitHub Issues) ──────────────────────────────
+# Seconds for a single outbound tracker request (verify, create, state
+# check, attachment). Deliberately the only knob here: there is no export
+# cap, because grouping is what bounds how many tickets a run can file.
+ISSUE_TRACKER_TIMEOUT: int = _get_int("ISSUE_TRACKER_TIMEOUT", 15)
+
 # ── Reconciler ────────────────────────────────────────────────────────
 RECONCILER_INTERVAL: int = _get_int("RECONCILER_INTERVAL", 30)
 # Must exceed OPENAI_TIMEOUT so a slow LLM call is never mistaken for a dead worker.

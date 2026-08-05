@@ -33,6 +33,7 @@ class TestCreateRepo:
         assert data["active"] is True
         assert data["github_link"] == "https://github.com/owner/test-repo"
         assert "github_token" not in data
+        assert data["has_access_token"] is False
 
     @pytest.mark.asyncio
     async def test_creates_repo_with_token(self, async_client, httpx_mock):
@@ -50,6 +51,9 @@ class TestCreateRepo:
         assert resp.status_code == 201
         data = resp.json()
         assert data["name"] == "owner/private-repo"
+        # Whether a token exists is visible; the token itself never is —
+        # the issue-tracker form needs the first and must never see the second.
+        assert data["has_access_token"] is True
         assert "github_token" not in data
 
     @pytest.mark.asyncio

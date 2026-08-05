@@ -13,6 +13,8 @@ export interface RepoResponse {
   description: string | null
   active: boolean
   created_at: string
+  /** Whether a token is stored — never the token itself. */
+  has_access_token: boolean
 }
 
 export interface SprintResponse {
@@ -149,6 +151,53 @@ export interface Finding {
   actual: string
   /** Where it was observed. Null on findings recorded before capture existed. */
   environment: string | null
+  /**
+   * Issue-tracker receipt. All null/false on a finding that was never
+   * filed: the run's toggle was off, the run did not reach the completion
+   * path, or filing has not run yet. The URL is absolute, so the card
+   * needs nothing else to link the ticket.
+   */
+  tracker_issue_key: string | null
+  tracker_issue_url: string | null
+  tracker_error: string | null
+  /** Grouped into another finding's ticket rather than getting its own. */
+  tracker_is_duplicate: boolean
+}
+
+// ── Issue tracker ───────────────────────────────────────────────────
+
+export type IssueTrackerProvider = 'jira' | 'github'
+
+export interface IssueTrackerConfig {
+  id: number
+  sprint_id: number
+  provider: IssueTrackerProvider
+  /** Jira project key, or "owner/repo". */
+  target: string
+  /** "Jira · QA" — composed server-side, never reassembled here. */
+  target_label: string
+  base_url: string | null
+  account_email: string | null
+  issue_type: string | null
+  verified_at: string
+  created_at: string
+  updated_at: string
+}
+
+/** The token is write-only: blank means "keep the stored one". */
+export interface IssueTrackerConfigInput {
+  provider: IssueTrackerProvider
+  target: string
+  base_url?: string | null
+  account_email?: string | null
+  api_token?: string | null
+  issue_type?: string | null
+  /**
+   * GitHub only: file into the sprint's own repository. The backend derives
+   * `owner/repo` (so `target` may be blank) and falls back to the repo's
+   * stored access token when none is typed.
+   */
+  use_sprint_repo?: boolean
 }
 
 // ── Run staleness (shared by scripted and exploratory runs) ─────────
@@ -194,7 +243,36 @@ export interface TestExecutionResponse {
   updated_at: string
 }
 
-export interface TestRunResponse {
+/** One filed ticket and how many of a run's findings it stands for. */
+export interface TrackerIssueGroup {
+  issue_key: string
+  issue_url: string
+  finding_count: number
+}
+
+/**
+ * A run's export state, computed server-side and never stored.
+ *
+ * `export_error_count` is a **subset** of `unexported_finding_count`, not
+ * disjoint from it: one decides whether the page offers the button, the
+ * other words it.
+ */
+export interface ExportRollup {
+  /**
+   * The run's own start-time toggle — the one *stored* field here. The
+   * button files either way, so this only changes the wording: it is what
+   * separates "was set to file and has not yet" from "was never set to
+   * file".
+   */
+  export_findings: boolean
+  exported_finding_count: number
+  exported_issue_count: number
+  export_error_count: number
+  unexported_finding_count: number
+  export_groups: TrackerIssueGroup[]
+}
+
+export interface TestRunResponse extends ExportRollup {
   id: number
   sprint_id: number
   created_at: string
@@ -214,7 +292,7 @@ export interface TestRunResponse {
   error_cases: number
 }
 
-export interface TestRunDetailResponse {
+export interface TestRunDetailResponse extends ExportRollup {
   id: number
   sprint_id: number
   created_at: string
@@ -286,7 +364,7 @@ export interface ExploratorySessionResponse {
   updated_at: string
 }
 
-export interface ExploratoryRunResponse {
+export interface ExploratoryRunResponse extends ExportRollup {
   id: number
   sprint_id: number
   requirement_id: number
@@ -304,7 +382,7 @@ export interface ExploratoryRunResponse {
   updated_at: string
 }
 
-export interface ExploratoryRunDetailResponse {
+export interface ExploratoryRunDetailResponse extends ExportRollup {
   id: number
   sprint_id: number
   requirement_id: number

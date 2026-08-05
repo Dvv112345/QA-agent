@@ -1075,3 +1075,56 @@ class TestExploratoryRunSweeps:
         assert stub_queue.enqueued_plans == [plan.id]
         assert stub_queue.enqueued_executions == [execution.id]
         assert stub_queue.enqueued_explorations == [exploration.id]
+
+
+class TestBackgroundSweepsNeverFile:
+    """Automatic export belongs to the completion path, and only there.
+
+    The reconciler is a repair mechanism, not a delivery mechanism: a run
+    it fails has an incomplete finding set by definition, and a sweep that
+    filed tickets would also need its own backoff or it would hammer a
+    revoked token every tick. This guards against someone later "fixing"
+    the gap by wiring export into a background sweep.
+    """
+
+    @pytest.fixture
+    def tracker_spy(self, monkeypatch):
+        calls: list = []
+        from backend.services import issue_tracker
+
+        for name in ("verify", "create_issue", "issue_is_open", "attach_screenshot"):
+            monkeypatch.setattr(
+                issue_tracker,
+                name,
+                lambda *args, _n=name, **kwargs: calls.append(_n),
+            )
+        return calls
+
+    def test_reconciler_sweeps_file_nothing(self, db_session, stub_queue, tracker_spy):
+        from backend.config import MAX_AUTO_RETRIES
+
+        sprint = _seed_sprint(db_session)
+        _seed_execution_with_cases(
+            db_session,
+            sprint,
+            ["failed", "pending"],
+            status="running",
+            last_heartbeat=_stale_time(),
+            retry_count=MAX_AUTO_RETRIES,
+        )
+
+        reconcile_once()
+
+        assert tracker_spy == []
+
+    @pytest.mark.asyncio
+    async def test_finish_sprint_files_nothing(
+        self, async_client, db_session, stub_queue, tracker_spy
+    ):
+        sprint = _seed_sprint(db_session)
+        _seed_execution_with_cases(db_session, sprint, ["failed", "pending"], status="running")
+
+        resp = await async_client.patch(f"/api/sprints/{sprint.id}", json={"active": False})
+
+        assert resp.status_code == 200
+        assert tracker_spy == []

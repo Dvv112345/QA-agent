@@ -36,6 +36,7 @@ const fakeRepo: RepoResponse = {
   description: null,
   active: true,
   created_at: '2026-01-01T00:00:00Z',
+  has_access_token: false,
 }
 
 function renderPage() {

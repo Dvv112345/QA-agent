@@ -1,7 +1,9 @@
 """Test-execution routes — create runs, list/detail, script download, restart."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
+from functools import partial
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -20,6 +22,7 @@ from backend.models.database import (
     TestExecutionStatus,
     TestPlanStatus,
     TestRun,
+    export_rollup,
     outdated_restart_error,
 )
 from backend.models.types import (
@@ -28,6 +31,8 @@ from backend.models.types import (
     TestRunDetailResponse,
     TestRunResponse,
 )
+from backend.services import finding_export
+from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.queue import get_queue_service
 from backend.utils.auth import verify_auth
 from backend.utils.readme_utils import refresh_file_tree, resolve_readme
@@ -122,6 +127,27 @@ def _run_response(run: TestRun) -> TestRunResponse:
         passed_cases=passed,
         failed_cases=failed,
         error_cases=error,
+        **export_rollup(run.bug_findings, export_findings=run.export_findings),
+    )
+
+
+def _run_detail(run: TestRun) -> TestRunDetailResponse:
+    """Build the detail shape, computing the export roll-up exactly once.
+
+    The twin of ``routes/exploratory.py::_run_detail``.  `executions` is
+    passed through as rows for SQLModel's ``from_attributes`` to coerce,
+    which is what FastAPI did with the whole object before this existed —
+    only the roll-up needs composing by hand.
+    """
+    return TestRunDetailResponse(
+        id=run.id,
+        sprint_id=run.sprint_id,
+        created_at=run.created_at,
+        status=run.status,
+        outdated_reasons=run.outdated_reasons,
+        requirement_deleted=run.requirement_deleted,
+        executions=run.executions,
+        **export_rollup(run.bug_findings, export_findings=run.export_findings),
     )
 
 
@@ -132,7 +158,7 @@ async def create_test_run(
     sprint_id: int,
     body: TestRunCreateRequest,
     session: Session = Depends(get_session),
-) -> TestRun:
+) -> TestRunDetailResponse:
     """Create a run covering the selected requirements — one TestExecution
     (+ TestCaseExecution per approved-plan case) each, enqueued best-effort."""
     sprint = _get_sprint_or_404(session, sprint_id)
@@ -140,6 +166,9 @@ async def create_test_run(
 
     if not body.requirement_ids:
         raise HTTPException(status_code=422, detail="At least one requirement must be selected.")
+
+    if body.export_findings and sprint.issue_tracker is None:
+        raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)
 
     # Scripted runs need this as much as exploratory ones do — the worker
     # injects `env_vars` into every script's subprocess. It went unchecked
@@ -220,7 +249,7 @@ async def create_test_run(
     # Each execution records the content revisions it is about to run
     # against; a later edit upstream is what makes it read as outdated.
     env_revision = test_env.content_revision
-    run = TestRun(sprint_id=sprint_id)
+    run = TestRun(sprint_id=sprint_id, export_findings=body.export_findings)
     executions: list[TestExecution] = []
     for requirement in selected:
         execution = TestExecution(
@@ -247,7 +276,7 @@ async def create_test_run(
         run.id,
         len(executions),
     )
-    return _get_run_or_404(session, run.id)
+    return _run_detail(_get_run_or_404(session, run.id))
 
 
 @router.get("/sprints/{sprint_id}/test-runs", response_model=list[TestRunResponse])
@@ -280,9 +309,9 @@ async def list_test_runs(
 async def get_test_run(
     run_id: int,
     session: Session = Depends(get_session),
-) -> TestRun:
+) -> TestRunDetailResponse:
     """Fetch one run's full detail — grouped by requirement, then by case."""
-    return _get_run_or_404(session, run_id)
+    return _run_detail(_get_run_or_404(session, run_id))
 
 
 @router.get("/test-case-executions/{case_execution_id}/script")
@@ -335,3 +364,36 @@ async def restart_test_execution(
     session.refresh(execution)
     _enqueue_executions(session, [execution])
     return execution
+
+
+@router.post("/test-runs/{run_id}/export-findings", response_model=TestRunDetailResponse)
+async def export_test_run_findings(
+    run_id: int,
+    session: Session = Depends(get_session),
+) -> TestRunDetailResponse:
+    """File this run's unfiled bug findings, on request.
+
+    The manual half of the export rule, and not a fallback: a run that
+    ended any way other than ``completed`` reaches its page with the bugs
+    it *did* find unfiled by design, and this is how they get filed.
+    Retrying a run whose filing failed is the same operation.
+
+    Synchronous via ``asyncio.to_thread`` — like
+    ``POST /exploratory-runs/{id}/summarize``, this is user-initiated,
+    uncapped, and cheap enough that a queue would only add a place for it
+    to get lost.  A run with nothing pending is a no-op that still
+    returns the refreshed detail, so the button is never a trap.
+    """
+    run = _get_run_or_404(session, run_id)
+    if run.sprint is not None and run.sprint.issue_tracker is None:
+        raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)
+
+    # `requested=True`: the click is the consent the run's toggle stands in
+    # for, so this files even for a run started before a tracker existed.
+    for execution in run.executions:
+        await asyncio.to_thread(
+            partial(finding_export.export_findings, session, execution, requested=True)
+        )
+
+    session.expire_all()
+    return _run_detail(_get_run_or_404(session, run_id))

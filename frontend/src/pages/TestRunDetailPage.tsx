@@ -1,13 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
 import { isOutdated } from '../outdated'
 import TestCaseExecutionRow from '../components/TestCaseExecutionRow'
-import { fetchSprint, fetchTestRun, restartTestExecution } from '../services/api'
+import {
+  exportTestRunFindings,
+  fetchSprint,
+  fetchTestRun,
+  restartTestExecution,
+} from '../services/api'
 import type { SprintResponse, TestExecutionResponse, TestRunDetailResponse } from '../types'
 import './TestRunDetailPage.css'
 
 const POLL_INTERVAL_MS = 2500
+
+/**
+ * How long to keep polling a run that has finished but whose findings have
+ * not reached the tracker yet (~2 minutes) — see the twin constant in
+ * `ExploratoryRunDetailPage` for why the window exists at all. The race is
+ * the same here: the last execution commits `COMPLETED`, which flips the
+ * run's rolled-up status, and only then files its findings.
+ */
+const EXPORT_GRACE_TICKS = 48
 
 const STATUS_LABELS: Record<string, string> = {
   pending: 'Queued',
@@ -51,13 +66,30 @@ export default function TestRunDetailPage() {
     }
   }, [sprintId, runIdNum])
 
-  const shouldPoll = run?.status === 'running'
+  const inProgress = run?.status === 'running'
+  // A finished run whose bugs are unfiled with nothing having failed: the
+  // export runs after the completion commit, so it is almost certainly
+  // still in flight. See EXPORT_GRACE_TICKS.
+  const exportPending =
+    run?.status === 'completed' &&
+    run.export_findings &&
+    run.unexported_finding_count > 0 &&
+    run.export_error_count === 0
+  const shouldPoll = inProgress || exportPending
 
   useEffect(() => {
     if (!shouldPoll) return
 
+    // Unbounded while the run itself is working — it is the run that says
+    // when that ends. Bounded once only the export is outstanding.
+    let ticksLeft = inProgress ? Number.POSITIVE_INFINITY : EXPORT_GRACE_TICKS
     const pollId = setInterval(() => {
       if (fetchingRef.current) return
+      if (ticksLeft <= 0) {
+        clearInterval(pollId)
+        return
+      }
+      ticksLeft -= 1
       fetchingRef.current = true
       fetchTestRun(runIdNum)
         .then(setRun)
@@ -70,7 +102,7 @@ export default function TestRunDetailPage() {
     }, POLL_INTERVAL_MS)
 
     return () => clearInterval(pollId)
-  }, [shouldPoll, runIdNum])
+  }, [shouldPoll, inProgress, runIdNum])
 
   const handleRestart = (execution: TestExecutionResponse) => {
     setRestarting(execution.id)
@@ -108,7 +140,10 @@ export default function TestRunDetailPage() {
       </nav>
 
       <header className="test-run-detail-header">
-        <h1>Test Run</h1>
+        {/* The id is shown because a filed ticket names it ("Scripted run
+            14") and it otherwise lives only in the URL. Global rather than
+            per-sprint, hence `#14` — an identifier, not a count. */}
+        <h1>Test Run #{run.id}</h1>
         <span className={`run-badge run-badge-${run.status}`}>
           {STATUS_LABELS[run.status] ?? run.status}
         </span>
@@ -116,6 +151,8 @@ export default function TestRunDetailPage() {
       </header>
 
       <p className="test-run-detail-meta">{new Date(run.created_at).toLocaleString()}</p>
+
+      <ExportSummary rollup={run} onExport={() => exportTestRunFindings(runIdNum).then(setRun)} />
 
       {actionError && <p className="test-run-detail-error">{actionError}</p>}
 

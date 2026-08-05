@@ -812,3 +812,74 @@ class TestLiveActionCount:
         explore_requirement_task(run.id)
 
         assert observed == [0]
+
+
+class TestFindingExportWiring:
+    """Same rule as the scripted task: only a run that finished reports."""
+
+    @pytest.fixture
+    def export_spy(self, monkeypatch):
+        calls: list = []
+
+        def _spy(session, parent):
+            calls.append(parent.id)
+            from backend.services.finding_export import ExportOutcome
+
+            return ExportOutcome()
+
+        import backend.services.finding_export as module
+
+        monkeypatch.setattr(module, "export_findings", _spy)
+        return calls
+
+    def test_called_once_when_the_run_completes(self, db_session, patched, export_spy):
+        _, _, run = _seed_run_with_sessions(db_session, charters=("A", "B"))
+
+        explore_requirement_task(run.id)
+
+        assert export_spy == [run.id]
+
+    def test_not_called_when_the_sprint_was_finished(self, db_session, patched, export_spy):
+        sprint, _, run = _seed_run_with_sessions(db_session)
+        sprint.active = False
+        db_session.add(sprint)
+        db_session.commit()
+
+        explore_requirement_task(run.id)
+
+        assert export_spy == []
+
+    def test_not_called_when_the_run_is_superseded_mid_run(self, db_session, patched, export_spy):
+        """An upstream edit leaves a finding set that is incomplete and
+        known to be — the Retry button is where a human decides."""
+        sprint, requirement, run = _seed_run_with_sessions(db_session, charters=("A", "B"))
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        assert db_session.get(ExploratoryRun, run.id).status == ExploratoryRunStatus.FAILED
+        assert export_spy == []
+
+    def test_not_called_on_a_stale_job(self, db_session, patched, export_spy):
+        _, _, run = _seed_run_with_sessions(db_session, status=ExploratoryRunStatus.COMPLETED)
+
+        explore_requirement_task(run.id)
+
+        assert export_spy == []
+
+    def test_a_raising_exporter_cannot_fail_the_run(self, db_session, patched, monkeypatch):
+        import backend.services.finding_export as module
+
+        def _boom(session, parent):
+            raise RuntimeError("tracker exploded")
+
+        monkeypatch.setattr(module, "export_findings", _boom)
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        explore_requirement_task(run.id)  # must not raise
+
+        db_session.expire_all()
+        assert db_session.get(ExploratoryRun, run.id).status == ExploratoryRunStatus.COMPLETED

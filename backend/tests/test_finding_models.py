@@ -55,6 +55,10 @@ class TestFindingProperty:
             "expected": "Total includes tax",
             "actual": "Total excludes tax",
             "environment": "Windows-10 · Python 3.12.4",
+            "tracker_issue_key": None,
+            "tracker_issue_url": None,
+            "tracker_error": None,
+            "tracker_is_duplicate": False,
         }
 
     def test_error_case_reports_an_issue(self):
@@ -93,6 +97,35 @@ class TestFindingProperty:
         of the API instead of surfacing an all-null card.
         """
         assert _finished(TestCaseExecutionStatus.FAILED, error="something broke").finding is None
+
+    def test_tracker_fields_pass_through_uncoalesced(self):
+        """A filed finding carries its receipt; an unfiled one carries nulls.
+
+        Deliberately not coalesced like the five required fields above —
+        the response model allows null here, and an empty string would
+        render as a link to nowhere.
+        """
+        row = _with_finding(TestCaseExecutionStatus.FAILED)
+        row.tracker_issue_key = "QA-142"
+        row.tracker_issue_url = "https://acme.atlassian.net/browse/QA-142"
+        row.tracker_is_duplicate = True
+
+        finding = row.finding
+
+        assert finding["tracker_issue_key"] == "QA-142"
+        assert finding["tracker_issue_url"] == "https://acme.atlassian.net/browse/QA-142"
+        assert finding["tracker_is_duplicate"] is True
+        assert finding["tracker_error"] is None
+
+    def test_tracker_error_surfaces_without_a_key(self):
+        """A failed filing leaves the error and no key — both are reported."""
+        row = _with_finding(TestCaseExecutionStatus.FAILED)
+        row.tracker_error = "Jira rejected the request (401)"
+
+        finding = row.finding
+
+        assert finding["tracker_error"] == "Jira rejected the request (401)"
+        assert finding["tracker_issue_key"] is None
 
 
 class TestSeverityNormalization:

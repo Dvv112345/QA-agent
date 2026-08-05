@@ -13,6 +13,15 @@ _TESTS_DIR = Path(__file__).resolve().parent
 
 TEST_DATABASE_URL = "sqlite:///file:test_db?mode=memory&cache=shared&uri=true"
 
+# sqlite3 refuses a connection used from a thread other than the one that
+# opened it.  Nothing in production hits that — psycopg2 has no such
+# guard — but a route that offloads database work with `asyncio.to_thread`
+# (the export-findings retry routes) genuinely runs it on another thread,
+# so without this the whole shape is untestable and every test of one has
+# to stub the work out.  Sequential use is still the only use: the routes
+# await the thread, so there is never more than one toucher at a time.
+TEST_CONNECT_ARGS = {"check_same_thread": False}
+
 
 # ── Enforce foreign keys on every SQLite connection ───────────────────
 # SQLite ignores foreign keys unless asked, so without this a test can
@@ -41,7 +50,7 @@ def _mock_database_engine(monkeypatch):
     This runs automatically before every test so no test ever tries to
     connect to a real PostgreSQL server.
     """
-    engine = create_engine(TEST_DATABASE_URL, echo=False)
+    engine = create_engine(TEST_DATABASE_URL, echo=False, connect_args=TEST_CONNECT_ARGS)
 
     import backend.database
 
@@ -96,7 +105,7 @@ def db_session() -> Generator[Session, None, None]:
     # Ensure all models are imported before create_all
     from backend.models.database import Repo, Sprint  # noqa: F401
 
-    engine = create_engine(TEST_DATABASE_URL, echo=False)
+    engine = create_engine(TEST_DATABASE_URL, echo=False, connect_args=TEST_CONNECT_ARGS)
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         yield session

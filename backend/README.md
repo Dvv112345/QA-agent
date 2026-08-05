@@ -43,37 +43,38 @@ Generated test scripts may import Playwright, `requests`, `Faker`, `psycopg2` (P
 
 `.env.example` documents every variable. The important ones:
 
-| Variable                                                    | Default                                                  | Description                                                                                                                     |
-| ----------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                                              | `postgresql://postgres:postgres@localhost:5432/qa_agent` | PostgreSQL connection string.                                                                                                   |
-| `ENCRYPTION_KEY`                                            | _(unset)_                                                | Fernet key for encrypting GitHub tokens at rest. Required to register repos with a token.                                       |
-| `APP_PASSWORD`                                              | _(unset)_                                                | Shared password for accessing the QA Agent UI. When unset, authentication is disabled.                                          |
-| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint README and uploaded PRD files to disk.                                                        |
-| `STORAGE_LOCATION`                                          | `./uploads`                                              | Directory for sprint files when `STORE_OFFLINE=true`.                                                                           |
-| `CORS_ORIGINS`                                              | `http://localhost:5173`                                  | Comma-separated list of allowed origins.                                                                                        |
-| `GITHUB_API_TIMEOUT`                                        | `15`                                                     | Timeout in seconds for GitHub API requests.                                                                                     |
-| `FILE_TREE_MAX_CHARS`                                       | `20000`                                                  | Character cap for the repo file-tree listing captured at sprint creation.                                                       |
-| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | `localhost` / `6379` / _(unset)_ / `0`                   | Redis connection for the analysis queue.                                                                                        |
-| `JOB_TIMEOUT` / `JOB_RESULT_TTL` / `WORKER_TTL`             | `300` / `3600` / `30`                                    | RQ job timeout, result retention, and worker heartbeat TTL (bounds Windows shutdown lag).                                       |
-| `OPENAI_API_KEY`                                            | _(unset)_                                                | LLM API key. Required for requirement analysis, the test-environment check, and test-plan generation; never logged or returned. |
-| `OPENAI_BASE_URL`                                           | `https://api.deepseek.com`                               | Any OpenAI-compatible provider.                                                                                                 |
-| `OPENAI_MODEL`                                              | `deepseek-v4-flash`                                      | Model used for the LLM checks.                                                                                                  |
-| `OPENAI_TIMEOUT`                                            | `60`                                                     | Timeout in seconds for LLM requests.                                                                                            |
-| `MAX_CLARIFICATION_ROUNDS`                                  | `3`                                                      | Clarification Q&A rounds per requirement; past the cap only confirm-as-is or manual edit.                                       |
-| `MAX_AUTO_RETRIES`                                          | `3`                                                      | Automatic retries before a requirement is marked `failed`; manual Restart stays uncapped.                                       |
-| `PRD_MAX_CHARS`                                             | `50000`                                                  | Character cap on text extracted from an uploaded PRD; larger uploads are rejected (422), never truncated.                       |
-| `MAX_PRD_REQUIREMENTS`                                      | `50`                                                     | Max requirements a single PRD split may produce; larger splits are rejected (422).                                              |
-| `MAX_TEST_ENV_REVISION_ROUNDS`                              | `3`                                                      | Answer/revise rounds for the test-environment text; direct edit stays uncapped.                                                 |
-| `MAX_TEST_PLAN_FEEDBACK_ROUNDS`                             | `3`                                                      | Feedback/revise rounds per test plan; direct edit stays uncapped.                                                               |
-| `TEST_PLAN_JOB_TIMEOUT`                                     | `900`                                                    | RQ job timeout for plan jobs. Generation is a single LLM call, so this is vestigial headroom rather than a sized budget.        |
-| `MAX_SCRIPT_FIX_ROUNDS`                                     | `3`                                                      | Additional self-heal attempts per test case before a stubborn `script_bug` verdict gives up (case ends `error`, not `failed`).  |
-| `TEST_EXECUTION_TOOL_ROUNDS`                                | `5`                                                      | Max `read_file` LLM rounds per test-script generation/diagnosis call — the only stage with repository access.                   |
-| `TEST_EXECUTION_FILE_MAX_CHARS`                             | `20000`                                                  | Per-file character cap for repo files fetched by that tool loop.                                                                |
-| `SCRIPT_EXECUTION_TIMEOUT`                                  | `60`                                                     | Wall-clock timeout in seconds for one test-script subprocess run.                                                               |
-| `TEST_EXECUTION_JOB_TIMEOUT`                                | `3600`                                                   | RQ job timeout for test-execution jobs — sized for every case in a plan, each with multiple generate/execute/diagnose cycles.   |
-| `RECONCILER_INTERVAL`                                       | `30`                                                     | Seconds between reconciler ticks (re-enqueues lost/backlogged jobs).                                                            |
-| `HEARTBEAT_STALE_SECONDS`                                   | `180`                                                    | Age after which an `analyzing` heartbeat counts as a crashed worker; keep above `OPENAI_TIMEOUT`.                               |
-| `PENDING_JOB_STALE_SECONDS`                                 | `30`                                                     | Age after which a `pending` row's started RQ job counts as a crashed worker.                                                    |
+| Variable                                                    | Default                                                  | Description                                                                                                                                                                                               |
+| ----------------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                              | `postgresql://postgres:postgres@localhost:5432/qa_agent` | PostgreSQL connection string.                                                                                                                                                                             |
+| `ENCRYPTION_KEY`                                            | _(unset)_                                                | Fernet key for encrypting GitHub tokens **and issue-tracker API tokens** at rest. Required to register repos with a token, and to connect an issue tracker.                                               |
+| `APP_PASSWORD`                                              | _(unset)_                                                | Shared password for accessing the QA Agent UI. When unset, authentication is disabled.                                                                                                                    |
+| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint README and uploaded PRD files to disk.                                                                                                                                  |
+| `STORAGE_LOCATION`                                          | `./uploads`                                              | Directory for sprint files when `STORE_OFFLINE=true`.                                                                                                                                                     |
+| `CORS_ORIGINS`                                              | `http://localhost:5173`                                  | Comma-separated list of allowed origins.                                                                                                                                                                  |
+| `GITHUB_API_TIMEOUT`                                        | `15`                                                     | Timeout in seconds for GitHub API requests.                                                                                                                                                               |
+| `FILE_TREE_MAX_CHARS`                                       | `20000`                                                  | Character cap for the repo file-tree listing captured at sprint creation.                                                                                                                                 |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | `localhost` / `6379` / _(unset)_ / `0`                   | Redis connection for the analysis queue.                                                                                                                                                                  |
+| `JOB_TIMEOUT` / `JOB_RESULT_TTL` / `WORKER_TTL`             | `300` / `3600` / `30`                                    | RQ job timeout, result retention, and worker heartbeat TTL (bounds Windows shutdown lag).                                                                                                                 |
+| `OPENAI_API_KEY`                                            | _(unset)_                                                | LLM API key. Required for requirement analysis, the test-environment check, and test-plan generation; never logged or returned.                                                                           |
+| `OPENAI_BASE_URL`                                           | `https://api.deepseek.com`                               | Any OpenAI-compatible provider.                                                                                                                                                                           |
+| `OPENAI_MODEL`                                              | `deepseek-v4-flash`                                      | Model used for the LLM checks.                                                                                                                                                                            |
+| `OPENAI_TIMEOUT`                                            | `60`                                                     | Timeout in seconds for LLM requests.                                                                                                                                                                      |
+| `MAX_CLARIFICATION_ROUNDS`                                  | `3`                                                      | Clarification Q&A rounds per requirement; past the cap only confirm-as-is or manual edit.                                                                                                                 |
+| `MAX_AUTO_RETRIES`                                          | `3`                                                      | Automatic retries before a requirement is marked `failed`; manual Restart stays uncapped.                                                                                                                 |
+| `PRD_MAX_CHARS`                                             | `50000`                                                  | Character cap on text extracted from an uploaded PRD; larger uploads are rejected (422), never truncated.                                                                                                 |
+| `MAX_PRD_REQUIREMENTS`                                      | `50`                                                     | Max requirements a single PRD split may produce; larger splits are rejected (422).                                                                                                                        |
+| `MAX_TEST_ENV_REVISION_ROUNDS`                              | `3`                                                      | Answer/revise rounds for the test-environment text; direct edit stays uncapped.                                                                                                                           |
+| `MAX_TEST_PLAN_FEEDBACK_ROUNDS`                             | `3`                                                      | Feedback/revise rounds per test plan; direct edit stays uncapped.                                                                                                                                         |
+| `TEST_PLAN_JOB_TIMEOUT`                                     | `900`                                                    | RQ job timeout for plan jobs. Generation is a single LLM call, so this is vestigial headroom rather than a sized budget.                                                                                  |
+| `MAX_SCRIPT_FIX_ROUNDS`                                     | `3`                                                      | Additional self-heal attempts per test case before a stubborn `script_bug` verdict gives up (case ends `error`, not `failed`).                                                                            |
+| `TEST_EXECUTION_TOOL_ROUNDS`                                | `5`                                                      | Max `read_file` LLM rounds per test-script generation/diagnosis call — the only stage with repository access.                                                                                             |
+| `TEST_EXECUTION_FILE_MAX_CHARS`                             | `20000`                                                  | Per-file character cap for repo files fetched by that tool loop.                                                                                                                                          |
+| `SCRIPT_EXECUTION_TIMEOUT`                                  | `60`                                                     | Wall-clock timeout in seconds for one test-script subprocess run.                                                                                                                                         |
+| `TEST_EXECUTION_JOB_TIMEOUT`                                | `3600`                                                   | RQ job timeout for test-execution jobs — sized for every case in a plan, each with multiple generate/execute/diagnose cycles.                                                                             |
+| `ISSUE_TRACKER_TIMEOUT`                                     | `15`                                                     | Timeout in seconds for one outbound issue-tracker request (verify, create issue, state check, attachment). There is deliberately no cap on how many issues a run may file — grouping is what bounds that. |
+| `RECONCILER_INTERVAL`                                       | `30`                                                     | Seconds between reconciler ticks (re-enqueues lost/backlogged jobs).                                                                                                                                      |
+| `HEARTBEAT_STALE_SECONDS`                                   | `180`                                                    | Age after which an `analyzing` heartbeat counts as a crashed worker; keep above `OPENAI_TIMEOUT`.                                                                                                         |
+| `PENDING_JOB_STALE_SECONDS`                                 | `30`                                                     | Age after which a `pending` row's started RQ job counts as a crashed worker.                                                                                                                              |
 
 Generate an encryption key with:
 
@@ -117,11 +118,12 @@ Register a GitHub repository. Validates the URL format and confirms the repo is 
   "name": "owner/repo",
   "description": "A description from GitHub",
   "active": true,
-  "created_at": "2026-07-13T12:00:00Z"
+  "created_at": "2026-07-13T12:00:00Z",
+  "has_access_token": false
 }
 ```
 
-The access token is never returned in responses.
+The access token is never returned in responses — only `has_access_token`, so the issue-tracker form can say whether the repo can supply a credential instead of the user learning it from a save that fails.
 
 **Errors:** 422 (invalid URL or inaccessible repo), 500 (missing `ENCRYPTION_KEY` when a token is supplied).
 
@@ -385,7 +387,7 @@ An execution can stop before it has walked every case — superseded by an upstr
 
 #### `POST /api/sprints/{sprint_id}/test-runs`
 
-Create a run covering the selected requirements. Body: `{ "requirement_ids": [1, 2, …] }`. First best-effort refreshes the sprint's README/file-tree context from GitHub exactly once for the whole run — so scripts are generated/self-healed against current repo state rather than the (possibly stale) sprint-creation-time snapshot — skipping the README refresh when the sprint's README was user-uploaded (`Sprint.readme_user_provided`; a user-supplied README is authoritative) and never blocking run creation on a GitHub failure. Then creates one `TestRun` plus one `TestExecution` (and one `TestCaseExecution` per plan case, in position order) per requirement, enqueued best-effort.
+Create a run covering the selected requirements. Body: `{ "requirement_ids": [1, 2, …], "export_findings": false }` — see [Issue Tracker](#issue-tracker) for the flag. First best-effort refreshes the sprint's README/file-tree context from GitHub exactly once for the whole run — so scripts are generated/self-healed against current repo state rather than the (possibly stale) sprint-creation-time snapshot — skipping the README refresh when the sprint's README was user-uploaded (`Sprint.readme_user_provided`; a user-supplied README is authoritative) and never blocking run creation on a GitHub failure. Then creates one `TestRun` plus one `TestExecution` (and one `TestCaseExecution` per plan case, in position order) per requirement, enqueued best-effort.
 
 **Response** (201): `TestRunDetailResponse` — `{ "id", "sprint_id", "created_at", "status", "executions": [...] }`, where each execution is `{ "id", "requirement_id", "requirement_name", "status", "error", "cases": [...], "created_at", "updated_at" }` and each case is `{ "id", "test_case", "status", "attempts", "output", "error", "updated_at" }`.
 
@@ -447,7 +449,7 @@ Draft charters for one requirement. Body: `{ "requirement_id": 1 }`. Runs a sing
 
 #### `POST /api/sprints/{sprint_id}/exploratory-runs`
 
-Start a run over the reviewed charters. Body: `{ "requirement_id", "charters": [{ "charter", "sfdipot_areas" }], "base_url_env_vars" }`. The charters and URL variables come back possibly edited, so **everything is re-validated from scratch** — nothing the generate call returned is trusted. Best-effort refreshes README/file tree once, then creates one `ExploratoryRun` plus one `ExploratorySession` per charter and enqueues a single job.
+Start a run over the reviewed charters. Body: `{ "requirement_id", "charters": [{ "charter", "sfdipot_areas" }], "base_url_env_vars", "export_findings": false }` — see [Issue Tracker](#issue-tracker) for the flag. The charters and URL variables come back possibly edited, so **everything is re-validated from scratch** — nothing the generate call returned is trusted. Best-effort refreshes README/file tree once, then creates one `ExploratoryRun` plus one `ExploratorySession` per charter and enqueues a single job.
 
 **Response** (201): `ExploratoryRunDetailResponse` — `{ "id", "sprint_id", "requirement_id", "requirement_name", "status", "summary", "error", "base_url_env_vars", "sessions": [...], "bug_count", "issue_count", "high_severity_count", "created_at", "updated_at" }`.
 
@@ -480,6 +482,88 @@ Restart a `failed` run (uncapped), provided it is not outdated. Charter-level re
 Regenerate the per-requirement summary. The summary is written best-effort at the end of a run and already retries itself once, so only a repeated provider failure leaves it null; this retries it synchronously (also twice). Works whether or not a summary already exists.
 
 **Errors:** 404, 422 (run isn't `completed`), 502 (LLM failure — any existing summary is left untouched).
+
+### Issue Tracker
+
+A sprint can be connected to a **Jira project** or a **GitHub Issues repo** from the test-runs page, after which a run can file its **bug** findings there. `issue` findings are never filed: they say the testing was obstructed, not that the product is wrong, so there is nothing to report to a developer.
+
+**One rule governs when filing happens automatically:** a run that **finished** reports its bugs; anything else waits for a human. Every abnormal ending — superseded by an upstream edit, retries exhausted, the sprint finished underneath it, a worker crash — leaves a finding set that is incomplete _and known to be incomplete_, and that is not written unasked into a tracker other people read. Those findings are not stranded: they stay on the run page with their cards, and the run's **File / Retry** button files them on request. That also keeps every outbound tracker call inside a worker or an explicit user action — the web process never files anything on a background sweep, and neither the reconciler nor finish-sprint touch a tracker.
+
+**Findings are grouped before filing**, so one defect becomes one ticket rather than one ticket per failing test case. A deterministic prefilter collapses findings whose text is identical once normalized — the common case, since one broken dependency fails every case in a plan with the same words — and a single LLM call catches paraphrases the prefilter misses. Grouping is deliberately conservative: a defect wrongly split into two tickets costs a few minutes of triage, while one wrongly merged disappears. The findings that were grouped in are listed on the ticket under _Also observed as_ with their run and timestamp, since nothing is ever appended to a ticket afterwards. Every finding keeps its own card in-app regardless.
+
+**De-duplication is scoped to the sprint and to the currently connected tracker.** Before adopting an existing ticket the exporter checks it is still open; a closed ticket is a decision somebody made, so a new ticket is filed carrying a back-reference rather than the old one being silently reused.
+
+Credentials are Fernet-encrypted at rest (`ENCRYPTION_KEY`), never serialized, and never logged. Every string sent to the tracker is redacted against the sprint's test-environment variable values first — base URLs excluded, since a bug report has to be allowed to name the page it is about. Exploratory findings attach their screenshot to a Jira issue when one exists (GitHub has no issue attachment API); a missing screenshot is normal under `STORE_OFFLINE=false` and never fails the filing.
+
+#### `GET /api/sprints/{sprint_id}/issue-tracker`
+
+The sprint's tracker connection, or `null` when there is none. The API token is never included in any response.
+
+**Response** (200): `IssueTrackerConfigResponse` — `{ "id", "sprint_id", "provider", "target", "target_label", "base_url", "account_email", "issue_type", "verified_at", "created_at", "updated_at" }`, or `null`.
+
+**Errors:** 404 (unknown sprint).
+
+#### `PUT /api/sprints/{sprint_id}/issue-tracker`
+
+Connect a tracker, or re-point an existing connection — provider switch included. The credentials are verified against the live tracker **inside the request** on every save, first connect and edit alike, and nothing is persisted unless that succeeds.
+
+**Request:** `application/json`
+
+| Field             | Jira                                                 | GitHub                  |
+| ----------------- | ---------------------------------------------------- | ----------------------- |
+| `provider`        | `"jira"`                                             | `"github"`              |
+| `base_url`        | required — `https://your-team.atlassian.net`         | ignored (nulled)        |
+| `account_email`   | required — the Atlassian account                     | ignored (nulled)        |
+| `target`          | required — project key, e.g. `QA`                    | required — `owner/repo` |
+| `issue_type`      | required — e.g. `Bug`, validated against the project | ignored (nulled)        |
+| `api_token`       | API token                                            | personal access token   |
+| `use_sprint_repo` | rejected (422)                                       | optional — see below    |
+
+**`use_sprint_repo` (GitHub only)** files into the sprint's own registered repository: `target` may then be blank, since `owner/repo` is derived server-side from `Repo.github_link` rather than trusted from the request, and an omitted `api_token` falls back to the repo's stored access token. The token is **copied at save time** — decrypted, verified, re-encrypted into the tracker config — so the result is indistinguishable from a typed one and every export path is unchanged; rotating the repo's token later does not follow through, and the tracker is re-saved instead. A repo registered without a token is ordinary (public ones need none to read), so its absence simply falls through to the token rules below.
+
+Token resolution, first match wins: a token in the request → the sprint repo's token (when `use_sprint_repo` is set) → the stored one on a same-provider edit → 422. Three edit rules follow from that:
+
+- **The token may be omitted** when the provider is unchanged: blank or absent means "keep the stored one", which is decrypted and used for the verification call.
+- **The token is required when the provider changes** — a Jira API token is meaningless to GitHub, so reusing it silently would verify nothing and store a credential that can never work (422). `use_sprint_repo` is the exception, and only because that token is GitHub's by construction rather than the previous tracker's.
+- **Provider-irrelevant fields are cleared on a switch**, so a stale Jira site can never linger on a GitHub config.
+
+Already-filed findings are untouched by any edit: their issue links still point where they were actually filed, and they are excluded from the new tracker's de-duplication window. That exclusion matters most on GitHub, whose issue numbers are per-repo integers — without it, repo B's `#7` would answer "is it still open?" for repo A's `#7` and a finding would be attached to an unrelated ticket.
+
+A GitHub repo is accepted with a fine-grained token holding Issues:write and no push permission — requiring push would reject exactly the narrowly-scoped tokens worth creating for this.
+
+**Response** (200): `IssueTrackerConfigResponse` (no token).
+
+**Errors:** 404 (sprint); 422 (missing provider-specific field, malformed target, unknown provider, missing token on a first connect or a provider switch, `use_sprint_repo` with a non-GitHub provider or on a sprint whose repo link is not a GitHub URL, or the tracker refusing — bad credentials, unknown project/repo, unknown issue type, issues disabled); 500 (`ENCRYPTION_KEY` unset); 502 (the tracker could not be reached).
+
+#### `DELETE /api/sprints/{sprint_id}/issue-tracker`
+
+Disconnect the tracker. Deliberately **not** blocked by a run in flight — that run's export simply fails into `tracker_error` and its findings wait on the run page for a retry.
+
+**Response** (204). **Errors:** 404 (sprint, or nothing connected).
+
+#### `POST /api/test-runs/{run_id}/export-findings` and `POST /api/exploratory-runs/{run_id}/export-findings`
+
+File this run's unfiled bug findings, on request — synchronous and uncapped, like `POST /api/exploratory-runs/{id}/summarize`. This is the manual half of the export rule rather than a fallback: a run that ended any way other than `completed` reaches its page with the bugs it _did_ find unfiled by design, and this is how they get filed. Retrying findings whose filing failed is the same operation. A run with nothing pending is a no-op that still returns the refreshed run.
+
+**Response** (200): the run's detail shape, refreshed.
+
+**Errors:** 404 (unknown run); 422 (no tracker connected).
+
+#### Export state on a run
+
+Both run shapes — list and detail, scripted and exploratory — carry an export roll-up, computed at response time and never stored:
+
+| Field                      | Meaning                                                                                                                         |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `exported_finding_count`   | Bug findings that reached a ticket.                                                                                             |
+| `exported_issue_count`     | Distinct tickets they became. Both totals are shown, so grouping reads as grouping rather than as findings having gone missing. |
+| `export_groups`            | `[{ issue_key, issue_url, finding_count }]` — which findings became which ticket.                                               |
+| `unexported_finding_count` | Bug findings with no ticket yet.                                                                                                |
+| `export_error_count`       | A **subset** of the above: those whose filing was attempted and failed.                                                         |
+
+Each finding additionally carries `tracker_issue_key`, `tracker_issue_url`, `tracker_error`, and `tracker_is_duplicate` on its `finding` object — all null/false on a finding that was never filed, which is a normal state rather than a failure.
+
+Run creation on both run types accepts `"export_findings": true` to arm the automatic path; it 422s when set with no tracker connected. The flag is decided at run start and never after, so a tracker connected (or disconnected) later cannot retroactively change what a finished run was supposed to do.
 
 ### Authentication
 
@@ -528,7 +612,7 @@ backend/
   migrations.py        # Idempotent startup migrations (run after init_db)
   worker.py            # RQ worker CLI (python -m backend.worker)
   models/
-    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase, TestRun, TestExecution, TestCaseExecution
+    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase, IssueTrackerConfig, TestRun, TestExecution, TestCaseExecution, ExploratoryRun, ExploratorySession, ExploratoryFinding
     types.py           # Request/response types
   routes/
     auth.py            # POST /api/auth/verify, GET /api/auth/check
@@ -537,18 +621,27 @@ backend/
     requirements.py    # Requirement CRUD, PRD upload/split + clarification/confirm/restart
     test_environment.py # Test environment get/submit/answer/confirm (synchronous LLM check) + env-var extraction/edit
     test_plans.py      # Test plan generate/list/feedback/edit/approve/restart
-    test_execution.py  # Test run create/list/detail, script download, restart
+    test_execution.py  # Test run create/list/detail, script download, restart, export retry
+    exploratory.py     # Charter drafting, exploratory run create/list/detail, session sheet, screenshot, restart, summary, export retry
+    issue_tracker.py   # Issue-tracker config get/save/delete (live verification on every save)
   services/
     storage.py         # Conditional README/PRD persistence (STORE_OFFLINE)
     queue.py           # RQ queue service (graceful degradation when Redis is down)
     llm.py             # OpenAI-SDK client: clarity/test-env checks, env-var extraction, PRD split, test plans (code-blind), test-script tool loop
     llm_prompts.py      # System prompts, prompt-assembly helpers, TestCaseLike, read_file tool schema
     script_runner.py    # Subprocess execution of generated test scripts (no sandboxing beyond a timeout)
+    browser_session.py  # One Playwright browser + the exploratory tool executors (DB-free)
+    issue_tracker.py    # Jira/GitHub transport: verify, create issue, state check, screenshot attach, redaction
+    finding_dedup.py    # Grouping: deterministic prefilter + one LLM pass; never raises
+    finding_export.py   # Which findings to file, and writing the receipts back; never raises
+    invalidation.py     # What editing a confirmed artifact invalidates
+    finalization.py     # A terminal parent leaves no non-terminal children
     reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions)
   tasks/
     analyze_requirement.py  # The analysis task executed by the worker
     generate_test_plan.py   # The plan-generation task (single LLM call, no repo access)
     execute_test.py         # The test-execution task (per-case self-heal loop)
+    explore_requirement.py  # The exploratory task (per-charter browser tool loop)
   scripts/
     clear_queue.py     # Queue maintenance CLI (python -m backend.scripts.clear_queue)
     reset_db.py        # Drop + recreate all tables (python -m backend.scripts.reset_db)

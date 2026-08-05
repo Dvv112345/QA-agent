@@ -30,6 +30,16 @@ class Repo(SQLModel, table=True):
 
     sprints: list["Sprint"] = Relationship(back_populates="repo")
 
+    @property
+    def has_access_token(self) -> bool:
+        """Whether an access token is stored — never the token itself.
+
+        Serialized so the issue-tracker form can say whether ticking "use
+        this sprint's repository" will supply a credential, instead of the
+        user learning it from a save that fails verification.
+        """
+        return bool(self.github_token)
+
 
 class Sprint(SQLModel, table=True):
     """A named sprint linked to a GitHub repository."""
@@ -53,6 +63,9 @@ class Sprint(SQLModel, table=True):
     )
     test_runs: list["TestRun"] = Relationship(back_populates="sprint")
     exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="sprint")
+    issue_tracker: Optional["IssueTrackerConfig"] = Relationship(
+        back_populates="sprint", sa_relationship_kwargs={"uselist": False}
+    )
 
     @property
     def requirements(self) -> list["Requirement"]:
@@ -414,6 +427,71 @@ class TestCase(SQLModel, table=True):
     test_plan: Optional["TestPlan"] = Relationship(back_populates="all_cases")
 
 
+# ── Issue tracker ─────────────────────────────────────────────────────
+
+
+class IssueTrackerProvider(str, Enum):
+    """Where a sprint's bug findings are filed.
+
+    Exactly one per sprint, never both: a finding that exists as two
+    tickets in two systems is worse than one that exists in neither.
+    """
+
+    JIRA = "jira"
+    GITHUB = "github"
+
+
+class IssueTrackerConfig(SQLModel, table=True):
+    """One sprint's connection to a Jira project or a GitHub Issues repo.
+
+    Editable — provider switch included — which is why every finding
+    records the ``tracker_target`` it was filed against (see
+    ``TestCaseExecution``).  Credentials are verified against the live
+    tracker on every save, so ``verified_at`` records when that last
+    succeeded; it is displayed, never branched on.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", unique=True, index=True)
+    provider: str  # IssueTrackerProvider value
+    base_url: str | None = Field(default=None)  # Jira site root; None for GitHub
+    account_email: str | None = Field(default=None)  # Jira Basic-auth user
+    # Fernet-encrypted, exactly like Repo.github_token: never serialized,
+    # never logged, decrypted only to build an outbound request.
+    api_token: str
+    target: str  # Jira project key | "owner/repo"
+    issue_type: str | None = Field(default=None)  # Jira issue type name
+    verified_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Sprint | None = Relationship(back_populates="issue_tracker")
+
+    @property
+    def tracker_target(self) -> str:
+        """``"{provider}:{target}"`` — what a filed finding records.
+
+        The de-duplication window is scoped by this string rather than by
+        the sprint alone, because the config is editable.  It matters most
+        on GitHub, whose issue numbers are per-repo integers: without it,
+        repo B's ``#7`` would answer ``issue_is_open`` for repo A's ``#7``
+        and a finding would be attached to an unrelated ticket.
+        """
+        return f"{self.provider}:{self.target}"
+
+    @property
+    def target_label(self) -> str:
+        """Human-readable "where findings go", for the connect panel."""
+        provider = "Jira" if self.provider == IssueTrackerProvider.JIRA else "GitHub"
+        return f"{provider} · {self.target}"
+
+
 # ── Findings (shared by scripted and exploratory testing) ─────────────
 #
 # Defined here rather than in the exploratory section below because both
@@ -475,6 +553,62 @@ class FindingSeverity(str, Enum):
         these values reach both prompt text and stored columns.
         """
         return value if value in {member.value for member in cls} else cls.MEDIUM.value
+
+
+# ── Export roll-up (shared by scripted and exploratory runs) ─────────
+
+
+def export_rollup(findings: list, *, export_findings: bool = False) -> dict:
+    """Summarize what a run's bug findings did on their way to a tracker.
+
+    Computed at response time, never stored — the same treatment the case
+    counts already get (Convention #10 applied one level down).
+
+    *findings* is any sequence of objects carrying the tracker receipt
+    columns, so one definition serves both carriers and the run page
+    cannot come to mean two different things depending on which mode
+    produced the run.
+
+    The counts are deliberately nested rather than disjoint:
+    ``export_error_count`` is a subset of ``unexported_finding_count``.
+    That is what lets the page use one condition to decide whether to
+    offer the button and the other to word it — "File 6 bugs" for a run
+    that never filed, "Retry" for one that tried and failed.
+
+    ``groups`` is exposed rather than only counts because the whole point
+    of grouping is that six findings can be two tickets, and a reader
+    should not have to open every card to work out which four became
+    QA-142.
+
+    *export_findings* is the run's own toggle — the one **stored** value
+    carried here, passed through rather than derived.  Without it the page
+    cannot tell "was set to file and has not yet" from "was never set to
+    file", which are different things to say to a reader now that the
+    button files either way.
+    """
+    exported = [f for f in findings if f.tracker_issue_key]
+    unexported = [f for f in findings if not f.tracker_issue_key]
+
+    groups: dict[str, dict] = {}
+    for finding in exported:
+        group = groups.setdefault(
+            finding.tracker_issue_key,
+            {
+                "issue_key": finding.tracker_issue_key,
+                "issue_url": finding.tracker_issue_url or "",
+                "finding_count": 0,
+            },
+        )
+        group["finding_count"] += 1
+
+    return {
+        "export_findings": export_findings,
+        "exported_finding_count": len(exported),
+        "exported_issue_count": len(groups),
+        "export_error_count": sum(1 for f in unexported if f.tracker_error),
+        "unexported_finding_count": len(unexported),
+        "export_groups": list(groups.values()),
+    }
 
 
 # ── Run staleness (shared by scripted and exploratory runs) ───────────
@@ -601,6 +735,9 @@ class TestRun(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    # Decided at run start, never afterwards: whether this run's bug
+    # findings are filed to the sprint's issue tracker when it completes.
+    export_findings: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -647,6 +784,30 @@ class TestRun(SQLModel, table=True):
     def requirement_deleted(self) -> bool:
         """Whether *any* of this run's requirements has since been deleted."""
         return any(e.requirement_deleted for e in self.executions)
+
+    @property
+    def bug_findings(self) -> list["TestCaseExecution"]:
+        """Every case in this run that reported the product being wrong.
+
+        Gated on ``finding_title`` for the same reason ``finding`` is:
+        rows written before findings were structured are ``failed`` with
+        nothing to report.
+        """
+        return [
+            case
+            for execution in self.executions
+            for case in execution.cases
+            if case.finding_type == FindingType.BUG and case.finding_title
+        ]
+
+    # The export roll-up is deliberately *not* exposed here as five
+    # properties. Each would re-walk `executions x cases` on every access,
+    # and caching one on the row would be stale the moment something
+    # mutates findings and re-serializes the same instance in a single
+    # request — which is exactly what the export-findings retry route
+    # does. `routes/test_execution.py::_run_detail` splats
+    # `export_rollup(...)` once instead, the arrangement
+    # `routes/exploratory.py` already uses for its own two builders.
 
 
 class TestExecution(SQLModel, table=True):
@@ -766,6 +927,17 @@ class TestCaseExecution(SQLModel, table=True):
     # is None on every case that has no finding — a pass, a row still in
     # flight, or a row written before findings were structured.
     environment: str | None = Field(default=None)
+    # ── issue-tracker receipt (written only by services/finding_export.py) ──
+    # Deliberately *not* cleared alongside the finding fields on a passing
+    # case: a filed ticket is a receipt for an irreversible action in a
+    # system this app does not own. The finding may stop reporting itself;
+    # the record of having reported it may not.
+    tracker_issue_key: str | None = Field(default=None)  # "QA-142" | "7"
+    tracker_issue_url: str | None = Field(default=None)  # absolute, self-describing
+    tracker_error: str | None = Field(default=None)  # last filing failure, cleared on success
+    # IssueTrackerConfig.tracker_target as it stood when this was filed.
+    tracker_target: str | None = Field(default=None)
+    tracker_is_duplicate: bool = Field(default=False)  # grouped into another finding's ticket
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -792,7 +964,7 @@ class TestCaseExecution(SQLModel, table=True):
         return None
 
     @property
-    def finding(self) -> dict[str, str | None] | None:
+    def finding(self) -> dict[str, str | bool | None] | None:
         """The finding in the shared shape, or None when there isn't one.
 
         Keyed to match ``FindingBase`` in ``models/types.py`` so FastAPI can
@@ -809,6 +981,10 @@ class TestCaseExecution(SQLModel, table=True):
         a group, so this should be unreachable — but the blast radius is far
         out of proportion to the cost of a fallback.  ``environment`` is
         left alone: the response model already allows it to be null.
+
+        The four tracker fields pass straight through for the same reason —
+        the response model allows null, and coalescing them would turn "not
+        filed" into an empty link.
         """
         if not self.finding_title:
             return None
@@ -820,6 +996,10 @@ class TestCaseExecution(SQLModel, table=True):
             "expected": self.finding_expected or "",
             "actual": self.finding_actual or "",
             "environment": self.environment,
+            "tracker_issue_key": self.tracker_issue_key,
+            "tracker_issue_url": self.tracker_issue_url,
+            "tracker_error": self.tracker_error,
+            "tracker_is_duplicate": self.tracker_is_duplicate,
         }
 
 
@@ -905,6 +1085,8 @@ class ExploratoryRun(SQLModel, table=True):
     # the (single, cheap) summary call fails, recoverable via the summarize
     # endpoint — the findings, not this paragraph, are the deliverable.
     summary: str | None = Field(default=None)
+    # See TestRun.export_findings — decided at run start, read at completion.
+    export_findings: bool = Field(default=False)
     # ── machinery (identical to TestExecution) ──
     status: str = Field(default=ExploratoryRunStatus.PENDING)
     retry_count: int = Field(default=0)  # automatic re-enqueues (reconciler/task)
@@ -963,6 +1145,16 @@ class ExploratoryRun(SQLModel, table=True):
     def outdated(self) -> bool:
         """See ``TestExecution.outdated`` — backend-only, gates restart."""
         return bool(self.outdated_reasons)
+
+    @property
+    def bug_findings(self) -> list["ExploratoryFinding"]:
+        """Every finding in this run reporting the product being wrong."""
+        return [
+            finding
+            for exploratory_session in self.sessions
+            for finding in exploratory_session.findings
+            if finding.finding_type == FindingType.BUG
+        ]
 
 
 class ExploratorySession(SQLModel, table=True):
@@ -1032,6 +1224,12 @@ class ExploratoryFinding(SQLModel, table=True):
     # captured in code, never asked of the model. Best-effort: None on rows
     # written before capture existed, and on a page too broken to answer.
     environment: str | None = Field(default=None)
+    # ── issue-tracker receipt — see TestCaseExecution's identical block ──
+    tracker_issue_key: str | None = Field(default=None)
+    tracker_issue_url: str | None = Field(default=None)
+    tracker_error: str | None = Field(default=None)
+    tracker_target: str | None = Field(default=None)
+    tracker_is_duplicate: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )

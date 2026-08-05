@@ -608,6 +608,58 @@ class TestReads:
         assert "screenshot_path" not in finding
 
     @pytest.mark.asyncio
+    async def test_finding_carries_its_issue_tracker_receipt(self, async_client, db_session):
+        """This response is composed field by field, so inheriting the
+        tracker fields from `FindingBase` only supplies their defaults —
+        a filed finding serialized as never filed, with the run page
+        cheerfully reporting it as exported."""
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(
+            db_session, sprint, requirement, status=ExploratoryRunStatus.COMPLETED
+        )
+        session_row = _seed_exploratory_session(
+            db_session, run, status=ExploratorySessionStatus.COMPLETED
+        )
+        _seed_exploratory_finding(
+            db_session,
+            session_row,
+            position=0,
+            tracker_issue_key="QA-142",
+            tracker_issue_url="https://acme.atlassian.net/browse/QA-142",
+            tracker_target="jira:QA",
+            tracker_is_duplicate=True,
+        )
+
+        resp = await async_client.get(f"/api/exploratory-sessions/{session_row.id}")
+
+        finding = resp.json()["findings"][0]
+        assert finding["tracker_issue_key"] == "QA-142"
+        assert finding["tracker_issue_url"] == "https://acme.atlassian.net/browse/QA-142"
+        assert finding["tracker_is_duplicate"] is True
+        assert finding["tracker_error"] is None
+        # DB-only: it scopes de-duplication, and the URL is absolute.
+        assert "tracker_target" not in finding
+
+    @pytest.mark.asyncio
+    async def test_finding_reports_a_filing_failure(self, async_client, db_session):
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(
+            db_session, sprint, requirement, status=ExploratoryRunStatus.COMPLETED
+        )
+        session_row = _seed_exploratory_session(
+            db_session, run, status=ExploratorySessionStatus.COMPLETED
+        )
+        _seed_exploratory_finding(
+            db_session, session_row, position=0, tracker_error="Jira rejected the request (403)"
+        )
+
+        resp = await async_client.get(f"/api/exploratory-sessions/{session_row.id}")
+
+        finding = resp.json()["findings"][0]
+        assert finding["tracker_error"] == "Jira rejected the request (403)"
+        assert finding["tracker_issue_key"] is None
+
+    @pytest.mark.asyncio
     async def test_finding_reports_where_it_was_observed(self, async_client, db_session):
         sprint, requirement = _ready_sprint(db_session)
         run = _seed_exploratory_run(
@@ -884,3 +936,228 @@ class TestExploratoryOutdated:
 
         assert resp.status_code == 422
         assert "out of date" in resp.json()["detail"]
+
+
+class TestExportFindingsToggle:
+    """Mirrors the scripted route — one rule, worded identically."""
+
+    def _connect_tracker(self, db_session, sprint):
+        from backend.models.database import IssueTrackerConfig
+        from backend.utils.crypto import encrypt_token
+
+        db_session.add(
+            IssueTrackerConfig(
+                sprint_id=sprint.id,
+                provider="github",
+                target="acme/shop",
+                api_token=encrypt_token("dummy-token"),
+            )
+        )
+        db_session.commit()
+        db_session.refresh(sprint)
+
+    def _reload_run(self, db_session, run_id):
+        db_session.expire_all()
+        return db_session.get(ExploratoryRun, run_id)
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_false(self, async_client, db_session, stub_queue):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json=_charter_payload(requirement.id),
+        )
+
+        assert resp.status_code == 201
+        assert self._reload_run(db_session, resp.json()["id"]).export_findings is False
+
+    @pytest.mark.asyncio
+    async def test_422_when_on_with_no_tracker(self, async_client, db_session, stub_queue):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json={**_charter_payload(requirement.id), "export_findings": True},
+        )
+
+        assert resp.status_code == 422
+        assert "Connect an issue tracker" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_persisted_on_the_run(self, async_client, db_session, stub_queue):
+        sprint, requirement = _ready_sprint(db_session)
+        self._connect_tracker(db_session, sprint)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/exploratory-runs",
+            json={**_charter_payload(requirement.id), "export_findings": True},
+        )
+
+        assert resp.status_code == 201
+        assert self._reload_run(db_session, resp.json()["id"]).export_findings is True
+
+
+class TestExportFindingsEndpoint:
+    """The exploratory twin of the scripted retry route."""
+
+    @pytest.fixture
+    def export_spy(self, monkeypatch):
+        from backend.services import finding_export
+
+        calls: list = []
+
+        def _spy(session, parent, *, requested=False):
+            # See the scripted twin: the flag is recorded because passing
+            # it is what makes the button work on a toggle-off run.
+            calls.append((parent.id, requested))
+            return finding_export.ExportOutcome()
+
+        monkeypatch.setattr(finding_export, "export_findings", _spy)
+        return calls
+
+    def _connect_tracker(self, db_session, sprint):
+        from backend.models.database import IssueTrackerConfig
+        from backend.utils.crypto import encrypt_token
+
+        db_session.add(
+            IssueTrackerConfig(
+                sprint_id=sprint.id,
+                provider="github",
+                target="acme/shop",
+                api_token=encrypt_token("dummy-token"),
+            )
+        )
+        db_session.commit()
+        db_session.refresh(sprint)
+
+    def _seed_failed_run(self, db_session, export_findings=True):
+        """A run stopped before its completion path, holding one bug."""
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(
+            db_session,
+            sprint,
+            requirement,
+            status=ExploratoryRunStatus.FAILED,
+            export_findings=export_findings,
+        )
+        exploratory_session = _seed_exploratory_session(db_session, run)
+        _seed_exploratory_finding(db_session, exploratory_session)
+        db_session.refresh(run)
+        return sprint, run
+
+    @pytest.mark.asyncio
+    async def test_404_unknown_run(self, async_client):
+        resp = await async_client.post("/api/exploratory-runs/99999/export-findings")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_422_without_a_tracker(self, async_client, db_session, export_spy):
+        _, run = self._seed_failed_run(db_session)
+
+        resp = await async_client.post(f"/api/exploratory-runs/{run.id}/export-findings")
+
+        assert resp.status_code == 422
+        assert export_spy == []
+
+    @pytest.mark.asyncio
+    async def test_files_the_findings_of_a_failed_run(self, async_client, db_session, export_spy):
+        sprint, run = self._seed_failed_run(db_session)
+        self._connect_tracker(db_session, sprint)
+
+        resp = await async_client.post(f"/api/exploratory-runs/{run.id}/export-findings")
+
+        assert resp.status_code == 200
+        assert export_spy == [(run.id, True)]
+
+    @pytest.mark.asyncio
+    async def test_files_a_run_whose_toggle_was_off(self, async_client, db_session):
+        """The scripted twin's rationale applies unchanged — and here the
+        real exporter runs, with only the transport stubbed."""
+        from backend.services import issue_tracker
+        from backend.services.issue_tracker import IssueRef
+
+        created: list = []
+
+        def _create(config, report, context):
+            created.append(report.title)
+            return IssueRef(key="7", url="https://github.com/acme/shop/issues/7")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(issue_tracker, "create_issue", _create)
+            sprint, run = self._seed_failed_run(db_session, export_findings=False)
+            self._connect_tracker(db_session, sprint)
+
+            before = (await async_client.get(f"/api/exploratory-runs/{run.id}")).json()
+            assert before["unexported_finding_count"] == 1
+
+            resp = await async_client.post(f"/api/exploratory-runs/{run.id}/export-findings")
+
+        assert resp.status_code == 200
+        assert len(created) == 1
+        assert resp.json()["unexported_finding_count"] == 0
+        assert resp.json()["exported_finding_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_nothing_pending_is_a_no_op(self, async_client, db_session):
+        sprint, requirement = _ready_sprint(db_session)
+        self._connect_tracker(db_session, sprint)
+        run = _seed_exploratory_run(
+            db_session, sprint, requirement, status=ExploratoryRunStatus.COMPLETED
+        )
+
+        resp = await async_client.post(f"/api/exploratory-runs/{run.id}/export-findings")
+
+        assert resp.status_code == 200
+        assert resp.json()["unexported_finding_count"] == 0
+
+
+class TestExploratoryExportRollup:
+    def _seed_run_with_findings(self, db_session, receipts):
+        sprint, requirement = _ready_sprint(db_session)
+        run = _seed_exploratory_run(db_session, sprint, requirement)
+        exploratory_session = _seed_exploratory_session(db_session, run)
+        for position, receipt in enumerate(receipts):
+            _seed_exploratory_finding(db_session, exploratory_session, position=position, **receipt)
+        db_session.refresh(run)
+        return run
+
+    @pytest.mark.asyncio
+    async def test_groups_findings_by_issue_key(self, async_client, db_session):
+        run = self._seed_run_with_findings(
+            db_session,
+            [
+                {"tracker_issue_key": "7", "tracker_issue_url": "https://gh/7"},
+                {"tracker_issue_key": "7", "tracker_issue_url": "https://gh/7"},
+                {"tracker_issue_key": "8", "tracker_issue_url": "https://gh/8"},
+            ],
+        )
+
+        body = (await async_client.get(f"/api/exploratory-runs/{run.id}")).json()
+
+        assert body["exported_finding_count"] == 3
+        assert body["exported_issue_count"] == 2
+        counts = {g["issue_key"]: g["finding_count"] for g in body["export_groups"]}
+        assert counts == {"7": 2, "8": 1}
+
+    @pytest.mark.asyncio
+    async def test_issue_findings_are_not_counted(self, async_client, db_session):
+        """Only bugs are ever filed, so only bugs are ever counted."""
+        run = self._seed_run_with_findings(db_session, [{"finding_type": "issue"}])
+
+        body = (await async_client.get(f"/api/exploratory-runs/{run.id}")).json()
+
+        assert body["unexported_finding_count"] == 0
+        assert body["issue_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_rollup_reaches_the_list_shape_too(self, async_client, db_session):
+        """The list page shows the same numbers as the detail page."""
+        run = self._seed_run_with_findings(
+            db_session, [{"tracker_error": "GitHub rejected the request (403)"}]
+        )
+
+        body = (await async_client.get(f"/api/sprints/{run.sprint_id}/exploratory-runs")).json()
+
+        assert body[0]["export_error_count"] == 1
+        assert body[0]["unexported_finding_count"] == 1

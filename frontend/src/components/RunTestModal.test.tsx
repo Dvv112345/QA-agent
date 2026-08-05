@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import RunTestModal from './RunTestModal'
-import type { TestPlanResponse } from '../types'
+import type { IssueTrackerConfig, TestPlanResponse } from '../types'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -37,10 +37,39 @@ function makePlan(overrides: Partial<TestPlanResponse> = {}): TestPlanResponse {
   }
 }
 
-function renderModal(onClose = vi.fn()) {
+function makeTracker(overrides: Partial<IssueTrackerConfig> = {}): IssueTrackerConfig {
+  return {
+    id: 1,
+    sprint_id: 1,
+    provider: 'jira',
+    target: 'QA',
+    target_label: 'Jira · QA',
+    base_url: 'https://acme.atlassian.net',
+    account_email: 'qa@acme.test',
+    issue_type: 'Bug',
+    verified_at: '2026-01-01T00:00:00Z',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+/** The requirement checkbox, distinguished from the export toggle. */
+function requirementCheckbox(name = 'Login') {
+  return screen.getByRole('checkbox', { name })
+}
+
+function exportCheckbox() {
+  return screen.getByRole('checkbox', { name: /File bug findings/ })
+}
+
+function renderModal(onClose = vi.fn(), tracker: IssueTrackerConfig | null = null) {
   const router = createMemoryRouter(
     [
-      { path: '/sprints/:id/test-runs', element: <RunTestModal sprintId={1} onClose={onClose} /> },
+      {
+        path: '/sprints/:id/test-runs',
+        element: <RunTestModal sprintId={1} tracker={tracker} onClose={onClose} />,
+      },
       { path: '/sprints/:id/test-runs/:runId', element: <div>Run detail</div> },
     ],
     { initialEntries: ['/sprints/1/test-runs'] },
@@ -76,7 +105,7 @@ describe('RunTestModal', () => {
     await screen.findByText('Login')
     expect(screen.getByRole('button', { name: 'Start run' })).toBeDisabled()
 
-    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(requirementCheckbox())
     expect(screen.getByRole('button', { name: 'Start run' })).toBeEnabled()
   })
 
@@ -91,11 +120,12 @@ describe('RunTestModal', () => {
     })
     renderModal()
 
-    fireEvent.click(await screen.findByRole('checkbox'))
+    await screen.findByText('Login')
+    fireEvent.click(requirementCheckbox())
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
     await waitFor(() => {
-      expect(mockCreateTestRun).toHaveBeenCalledWith(1, [100])
+      expect(mockCreateTestRun).toHaveBeenCalledWith(1, [100], false)
     })
     expect(await screen.findByText('Run detail')).toBeInTheDocument()
   })
@@ -107,13 +137,66 @@ describe('RunTestModal', () => {
     )
     renderModal()
 
-    fireEvent.click(await screen.findByRole('checkbox'))
+    await screen.findByText('Login')
+    fireEvent.click(requirementCheckbox())
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
     expect(
       await screen.findByText('These requirements already have a run in progress: Login.'),
     ).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('offers the export toggle unchecked and disabled with no tracker', async () => {
+    mockFetchTestPlans.mockResolvedValue([makePlan()])
+    renderModal()
+
+    await screen.findByText('Login')
+
+    expect(exportCheckbox()).not.toBeChecked()
+    expect(exportCheckbox()).toBeDisabled()
+  })
+
+  it('checks the export toggle by default when a tracker is connected', async () => {
+    // Connecting a tracker is itself the statement that findings should
+    // go there — asking again per run would be asking twice.
+    mockFetchTestPlans.mockResolvedValue([makePlan()])
+    renderModal(vi.fn(), makeTracker())
+
+    await screen.findByText('Login')
+
+    expect(exportCheckbox()).toBeChecked()
+    expect(exportCheckbox()).toBeEnabled()
+    expect(screen.getByText(/Jira · QA/)).toBeInTheDocument()
+  })
+
+  it('sends the export flag through to the API', async () => {
+    mockFetchTestPlans.mockResolvedValue([makePlan()])
+    mockCreateTestRun.mockResolvedValue({ id: 42 })
+    renderModal(vi.fn(), makeTracker())
+
+    await screen.findByText('Login')
+    fireEvent.click(requirementCheckbox())
+    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+
+    await waitFor(() => {
+      expect(mockCreateTestRun).toHaveBeenCalledWith(1, [100], true)
+    })
+  })
+
+  it('an unchecked toggle sends false even with a tracker connected', async () => {
+    mockFetchTestPlans.mockResolvedValue([makePlan()])
+    mockCreateTestRun.mockResolvedValue({ id: 42 })
+    renderModal(vi.fn(), makeTracker())
+
+    await screen.findByText('Login')
+    fireEvent.click(requirementCheckbox())
+    fireEvent.click(exportCheckbox())
+    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+
+    await waitFor(() => {
+      expect(mockCreateTestRun).toHaveBeenCalledWith(1, [100], false)
+    })
   })
 
   it('calls onClose from Cancel', async () => {

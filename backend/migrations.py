@@ -214,6 +214,73 @@ def _add_content_revisions(engine: Engine) -> None:
         logger.info("Migration applied: %s revision columns added (%s)", table, ", ".join(missing))
 
 
+# Issue-tracker receipt columns, carried identically by both finding
+# carriers. Checked per column for the same reason the finding columns
+# above are: a half-applied set must not abort the rest.
+#
+# `issuetrackerconfig` itself needs no migration — it is a new table, and
+# create_all builds missing tables.
+_TRACKER_TEXT_COLUMNS = (
+    "tracker_issue_key",
+    "tracker_issue_url",
+    "tracker_error",
+    "tracker_target",
+)
+_TRACKER_CARRIERS = ("testcaseexecution", "exploratoryfinding")
+
+
+def _add_tracker_columns(engine: Engine) -> None:
+    """Add the issue-tracker receipt columns to both finding carriers."""
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    for table in _TRACKER_CARRIERS:
+        if table not in table_names:
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table)}
+        missing = [name for name in _TRACKER_TEXT_COLUMNS if name not in columns]
+        needs_flag = "tracker_is_duplicate" not in columns
+        if not missing and not needs_flag:
+            continue
+        with engine.begin() as connection:
+            for name in missing:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} TEXT"))
+            if needs_flag:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {table} ADD COLUMN "
+                        "tracker_is_duplicate BOOLEAN NOT NULL DEFAULT FALSE"
+                    )
+                )
+        logger.info(
+            "Migration applied: %s tracker columns added (%s)",
+            table,
+            ", ".join(missing + (["tracker_is_duplicate"] if needs_flag else [])),
+        )
+
+
+def _add_run_export_findings(engine: Engine) -> None:
+    """Add ``export_findings`` to both run types when missing.
+
+    Defaults to false, so every run that predates the feature reads as
+    "do not file" — which is what it was.
+    """
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    for table in ("testrun", "exploratoryrun"):
+        if table not in table_names:
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table)}
+        if "export_findings" in columns:
+            continue
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"ALTER TABLE {table} ADD COLUMN export_findings BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+        logger.info("Migration applied: %s.export_findings column added", table)
+
+
 # Orphaned child rows: a case or charter session left `pending`/`running`
 # under a parent that already finished. Every writer now settles these
 # (services/finalization.py), but databases predating that carry the ones
@@ -267,6 +334,8 @@ _MIGRATIONS = [
     _add_testcase_archived,
     _relax_testcase_test_plan_id,
     _add_content_revisions,
+    _add_tracker_columns,
+    _add_run_export_findings,
     _settle_orphaned_children,
 ]
 

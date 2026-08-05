@@ -792,3 +792,133 @@ class TestSupersededMidRun:
         row = _reload_execution(db_session, execution.id)
         assert row.status == TestExecutionStatus.COMPLETED
         assert all(c.status == TestCaseExecutionStatus.PASSED for c in row.cases)
+
+
+class TestFindingExportWiring:
+    """Export fires on the completion path and nowhere else.
+
+    "A run that finished reports its bugs automatically; anything else
+    waits for a human" is the whole rule, so both halves are asserted
+    rather than assumed.
+    """
+
+    @pytest.fixture
+    def export_spy(self, monkeypatch):
+        calls: list = []
+
+        def _spy(session, parent):
+            calls.append(parent.id)
+            from backend.services.finding_export import ExportOutcome
+
+            return ExportOutcome()
+
+        import backend.services.finding_export as module
+
+        monkeypatch.setattr(module, "export_findings", _spy)
+        return calls
+
+    def test_called_once_when_the_execution_completes(
+        self, db_session, llm_stub, script_runner_stub, export_spy
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=3)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)
+
+        assert export_spy == [execution.id]
+
+    def test_not_called_when_the_sprint_was_finished(
+        self, db_session, llm_stub, script_runner_stub, export_spy
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session, active=False)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)
+
+        assert export_spy == []
+
+    def test_not_called_when_the_plan_is_no_longer_approved(
+        self, db_session, llm_stub, script_runner_stub, export_spy
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        plan.status = TestPlanStatus.DRAFT
+        db_session.add(plan)
+        db_session.commit()
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)
+
+        assert export_spy == []
+
+    def test_not_called_when_env_vars_are_missing(
+        self, db_session, llm_stub, script_runner_stub, export_spy
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        sprint.test_environment.env_vars_json = None
+        db_session.add(sprint.test_environment)
+        db_session.commit()
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)
+
+        assert export_spy == []
+
+    def test_not_called_when_the_execution_is_superseded_mid_run(
+        self, db_session, llm_stub, script_runner_stub, export_spy
+    ):
+        """An upstream edit leaves a finding set that is incomplete and
+        known to be — the run page's button is where a human decides."""
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.FAILED
+        assert export_spy == []
+
+    def test_not_called_on_a_terminal_record_failure(
+        self, db_session, llm_stub, script_runner_stub, export_spy
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(
+            db_session, sprint, requirement, cases, retry_count=MAX_AUTO_RETRIES - 1
+        )
+        llm_stub.script_result = LLMError("model down")
+
+        execute_test_task(execution.id)
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.FAILED
+        assert export_spy == []
+
+    def test_not_called_on_a_stale_job(self, db_session, llm_stub, script_runner_stub, export_spy):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(
+            db_session, sprint, requirement, cases, status=TestExecutionStatus.COMPLETED
+        )
+
+        execute_test_task(execution.id)
+
+        assert export_spy == []
+
+    def test_a_raising_exporter_cannot_fail_the_run(
+        self, db_session, llm_stub, script_runner_stub, monkeypatch
+    ):
+        """`export_findings` guarantees it never raises; the task guards
+        that guarantee anyway. A job in RQ's failed registry for a run
+        that plainly succeeded is exactly the contradiction someone
+        debugging spends an hour on."""
+        import backend.services.finding_export as module
+
+        def _boom(session, parent):
+            raise RuntimeError("tracker exploded")
+
+        monkeypatch.setattr(module, "export_findings", _boom)
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)  # must not raise
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.COMPLETED

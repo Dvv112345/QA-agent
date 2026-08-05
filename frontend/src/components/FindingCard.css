@@ -95,3 +95,23 @@
   font-size: 0.85rem;
   overflow-wrap: anywhere;
 }
+
+/* Issue-tracker receipt — a filed ticket, or why filing failed. */
+.finding-tracker {
+  margin: 0.7rem 0 0;
+  font-size: 0.85rem;
+}
+
+.finding-tracker a {
+  font-weight: 600;
+}
+
+.finding-tracker-grouped {
+  color: #5b6472;
+  font-weight: 400;
+}
+
+.finding-tracker-error {
+  color: #b3261e;
+  overflow-wrap: anywhere;
+}

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
 import { isOutdated } from '../outdated'
 import {
+  exportExploratoryRunFindings,
   fetchExploratoryRun,
   restartExploratoryRun,
   summarizeExploratoryRun,
@@ -11,6 +13,20 @@ import type { ExploratoryRunDetailResponse } from '../types'
 import './ExploratoryRunDetailPage.css'
 
 const POLL_INTERVAL_MS = 2500
+
+/**
+ * How long to keep polling a run that has finished but whose findings have
+ * not reached the tracker yet (~2 minutes).
+ *
+ * The worker commits `COMPLETED` *before* it files findings — deliberately,
+ * so a slow tracker can never turn a finished run into a retry. Polling that
+ * stops the instant the status reads terminal therefore tears itself down
+ * inside that window, and the page sits on "not yet filed" until someone
+ * reloads. Bounded rather than open-ended because every *known* way for the
+ * export to end badly writes `tracker_error` (a disconnected tracker
+ * included), so this condition resolves on its own in every case but a bug.
+ */
+const EXPORT_GRACE_TICKS = 48
 
 const RUN_STATUS_LABELS: Record<string, string> = {
   pending: 'Queued',
@@ -59,11 +75,28 @@ export default function ExploratoryRunDetailPage() {
   }, [exploratoryRunId])
 
   const inProgress = run?.status === 'pending' || run?.status === 'running'
+  // A finished run whose bugs are unfiled with nothing having failed: the
+  // export runs after the completion commit, so it is almost certainly
+  // still in flight. See EXPORT_GRACE_TICKS.
+  const exportPending =
+    run?.status === 'completed' &&
+    run.export_findings &&
+    run.unexported_finding_count > 0 &&
+    run.export_error_count === 0
+  const shouldPoll = inProgress || exportPending
 
   useEffect(() => {
-    if (!inProgress) return
+    if (!shouldPoll) return
+    // Unbounded while the run itself is working — it is the run that says
+    // when that ends. Bounded once only the export is outstanding.
+    let ticksLeft = inProgress ? Number.POSITIVE_INFINITY : EXPORT_GRACE_TICKS
     const pollId = setInterval(() => {
       if (fetchingRef.current) return
+      if (ticksLeft <= 0) {
+        clearInterval(pollId)
+        return
+      }
+      ticksLeft -= 1
       fetchingRef.current = true
       fetchExploratoryRun(exploratoryRunId)
         .then(setRun)
@@ -75,7 +108,7 @@ export default function ExploratoryRunDetailPage() {
         })
     }, POLL_INTERVAL_MS)
     return () => clearInterval(pollId)
-  }, [inProgress, exploratoryRunId])
+  }, [shouldPoll, inProgress, exploratoryRunId])
 
   const runAction = useCallback(
     (action: (runId: number) => Promise<ExploratoryRunDetailResponse>) => {
@@ -103,6 +136,10 @@ export default function ExploratoryRunDetailPage() {
 
       <header className="exp-run-header">
         <h1>{run.requirement_name}</h1>
+        {/* The id is shown because a filed ticket names it ("Exploratory
+            run 10") and it otherwise lives only in the URL. Global rather
+            than per-sprint, hence `#10` — an identifier, not a count. */}
+        <span className="exp-run-id">Run #{run.id}</span>
         <span className={`run-badge run-badge-${run.status}`}>
           {RUN_STATUS_LABELS[run.status] ?? run.status}
         </span>
@@ -116,6 +153,11 @@ export default function ExploratoryRunDetailPage() {
         {run.issue_count === 1 ? '' : 's'}
         {run.high_severity_count > 0 && ` · ${run.high_severity_count} high severity`}
       </p>
+
+      <ExportSummary
+        rollup={run}
+        onExport={() => exportExploratoryRunFindings(exploratoryRunId).then(setRun)}
+      />
 
       {run.error && <p className="exp-run-error">{run.error}</p>}
 

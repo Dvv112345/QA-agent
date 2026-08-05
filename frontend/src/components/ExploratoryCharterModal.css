@@ -93,3 +93,12 @@
   color: #b3261e;
   margin-top: 0.75rem;
 }
+
+.charter-export {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border, #ddd);
+  font-size: 0.875rem;
+}

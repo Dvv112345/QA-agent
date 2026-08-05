@@ -15,6 +15,14 @@
   margin: 0;
 }
 
+/* The run's identifier, quoted by any ticket filed from it. Muted and
+   monospaced: it is something to match against, not to read. */
+.exp-run-id {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.85rem;
+  color: var(--color-text-secondary, #666);
+}
+
 .exp-run-counts {
   color: #555;
   font-size: 0.9rem;

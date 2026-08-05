@@ -56,3 +56,17 @@
   gap: 0.5rem;
   margin-top: 0.5rem;
 }
+
+.run-test-export {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border, #ddd);
+  font-size: 0.875rem;
+}
+
+.run-test-export input:disabled + *,
+.run-test-export:has(input:disabled) {
+  color: var(--color-text-secondary, #666);
+}

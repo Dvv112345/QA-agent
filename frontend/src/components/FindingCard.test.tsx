@@ -12,6 +12,10 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
     expected: 'A CSV containing a header row',
     actual: 'A zero-byte file',
     environment: null,
+    tracker_issue_key: null,
+    tracker_issue_url: null,
+    tracker_error: null,
+    tracker_is_duplicate: false,
     ...overrides,
   }
 }
@@ -80,5 +84,100 @@ describe('FindingCard', () => {
 
     const image = screen.getByRole('img')
     expect(image).toHaveAttribute('src', '/api/exploratory-findings/7/screenshot')
+  })
+
+  it('links the filed ticket', () => {
+    render(
+      <FindingCard
+        finding={makeFinding({
+          tracker_issue_key: 'QA-142',
+          tracker_issue_url: 'https://acme.atlassian.net/browse/QA-142',
+        })}
+      />,
+    )
+
+    const link = screen.getByRole('link', { name: /QA-142/ })
+    expect(link).toHaveAttribute('href', 'https://acme.atlassian.net/browse/QA-142')
+  })
+
+  it('marks a finding grouped into another ticket', () => {
+    // Without this the reader wonders why several cards link to one issue.
+    render(
+      <FindingCard
+        finding={makeFinding({
+          tracker_issue_key: 'QA-142',
+          tracker_issue_url: 'https://acme.atlassian.net/browse/QA-142',
+          tracker_is_duplicate: true,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('(grouped)')).toBeInTheDocument()
+  })
+
+  it('does not mark the ticket-owning finding as grouped', () => {
+    render(
+      <FindingCard
+        finding={makeFinding({
+          tracker_issue_key: 'QA-142',
+          tracker_issue_url: 'https://acme.atlassian.net/browse/QA-142',
+        })}
+      />,
+    )
+
+    expect(screen.queryByText('(grouped)')).not.toBeInTheDocument()
+  })
+
+  it('reports a filing failure inline', () => {
+    render(
+      <FindingCard finding={makeFinding({ tracker_error: 'Jira rejected the request (403)' })} />,
+    )
+
+    expect(screen.getByText(/Jira rejected the request \(403\)/)).toBeInTheDocument()
+  })
+
+  it('shows no tracker section when the finding was never filed', () => {
+    // The toggle was off, or the run never reached the completion path —
+    // a normal state, not a failure to announce.
+    render(<FindingCard finding={makeFinding()} />)
+
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Could not file/)).not.toBeInTheDocument()
+  })
+
+  it('shows the key unlinked when no URL was recorded', () => {
+    // Gating on the URL would make a filed finding read as never filed,
+    // which is the one thing the receipt exists to prevent.
+    render(<FindingCard finding={makeFinding({ tracker_issue_key: 'QA-142' })} />)
+
+    expect(screen.getByText(/QA-142/)).toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('prefers a keyed receipt over a stale error even with no URL', () => {
+    render(
+      <FindingCard
+        finding={makeFinding({ tracker_issue_key: 'QA-142', tracker_error: 'an older failure' })}
+      />,
+    )
+
+    expect(screen.queryByText(/Could not file/)).not.toBeInTheDocument()
+  })
+
+  it('prefers the link over a stale error', () => {
+    // A retry that succeeded writes the key and clears the error, but a
+    // card must never show both even if one lingers.
+    render(
+      <FindingCard
+        finding={makeFinding({
+          tracker_issue_key: 'QA-142',
+          tracker_issue_url: 'https://acme.atlassian.net/browse/QA-142',
+          tracker_error: 'an older failure',
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: /QA-142/ })).toBeInTheDocument()
+    expect(screen.queryByText(/Could not file/)).not.toBeInTheDocument()
   })
 })

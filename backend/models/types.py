@@ -34,6 +34,9 @@ class RepoResponse(SQLModel):
     description: str | None = None
     active: bool
     created_at: datetime
+    # Whether a token is stored, never the token (Convention #10): the
+    # issue-tracker form needs to know if the repo can supply a credential.
+    has_access_token: bool = False
 
 
 class ReadmeStatusResponse(SQLModel):
@@ -178,6 +181,85 @@ class TestPlanEditRequest(SQLModel):
     cases: list[TestCaseInput]
 
 
+# ── Issue tracker ─────────────────────────────────────────────────────
+
+
+class IssueTrackerConfigRequest(SQLModel):
+    """Create-or-edit payload for a sprint's tracker connection.
+
+    Every field but ``provider`` and ``target`` is optional here rather
+    than in the schema: which ones are actually required depends on the
+    provider, and on whether this is an edit that keeps the stored token.
+    The route validates that combination and 422s, so the error names the
+    missing field instead of reading as a malformed request.
+    """
+
+    provider: str
+    target: str  # Jira project key | "owner/repo"
+    base_url: str | None = None  # Jira site root
+    account_email: str | None = None  # Jira Basic-auth user
+    # Blank or absent means "keep the stored token" on a same-provider
+    # edit; required when the provider changes, since a Jira API token is
+    # meaningless to GitHub.
+    api_token: str | None = None
+    issue_type: str | None = None  # Jira issue type name
+    # GitHub only: file into the sprint's own registered repository. The
+    # route derives ``owner/repo`` from ``Repo.github_link`` (so ``target``
+    # may be blank) and, when no token is typed, uses the repo's stored one.
+    use_sprint_repo: bool = False
+
+
+class TrackerIssueGroup(SQLModel):
+    """One filed ticket and how many of a run's findings it stands for.
+
+    Exposed alongside the counts because grouping is the whole point: six
+    findings can be two tickets, and a reader should not have to open
+    every card to work out which four became QA-142.
+    """
+
+    issue_key: str
+    issue_url: str
+    finding_count: int
+
+
+class ExportRollup(SQLModel):
+    """A run's export state, computed at response time and never stored.
+
+    ``export_error_count`` is a **subset** of ``unexported_finding_count``
+    rather than disjoint from it: one condition decides whether the page
+    offers the button, the other words it.
+    """
+
+    # The run's own toggle — the one *stored* field here, and the only
+    # thing that distinguishes "was set to file and has not yet" from
+    # "was never set to file". The button files either way, so this only
+    # ever changes the wording.
+    export_findings: bool = False
+    exported_finding_count: int = 0
+    exported_issue_count: int = 0
+    export_error_count: int = 0
+    unexported_finding_count: int = 0
+    export_groups: list[TrackerIssueGroup] = []
+
+
+class IssueTrackerConfigResponse(SQLModel):
+    """The connection as the UI sees it — never the token."""
+
+    id: int
+    sprint_id: int
+    provider: str
+    target: str
+    # "Jira · QA" — computed server-side so the panel never reassembles a
+    # provider label from a raw enum value (Convention #10 spirit).
+    target_label: str
+    base_url: str | None = None
+    account_email: str | None = None
+    issue_type: str | None = None
+    verified_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 # ── Findings (shared by scripted and exploratory testing) ─────────────
 
 
@@ -198,6 +280,18 @@ class FindingBase(SQLModel):
     # Where it was observed. None on findings recorded before capture
     # existed — normal for old rows, not an error.
     environment: str | None = None
+    # ── issue-tracker receipt ──
+    # All null on a finding that was never filed: the run's toggle was off,
+    # the run did not reach the completion path, or filing has not run yet.
+    # `tracker_target` is deliberately absent — it exists to scope
+    # de-duplication in the database, and `tracker_issue_url` is already
+    # absolute, so the card needs nothing further to link the ticket.
+    tracker_issue_key: str | None = None
+    tracker_issue_url: str | None = None
+    tracker_error: str | None = None
+    # True when this finding was grouped into another finding's ticket
+    # rather than getting one of its own.
+    tracker_is_duplicate: bool = False
 
 
 class TestCaseFindingResponse(FindingBase):
@@ -246,7 +340,7 @@ class TestExecutionResponse(SQLModel):
     updated_at: datetime
 
 
-class TestRunResponse(SQLModel):
+class TestRunResponse(ExportRollup):
     id: int
     sprint_id: int
     created_at: datetime
@@ -265,7 +359,7 @@ class TestRunResponse(SQLModel):
     error_cases: int
 
 
-class TestRunDetailResponse(SQLModel):
+class TestRunDetailResponse(ExportRollup):
     id: int
     sprint_id: int
     created_at: datetime
@@ -282,6 +376,12 @@ class TestRunDetailResponse(SQLModel):
 
 class TestRunCreateRequest(SQLModel):
     requirement_ids: list[int]
+    # Whether this run's bug findings are filed to the sprint's issue
+    # tracker when it completes. Decided at run start and never after:
+    # the run is what carries the decision, so a tracker connected (or
+    # disconnected) later cannot retroactively change what a finished run
+    # was supposed to do.
+    export_findings: bool = False
 
 
 # ── Exploratory testing ───────────────────────────────────────────────
@@ -327,7 +427,7 @@ class ExploratorySessionResponse(SQLModel):
     updated_at: datetime
 
 
-class ExploratoryRunResponse(SQLModel):
+class ExploratoryRunResponse(ExportRollup):
     """List-page shape — aggregates computed at response time, never stored."""
 
     id: int
@@ -352,7 +452,7 @@ class ExploratoryRunResponse(SQLModel):
     updated_at: datetime
 
 
-class ExploratoryRunDetailResponse(SQLModel):
+class ExploratoryRunDetailResponse(ExportRollup):
     id: int
     sprint_id: int
     requirement_id: int
@@ -408,3 +508,5 @@ class ExploratoryRunCreateRequest(SQLModel):
     requirement_id: int
     charters: list[CharterDraft]
     base_url_env_vars: list[str]
+    # See TestRunCreateRequest.export_findings.
+    export_findings: bool = False
