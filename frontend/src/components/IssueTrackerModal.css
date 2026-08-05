@@ -69,6 +69,41 @@
   border-radius: 4px;
 }
 
+/* Example/format note under a field. Shown rather than left to the
+   placeholder because an edit prefills the input, and the placeholder a
+   user most needs is the one they never see. */
+.issue-tracker-field-note {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #666);
+}
+
+.issue-tracker-field-note code {
+  font-size: 0.95em;
+  word-break: break-all;
+}
+
+/* The "use this sprint's repository" shortcut — a checkbox row plus the
+   note explaining what it does about the token. */
+.issue-tracker-sprint-repo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.issue-tracker-sprint-repo label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  cursor: pointer;
+}
+
+.issue-tracker-sprint-repo-note {
+  margin: 0 0 0 1.5rem;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #666);
+}
+
 .issue-tracker-error {
   margin: 0;
   color: var(--color-error, #c00);
@@ -105,6 +140,9 @@
   font-weight: 600;
 }
 
-.issue-tracker-panel-none {
+/* `-none` reads as the disconnected state, so the connected panel's
+   descriptive text gets its own name rather than borrowing it. */
+.issue-tracker-panel-none,
+.issue-tracker-panel-hint {
   color: var(--color-text-secondary, #666);
 }

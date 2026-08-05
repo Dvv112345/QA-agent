@@ -89,7 +89,10 @@ class TrackerConfig:
 
     provider: str
     target: str  # Jira project key | "owner/repo"
-    api_token: str
+    # repr=False so a live credential cannot reach a log or a traceback
+    # through the generated __repr__. Nothing prints this today; the point
+    # is that nothing ever can.
+    api_token: str = field(repr=False)
     base_url: str | None = None  # Jira site root
     account_email: str | None = None  # Jira Basic-auth user
     issue_type: str | None = None  # Jira issue type name
@@ -138,7 +141,9 @@ class FindingContext:
     run_label: str  # "Scripted run 14" | "Exploratory run 3"
     source_label: str  # test-case title | charter text
     source_kind: str  # "scripted" | "exploratory" — selects the label
-    secret_values: frozenset[str]
+    # The environment values to blank out — so repr=False for the same
+    # reason TrackerConfig.api_token has it.
+    secret_values: frozenset[str] = field(repr=False)
     # The other findings this ticket stands for: title, run, and time
     # each. Load-bearing rather than decorative — nothing is ever appended
     # to a ticket afterwards, so this list is its entire record of how
@@ -205,9 +210,17 @@ def _labels(report: FindingReport, context: FindingContext) -> list[str]:
     labels = ["qa-agent", f"qa-agent-{kind}", f"severity-{report.severity}"]
     labels.extend(context.extra_labels)
     for label in labels:
-        # Jira silently rejects a whole create over a label with a space
-        # in it, so this fails loudly at the one place that composes them.
-        assert " " not in label, f"Issue label must not contain a space: {label!r}"
+        # Jira rejects a whole create over a label with a space in it, so
+        # this pre-empts that 400 at the one place that composes them —
+        # the same error the tracker would have returned, detected before
+        # the round trip and therefore raised as the same type.
+        #
+        # A raise rather than an assert: asserts vanish under `python -O`,
+        # and an AssertionError escaping here would slip past `_export`'s
+        # TrackerError handler into the blanket one and abort the whole
+        # run's export, where a TrackerError costs only this group.
+        if " " in label:
+            raise TrackerError(f"Issue label must not contain a space: {label!r}")
     return labels
 
 
@@ -381,6 +394,36 @@ def _detail(response: httpx.Response, limit: int = 300) -> str:
     return json.dumps(payload)[:limit]
 
 
+def _json(response: httpx.Response, action: str) -> dict:
+    """The body of a *successful* response, as a dict.
+
+    A 2xx is not a promise of JSON.  A ``base_url`` that is not a Jira
+    REST root — a site with an extra path segment, a company homepage, an
+    SSO portal intercepting the request — answers 200 with an HTML page,
+    which sails through :func:`_raise_for_status` and used to reach
+    ``.json()`` as an uncaught ``JSONDecodeError``: a 500 on what is
+    really a mistyped field, and outside the ``TrackerError`` contract
+    every caller here handles.
+
+    So an unparseable success is a ``TrackerError`` like any other "the
+    tracker said no", worded to point at the URL, since that is what is
+    wrong in every case that produces it.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        raise TrackerError(
+            f"The tracker returned a non-JSON response while {action} "
+            f"({response.status_code} {response.headers.get('content-type', 'unknown type')}). "
+            "Check the site URL — it must be the API root, with no extra path."
+        ) from None
+    if not isinstance(payload, dict):
+        raise TrackerError(
+            f"The tracker returned an unexpected response while {action}. Check the site URL."
+        )
+    return payload
+
+
 def _raise_for_status(response: httpx.Response, action: str) -> None:
     """Turn a non-2xx into the right ``TrackerError`` flavour."""
     if response.is_success:
@@ -409,6 +452,10 @@ def _verify_jira(config: TrackerConfig) -> str:
 
     response = _request("GET", f"{base}/rest/api/3/myself", headers=headers)
     _raise_for_status(response, "checking the Jira credentials")
+    # Parsed rather than discarded: this is the first request to the site,
+    # so a base_url that is not a Jira REST root should fail *here* — with
+    # a message about the URL — instead of two calls later.
+    _json(response, "checking the Jira credentials")
 
     response = _request("GET", f"{base}/rest/api/3/project/{config.target}", headers=headers)
     if response.status_code == 404:
@@ -416,22 +463,26 @@ def _verify_jira(config: TrackerConfig) -> str:
             f"Jira project {config.target!r} was not found, or this account cannot see it."
         )
     _raise_for_status(response, "looking up the Jira project")
-    project_name = response.json().get("name") or config.target
+    project_name = _json(response, "looking up the Jira project").get("name") or config.target
 
     if not config.issue_type:
         raise TrackerError("A Jira issue type is required (for example 'Bug').")
+    # The per-project form, not the older `createmeta?projectKeys=&expand=`
+    # one: Atlassian deprecated that in December 2023 and current Cloud
+    # sites answer it without a `projects` key, which reads here as "the
+    # project has no issue types" and refuses a perfectly good config.
+    #
+    # `maxResults` is explicit because this endpoint paginates at 50 by
+    # default, and a silently truncated list is the same bug in miniature —
+    # a real issue type reported as nonexistent.
     response = _request(
         "GET",
-        f"{base}/rest/api/3/issue/createmeta"
-        f"?projectKeys={config.target}&expand=projects.issuetypes",
+        f"{base}/rest/api/3/issue/createmeta/{config.target}/issuetypes?maxResults=200",
         headers=headers,
     )
     _raise_for_status(response, "reading the Jira issue types")
-    available = {
-        issue_type.get("name")
-        for project in response.json().get("projects", [])
-        for issue_type in project.get("issuetypes", [])
-    }
+    payload = _json(response, "reading the Jira issue types")
+    available = {issue_type.get("name") for issue_type in payload.get("issueTypes", [])}
     if config.issue_type not in available:
         known = ", ".join(sorted(name for name in available if name)) or "none"
         raise TrackerError(
@@ -449,7 +500,7 @@ def _verify_github(config: TrackerConfig) -> str:
     if response.status_code == 404:
         raise TrackerError(f"Repository {owner}/{repo} was not found, or this token cannot see it.")
     _raise_for_status(response, "looking up the repository")
-    data = response.json()
+    data = _json(response, "looking up the repository")
     if not data.get("has_issues"):
         raise TrackerError(f"Issues are disabled on {owner}/{repo}. Enable them and try again.")
     # Deliberately *not* checking permissions.push: a fine-grained token
@@ -495,7 +546,7 @@ def _create_jira(config: TrackerConfig, report: FindingReport, context: FindingC
         "POST", f"{base}/rest/api/3/issue", headers=_jira_headers(config), json_body=payload
     )
     _raise_for_status(response, "creating the Jira issue")
-    key = response.json().get("key")
+    key = _json(response, "creating the Jira issue").get("key")
     if not key:
         raise TrackerError("Jira accepted the issue but returned no key.")
     return IssueRef(key=key, url=f"{base}/browse/{key}")
@@ -517,7 +568,7 @@ def _create_github(
         json_body=payload,
     )
     _raise_for_status(response, "creating the GitHub issue")
-    data = response.json()
+    data = _json(response, "creating the GitHub issue")
     number = data.get("number")
     if number is None:
         raise TrackerError("GitHub accepted the issue but returned no number.")
@@ -598,7 +649,11 @@ def issue_is_open(config: TrackerConfig, key: str) -> bool:
             # `state_reason` is deliberately not read: nothing branches on
             # *why* an issue was closed, only on whether it is.
             return response.json().get("state") == "open"
-    except (TrackerError, ValueError) as exc:
+    except Exception as exc:
+        # Deliberately every exception, not a named few. The contract is
+        # "resolve every doubt to False", and an unexpected body shape
+        # escaping here would abort the caller's whole export instead of
+        # costing this one state check.
         logger.warning("Could not check whether issue %s is open: %s", key, exc)
     return False
 

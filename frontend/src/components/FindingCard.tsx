@@ -61,11 +61,18 @@ export default function FindingCard({ finding, screenshotUrl }: Props) {
           filed — the run's toggle was off, or the run did not reach the
           completion path — which is a normal state, not a failure, so the
           section disappears rather than reading "not filed". */}
-      {finding.tracker_issue_url && (
+      {/* Gated on the *key*, not the URL: the key is what a human quotes,
+          and a ticket whose URL was never recorded must still show as
+          filed rather than vanishing from the card entirely. */}
+      {finding.tracker_issue_key && (
         <p className="finding-tracker">
-          <a href={finding.tracker_issue_url} target="_blank" rel="noreferrer">
-            {finding.tracker_issue_key} ↗
-          </a>
+          {finding.tracker_issue_url ? (
+            <a href={finding.tracker_issue_url} target="_blank" rel="noreferrer">
+              {finding.tracker_issue_key} ↗
+            </a>
+          ) : (
+            <span>{finding.tracker_issue_key}</span>
+          )}
           {/* Named so the reader knows this finding did not get its own
               ticket, rather than wondering why several cards link to one. */}
           {finding.tracker_is_duplicate && (
@@ -73,7 +80,7 @@ export default function FindingCard({ finding, screenshotUrl }: Props) {
           )}
         </p>
       )}
-      {finding.tracker_error && !finding.tracker_issue_url && (
+      {finding.tracker_error && !finding.tracker_issue_key && (
         <p className="finding-tracker finding-tracker-error">
           Could not file this finding: {finding.tracker_error}
         </p>

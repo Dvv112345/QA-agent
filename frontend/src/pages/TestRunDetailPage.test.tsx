@@ -103,6 +103,7 @@ function makeRun(overrides: Partial<TestRunDetailResponse> = {}): TestRunDetailR
     outdated_reasons: [],
     requirement_deleted: false,
     executions: [makeExecution()],
+    export_findings: false,
     exported_finding_count: 0,
     exported_issue_count: 0,
     export_error_count: 0,
@@ -248,7 +249,7 @@ describe('TestRunDetailPage', () => {
       mockFetchTestRun.mockResolvedValue(makeRun())
       renderPage()
 
-      await screen.findByText('Test Run')
+      await screen.findByText('Test Run #1')
       expect(screen.queryByRole('button', { name: /File \d+ bug/ })).not.toBeInTheDocument()
     })
 
@@ -290,6 +291,95 @@ describe('TestRunDetailPage', () => {
 
       expect(await screen.findByText('3 bugs filed as 1 issue')).toBeInTheDocument()
       expect(mockExport).toHaveBeenCalledWith(1)
+    })
+
+    it('keeps polling a completed run whose findings have not been filed yet', async () => {
+      // The last execution commits COMPLETED — which flips the run's
+      // rolled-up status — and only then files. Stopping on the terminal
+      // status left the page on "not yet filed" until a manual reload.
+      vi.useFakeTimers()
+      try {
+        mockFetchSprint.mockResolvedValue(makeSprint())
+        mockFetchTestRun.mockResolvedValue(
+          makeRun({ status: 'completed', export_findings: true, unexported_finding_count: 3 }),
+        )
+        renderPage()
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0)
+        })
+        expect(mockFetchTestRun).toHaveBeenCalledTimes(1)
+
+        mockFetchTestRun.mockResolvedValue(
+          makeRun({
+            status: 'completed',
+            export_findings: true,
+            exported_finding_count: 3,
+            exported_issue_count: 1,
+            export_groups: [{ issue_key: 'QA-9', issue_url: 'https://x/QA-9', finding_count: 3 }],
+          }),
+        )
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2600)
+        })
+        expect(mockFetchTestRun).toHaveBeenCalledTimes(2)
+        // Read synchronously: `findByText` would wait on a clock this test
+        // controls, and nothing is left to advance it.
+        expect(screen.getByText('3 bugs filed as 1 issue')).toBeInTheDocument()
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10000)
+        })
+        expect(mockFetchTestRun).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('gives up waiting for an export that never arrives', async () => {
+      vi.useFakeTimers()
+      try {
+        mockFetchSprint.mockResolvedValue(makeSprint())
+        mockFetchTestRun.mockResolvedValue(
+          makeRun({ status: 'completed', export_findings: true, unexported_finding_count: 3 }),
+        )
+        renderPage()
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0)
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500 * 60)
+        })
+
+        // 1 initial + 48 grace ticks, and nothing after.
+        expect(mockFetchTestRun).toHaveBeenCalledTimes(49)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not poll a failed run holding unfiled bugs', async () => {
+      // A failed run never reaches the export call, so its unfiled bugs
+      // are a standing state rather than a pending one.
+      vi.useFakeTimers()
+      try {
+        mockFetchSprint.mockResolvedValue(makeSprint())
+        mockFetchTestRun.mockResolvedValue(
+          makeRun({ status: 'failed', export_findings: true, unexported_finding_count: 3 }),
+        )
+        renderPage()
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0)
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10000)
+        })
+        expect(mockFetchTestRun).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 })

@@ -30,6 +30,16 @@ class Repo(SQLModel, table=True):
 
     sprints: list["Sprint"] = Relationship(back_populates="repo")
 
+    @property
+    def has_access_token(self) -> bool:
+        """Whether an access token is stored — never the token itself.
+
+        Serialized so the issue-tracker form can say whether ticking "use
+        this sprint's repository" will supply a credential, instead of the
+        user learning it from a save that fails verification.
+        """
+        return bool(self.github_token)
+
 
 class Sprint(SQLModel, table=True):
     """A named sprint linked to a GitHub repository."""
@@ -548,7 +558,7 @@ class FindingSeverity(str, Enum):
 # ── Export roll-up (shared by scripted and exploratory runs) ─────────
 
 
-def export_rollup(findings: list) -> dict:
+def export_rollup(findings: list, *, export_findings: bool = False) -> dict:
     """Summarize what a run's bug findings did on their way to a tracker.
 
     Computed at response time, never stored — the same treatment the case
@@ -569,6 +579,12 @@ def export_rollup(findings: list) -> dict:
     of grouping is that six findings can be two tickets, and a reader
     should not have to open every card to work out which four became
     QA-142.
+
+    *export_findings* is the run's own toggle — the one **stored** value
+    carried here, passed through rather than derived.  Without it the page
+    cannot tell "was set to file and has not yet" from "was never set to
+    file", which are different things to say to a reader now that the
+    button files either way.
     """
     exported = [f for f in findings if f.tracker_issue_key]
     unexported = [f for f in findings if not f.tracker_issue_key]
@@ -586,6 +602,7 @@ def export_rollup(findings: list) -> dict:
         group["finding_count"] += 1
 
     return {
+        "export_findings": export_findings,
         "exported_finding_count": len(exported),
         "exported_issue_count": len(groups),
         "export_error_count": sum(1 for f in unexported if f.tracker_error),
@@ -783,32 +800,14 @@ class TestRun(SQLModel, table=True):
             if case.finding_type == FindingType.BUG and case.finding_title
         ]
 
-    # The export roll-up as five attributes rather than one nested object,
-    # because several routes return this row directly and FastAPI builds
-    # the response from attributes. `TestRunResponse`/`TestRunDetailResponse`
-    # inherit the field names from `ExportRollup`, so these line up by name.
-    # The exploratory side needs no equivalent: its routes compose their
-    # responses explicitly and splat `export_rollup(...)` in.
-
-    @property
-    def exported_finding_count(self) -> int:
-        return export_rollup(self.bug_findings)["exported_finding_count"]
-
-    @property
-    def exported_issue_count(self) -> int:
-        return export_rollup(self.bug_findings)["exported_issue_count"]
-
-    @property
-    def export_error_count(self) -> int:
-        return export_rollup(self.bug_findings)["export_error_count"]
-
-    @property
-    def unexported_finding_count(self) -> int:
-        return export_rollup(self.bug_findings)["unexported_finding_count"]
-
-    @property
-    def export_groups(self) -> list[dict]:
-        return export_rollup(self.bug_findings)["export_groups"]
+    # The export roll-up is deliberately *not* exposed here as five
+    # properties. Each would re-walk `executions x cases` on every access,
+    # and caching one on the row would be stale the moment something
+    # mutates findings and re-serializes the same instance in a single
+    # request — which is exactly what the export-findings retry route
+    # does. `routes/test_execution.py::_run_detail` splats
+    # `export_rollup(...)` once instead, the arrangement
+    # `routes/exploratory.py` already uses for its own two builders.
 
 
 class TestExecution(SQLModel, table=True):

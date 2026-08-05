@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import ExploratoryRunDetailPage from './ExploratoryRunDetailPage'
 import type { ExploratoryRunDetailResponse } from '../types'
@@ -58,6 +58,7 @@ function makeRun(
     bug_count: 1,
     issue_count: 1,
     high_severity_count: 1,
+    export_findings: false,
     exported_finding_count: 0,
     exported_issue_count: 0,
     export_error_count: 0,
@@ -214,6 +215,112 @@ describe('ExploratoryRunDetailPage', () => {
 
       expect(await screen.findByText('2 bugs filed as 1 issue')).toBeInTheDocument()
       expect(mockExport).toHaveBeenCalledWith(5)
+    })
+  })
+
+  describe('polling', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('keeps polling a completed run whose findings have not been filed yet', async () => {
+      // The worker commits COMPLETED before it files. Stopping the moment
+      // the status reads terminal left the page on "not yet filed" until a
+      // manual reload — the bug this window exists to close.
+      vi.useFakeTimers()
+      mockFetchRun.mockResolvedValue(
+        makeRun({ export_findings: true, unexported_finding_count: 2 }),
+      )
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(mockFetchRun).toHaveBeenCalledTimes(1)
+
+      // Still filing: the page keeps asking.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(mockFetchRun).toHaveBeenCalledTimes(2)
+
+      // The tickets land — and the page stops asking.
+      mockFetchRun.mockResolvedValue(
+        makeRun({
+          export_findings: true,
+          exported_finding_count: 2,
+          exported_issue_count: 1,
+          export_groups: [{ issue_key: '9', issue_url: 'https://gh/9', finding_count: 2 }],
+        }),
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(mockFetchRun).toHaveBeenCalledTimes(3)
+      // Read synchronously: `findByText` would wait on a clock this test
+      // controls, and nothing is left to advance it.
+      expect(screen.getByText('2 bugs filed as 1 issue')).toBeInTheDocument()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000)
+      })
+      expect(mockFetchRun).toHaveBeenCalledTimes(3)
+    })
+
+    it('gives up waiting for an export that never arrives', async () => {
+      // Bounded, so a completed run whose export silently no-opped cannot
+      // poll for as long as the tab stays open.
+      vi.useFakeTimers()
+      mockFetchRun.mockResolvedValue(
+        makeRun({ export_findings: true, unexported_finding_count: 2 }),
+      )
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500 * 60)
+      })
+
+      // 1 initial + 48 grace ticks, and nothing after.
+      expect(mockFetchRun).toHaveBeenCalledTimes(49)
+    })
+
+    it('does not poll a failed run holding unfiled bugs', async () => {
+      // Nothing is filing: a failed run never reaches the export call, so
+      // its unfiled bugs are a standing state, not a pending one.
+      vi.useFakeTimers()
+      mockFetchRun.mockResolvedValue(
+        makeRun({ status: 'failed', export_findings: true, unexported_finding_count: 2 }),
+      )
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000)
+      })
+      expect(mockFetchRun).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not poll a completed run whose filing already failed', async () => {
+      // An error is an answer: the run page offers Retry rather than
+      // waiting for something that already came back.
+      vi.useFakeTimers()
+      mockFetchRun.mockResolvedValue(
+        makeRun({ export_findings: true, unexported_finding_count: 2, export_error_count: 2 }),
+      )
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000)
+      })
+      expect(mockFetchRun).toHaveBeenCalledTimes(1)
     })
   })
 })

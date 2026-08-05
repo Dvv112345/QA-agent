@@ -991,8 +991,11 @@ class TestExportFindingsEndpoint:
 
         calls: list = []
 
-        def _spy(session, parent):
-            calls.append(parent.id)
+        def _spy(session, parent, *, requested=False):
+            # The flag is recorded, not just accepted: this route passing
+            # `requested=True` is what makes the button work on a run
+            # whose start-time toggle was off.
+            calls.append((parent.id, requested))
             return finding_export.ExportOutcome()
 
         monkeypatch.setattr(finding_export, "export_findings", _spy)
@@ -1016,12 +1019,12 @@ class TestExportFindingsEndpoint:
         db_session.commit()
         db_session.refresh(sprint)
 
-    def _seed_failed_run(self, db_session, sprint, status="failed"):
+    def _seed_failed_run(self, db_session, sprint, status="failed", export_findings=True):
         """A run whose execution ended without reaching the export path."""
         from backend.models.database import TestCaseExecutionStatus
 
         requirement = _seed_runnable_requirement(db_session, sprint, case_count=1)
-        run = _seed_test_run(db_session, sprint, export_findings=True)
+        run = _seed_test_run(db_session, sprint, export_findings=export_findings)
         execution = _seed_test_execution(db_session, run, requirement, status=status)
         _seed_test_case_execution(
             db_session,
@@ -1064,7 +1067,42 @@ class TestExportFindingsEndpoint:
         resp = await async_client.post(f"/api/test-runs/{run.id}/export-findings")
 
         assert resp.status_code == 200
-        assert export_spy == [execution_id]
+        assert export_spy == [(execution_id, True)]
+
+    @pytest.mark.asyncio
+    async def test_files_a_run_whose_toggle_was_off(self, async_client, db_session):
+        """The whole recovery path for "I connected the tracker after
+        starting the run".
+
+        Deliberately drives the **real** exporter with only the transport
+        stubbed: spying on `finding_export.export_findings` is exactly
+        what let this ship inert, because the fast exit being spied over
+        is the bug.
+        """
+        from backend.services import issue_tracker
+        from backend.services.issue_tracker import IssueRef
+
+        created: list = []
+
+        def _create(config, report, context):
+            created.append(report.title)
+            return IssueRef(key="QA-9", url="https://acme.atlassian.net/browse/QA-9")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(issue_tracker, "create_issue", _create)
+            sprint = _seed_run_ready_sprint(db_session)
+            self._connect_tracker(db_session, sprint)
+            run = self._seed_failed_run(db_session, sprint, export_findings=False)
+
+            before = (await async_client.get(f"/api/test-runs/{run.id}")).json()
+            assert before["unexported_finding_count"] == 1
+
+            resp = await async_client.post(f"/api/test-runs/{run.id}/export-findings")
+
+        assert resp.status_code == 200
+        assert created == ["Checkout returns 500"]
+        assert resp.json()["unexported_finding_count"] == 0
+        assert resp.json()["exported_finding_count"] == 1
 
     @pytest.mark.asyncio
     async def test_a_run_with_nothing_pending_still_returns_the_detail(
@@ -1095,7 +1133,7 @@ class TestExportFindingsEndpoint:
         resp = await async_client.post(f"/api/test-runs/{run.id}/export-findings")
 
         assert resp.status_code == 200
-        assert export_spy == [execution_id]
+        assert export_spy == [(execution_id, True)]
 
 
 class TestExportRollup:

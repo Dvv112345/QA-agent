@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
+from functools import partial
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -190,6 +191,16 @@ def _finding_response(finding: ExploratoryFinding) -> ExploratoryFindingResponse
         expected=finding.expected,
         actual=finding.actual,
         environment=finding.environment,
+        # Passed explicitly because this response is composed field by
+        # field rather than read off the row: inheriting them from
+        # `FindingBase` only supplies the defaults, so an omission here
+        # serializes a filed finding as never filed. `tracker_target` is
+        # deliberately absent — it scopes de-duplication in the database
+        # and the URL is already absolute.
+        tracker_issue_key=finding.tracker_issue_key,
+        tracker_issue_url=finding.tracker_issue_url,
+        tracker_error=finding.tracker_error,
+        tracker_is_duplicate=finding.tracker_is_duplicate,
         has_screenshot=finding.screenshot_path is not None,
         created_at=finding.created_at,
     )
@@ -239,7 +250,7 @@ def _run_response(run: ExploratoryRun) -> ExploratoryRunResponse:
         bug_count=bugs,
         issue_count=issues,
         high_severity_count=high,
-        **export_rollup(run.bug_findings),
+        **export_rollup(run.bug_findings, export_findings=run.export_findings),
         created_at=run.created_at,
         updated_at=run.updated_at,
     )
@@ -262,7 +273,7 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
         bug_count=bugs,
         issue_count=issues,
         high_severity_count=high,
-        **export_rollup(run.bug_findings),
+        **export_rollup(run.bug_findings, export_findings=run.export_findings),
         created_at=run.created_at,
         updated_at=run.updated_at,
     )
@@ -615,7 +626,9 @@ async def export_exploratory_run_findings(
     if run.sprint is not None and run.sprint.issue_tracker is None:
         raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)
 
-    await asyncio.to_thread(finding_export.export_findings, session, run)
+    # See the scripted twin: `requested=True` because the click is itself
+    # the consent the run's toggle stands in for.
+    await asyncio.to_thread(partial(finding_export.export_findings, session, run, requested=True))
 
     session.expire_all()
     return _run_detail(_get_run_or_404(session, run_id))

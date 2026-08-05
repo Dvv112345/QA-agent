@@ -145,6 +145,25 @@ describe('FindingCard', () => {
     expect(screen.queryByText(/Could not file/)).not.toBeInTheDocument()
   })
 
+  it('shows the key unlinked when no URL was recorded', () => {
+    // Gating on the URL would make a filed finding read as never filed,
+    // which is the one thing the receipt exists to prevent.
+    render(<FindingCard finding={makeFinding({ tracker_issue_key: 'QA-142' })} />)
+
+    expect(screen.getByText(/QA-142/)).toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('prefers a keyed receipt over a stale error even with no URL', () => {
+    render(
+      <FindingCard
+        finding={makeFinding({ tracker_issue_key: 'QA-142', tracker_error: 'an older failure' })}
+      />,
+    )
+
+    expect(screen.queryByText(/Could not file/)).not.toBeInTheDocument()
+  })
+
   it('prefers the link over a stale error', () => {
     // A retry that succeeded writes the key and clears the error, but a
     // card must never show both even if one lingers.

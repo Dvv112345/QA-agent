@@ -193,6 +193,44 @@ def test_flag_off_makes_no_tracker_call(db_session, tracker):
     assert tracker.created == []
 
 
+def test_an_explicit_request_files_a_run_whose_toggle_was_off(db_session, tracker):
+    """The toggle decides what happens *unasked*.
+
+    A run started before a tracker was connected has its bugs unfiled by
+    design, and the run page's button is the only way they ever get
+    filed — so reading the toggle there would leave the user pressing
+    something that silently does nothing.
+    """
+    _, execution = _scripted_run(db_session, export_findings=False)
+
+    outcome = finding_export.export_findings(db_session, execution, requested=True)
+
+    assert outcome.filed == 1
+    db_session.expire_all()
+    assert execution.cases[0].tracker_issue_key == "QA-1"
+
+
+def test_an_explicit_request_files_an_exploratory_run_whose_toggle_was_off(db_session, tracker):
+    _, run = _exploratory_run(db_session, export_findings=False)
+
+    outcome = finding_export.export_findings(db_session, run, requested=True)
+
+    assert outcome.filed == 1
+    db_session.expire_all()
+    assert run.sessions[0].findings[0].tracker_issue_key == "QA-1"
+
+
+def test_a_request_still_files_nothing_when_there_is_nothing_to_file(db_session, tracker):
+    """The `not rows` half of the fast exit stays unconditional, so the
+    button is a no-op rather than a trap on a run with no bugs."""
+    _, execution = _scripted_run(db_session, status=TestCaseExecutionStatus.PASSED)
+
+    outcome = finding_export.export_findings(db_session, execution, requested=True)
+
+    assert outcome == finding_export.ExportOutcome()
+    assert tracker.created == []
+
+
 def test_a_passing_run_files_nothing(db_session, tracker):
     _, execution = _scripted_run(db_session, status=TestCaseExecutionStatus.PASSED)
 
@@ -360,6 +398,28 @@ def test_an_open_matching_ticket_is_adopted_not_re_filed(db_session, tracker):
 def test_the_adopted_url_is_read_back_not_reconstructed(db_session, tracker):
     """The URL shape differs per provider and per Jira site — this module
     has no business knowing either."""
+    sprint, execution = _scripted_run(db_session)
+    _file_first_run(db_session, tracker, sprint)
+
+    finding_export.export_findings(db_session, execution)
+
+    db_session.expire_all()
+    assert execution.cases[0].tracker_issue_url == "https://acme.atlassian.net/browse/QA-1"
+
+
+def test_the_adopted_url_is_read_back_from_this_sprint_only(db_session, tracker):
+    """Two sprints can share one tracker, and Jira keys are per-project —
+    so the same key exists in both. The read-back is scoped through the
+    run to the sprint, exactly as the de-duplication window is."""
+    # Seeded first, so an unscoped scan would find this row's URL first.
+    other_sprint, other_execution = _scripted_run(db_session)
+    other_case = other_execution.cases[0]
+    other_case.tracker_issue_key = "QA-1"
+    other_case.tracker_issue_url = "https://wrong-sprint.example/browse/QA-1"
+    other_case.tracker_target = "jira:QA"
+    db_session.add(other_case)
+    db_session.commit()
+
     sprint, execution = _scripted_run(db_session)
     _file_first_run(db_session, tracker, sprint)
 

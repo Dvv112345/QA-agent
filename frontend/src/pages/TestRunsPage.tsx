@@ -155,7 +155,7 @@ export default function TestRunsPage() {
         {tracker ? (
           <>
             <span className="issue-tracker-panel-label">{tracker.target_label}</span>
-            <span className="issue-tracker-panel-none">receives bug findings from a run</span>
+            <span className="issue-tracker-panel-hint">receives bug findings from a run</span>
             <button
               className="btn btn-secondary btn-small"
               onClick={() => setShowTrackerModal(true)}
@@ -210,6 +210,10 @@ export default function TestRunsPage() {
                         <OutdatedBadge run={run} />
                       </div>
                       <div className="test-run-row-meta">
+                        {/* What a filed ticket calls this run — two runs of
+                            one requirement are otherwise told apart only by
+                            their timestamps. */}
+                        <span className="test-run-id">Run #{run.id}</span>
                         <time>{new Date(run.created_at).toLocaleString()}</time>
                         {findingSummary(run) && <span>{findingSummary(run)}</span>}
                       </div>
@@ -247,6 +251,7 @@ export default function TestRunsPage() {
                         <OutdatedBadge run={run} />
                       </div>
                       <div className="test-run-row-meta">
+                        <span className="test-run-id">Run #{run.id}</span>
                         <time>{new Date(run.created_at).toLocaleString()}</time>
                         {resultSummary(run) && <span>{resultSummary(run)}</span>}
                       </div>
@@ -277,6 +282,7 @@ export default function TestRunsPage() {
         <IssueTrackerModal
           sprintId={sprintId}
           config={tracker}
+          repo={sprint.repo}
           onSaved={setTracker}
           onClose={() => setShowTrackerModal(false)}
         />

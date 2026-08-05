@@ -57,6 +57,7 @@ const fakeSprint: SprintResponse = {
     description: 'A test repo',
     active: true,
     created_at: '2026-01-01T00:00:00Z',
+    has_access_token: false,
   },
   requirements_complete: false,
   has_test_environment_submission: false,

@@ -25,6 +25,7 @@ const fakeRepo: RepoResponse = {
   description: 'A test repo',
   active: true,
   created_at: '2026-01-01T00:00:00Z',
+  has_access_token: false,
 }
 
 function renderPage() {

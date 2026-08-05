@@ -84,6 +84,12 @@
   font-weight: 600;
 }
 
+/* The run's identifier, quoted by any ticket filed from it. Monospaced so
+   it reads as something to match against rather than to read. */
+.test-run-id {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
 .test-run-row-meta {
   display: flex;
   gap: 1rem;

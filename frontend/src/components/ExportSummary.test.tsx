@@ -5,6 +5,7 @@ import type { ExportRollup } from '../types'
 
 function makeRollup(overrides: Partial<ExportRollup> = {}): ExportRollup {
   return {
+    export_findings: false,
     exported_finding_count: 0,
     exported_issue_count: 0,
     export_error_count: 0,
@@ -56,6 +57,46 @@ describe('ExportSummary', () => {
     renderSummary(makeRollup({ unexported_finding_count: 6 }))
 
     expect(screen.getByRole('button', { name: 'File 6 bugs' })).toBeInTheDocument()
+  })
+
+  it('renders an unlinked key when no URL was recorded', () => {
+    // The key is what a human quotes, so it must survive a blank URL —
+    // and an <a href=""> would reload the page.
+    renderSummary(
+      makeRollup({
+        exported_finding_count: 1,
+        exported_issue_count: 1,
+        export_groups: [{ issue_key: 'QA-142', issue_url: '', finding_count: 1 }],
+      }),
+    )
+
+    expect(screen.getByText('QA-142')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('says a run was never set to file, rather than implying it failed', () => {
+    renderSummary(makeRollup({ export_findings: false, unexported_finding_count: 6 }))
+
+    expect(
+      screen.getByText('This run was not set to file findings automatically.'),
+    ).toBeInTheDocument()
+    // The button still works — pressing it is the instruction itself.
+    expect(screen.getByRole('button', { name: 'File 6 bugs' })).toBeEnabled()
+  })
+
+  it('says nothing of the sort when the run was set to file', () => {
+    renderSummary(makeRollup({ export_findings: true, unexported_finding_count: 6 }))
+
+    expect(screen.queryByText(/not set to file/)).not.toBeInTheDocument()
+  })
+
+  it('does not blame the toggle when filing actually failed', () => {
+    renderSummary(
+      makeRollup({ export_findings: false, unexported_finding_count: 1, export_error_count: 1 }),
+    )
+
+    expect(screen.queryByText(/not set to file/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
   it('says Retry when filing was attempted and failed', () => {

@@ -831,7 +831,8 @@ FINDING_GROUPING_SYSTEM_PROMPT = (
     "You are not judging whether a finding is real, severe, or worth fixing. "
     "That verdict was made by the tester that recorded it. You are only "
     "deciding what is a duplicate of what.\n\n"
-    "Each finding is identified by an integer index. Respond with a JSON "
+    "Each finding is identified by an integer index, numbered from 0 and "
+    "contiguous, exactly as shown in the list below. Respond with a JSON "
     'object of the shape {"groups": [{"indices": [int, ...], '
     '"existing_key": string | null}]}, where:\n'
     "- every new finding's index appears in exactly one group;\n"

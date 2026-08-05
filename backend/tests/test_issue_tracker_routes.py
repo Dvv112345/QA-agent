@@ -15,6 +15,7 @@ from backend.models.database import (
     ExploratoryRun,
     ExploratoryRunStatus,
     IssueTrackerConfig,
+    Repo,
     RequirementStatus,
 )
 from backend.services import issue_tracker
@@ -390,6 +391,141 @@ async def test_unreadable_stored_token_asks_for_a_new_one(async_client, db_sessi
 
     assert resp.status_code == 422
     assert "Enter it again" in resp.json()["detail"]
+
+
+# ── PUT: the sprint's own repository ──────────────────────────────────
+
+
+def _repo_of(db_session, sprint) -> Repo:
+    return db_session.get(Repo, sprint.repo_id)
+
+
+def _give_repo_a_token(db_session, sprint, token: str = "repo-token") -> None:
+    repo = _repo_of(db_session, sprint)
+    repo.github_token = encrypt_token(token)
+    db_session.commit()
+
+
+_USE_REPO_PAYLOAD = {"provider": "github", "target": "", "use_sprint_repo": True}
+
+
+@pytest.mark.asyncio
+async def test_use_sprint_repo_derives_the_target_from_the_registered_link(
+    async_client, db_session, verify_stub
+):
+    """The form may send a blank repository — the target comes from
+    ``Repo.github_link``, not from what the browser sent back."""
+    sprint = _seed_sprint(db_session)
+
+    resp = await async_client.put(
+        f"/api/sprints/{sprint.id}/issue-tracker",
+        json={**_USE_REPO_PAYLOAD, "api_token": "typed-token"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["target"] == "owner/repo"
+    assert _config_row(db_session, sprint.id).target == "owner/repo"
+
+
+@pytest.mark.asyncio
+async def test_use_sprint_repo_verifies_with_the_repos_plaintext_token(
+    async_client, db_session, verify_stub
+):
+    sprint = _seed_sprint(db_session)
+    _give_repo_a_token(db_session, sprint)
+
+    resp = await async_client.put(f"/api/sprints/{sprint.id}/issue-tracker", json=_USE_REPO_PAYLOAD)
+
+    assert resp.status_code == 200
+    assert verify_stub.calls[-1].api_token == "repo-token"
+    # Copied at save time, so the config is indistinguishable afterwards
+    # from one whose token was typed.
+    assert decrypt_token(_config_row(db_session, sprint.id).api_token) == "repo-token"
+
+
+@pytest.mark.asyncio
+async def test_a_typed_token_wins_over_the_repos(async_client, db_session, verify_stub):
+    sprint = _seed_sprint(db_session)
+    _give_repo_a_token(db_session, sprint)
+
+    await async_client.put(
+        f"/api/sprints/{sprint.id}/issue-tracker",
+        json={**_USE_REPO_PAYLOAD, "api_token": "typed-token"},
+    )
+
+    assert verify_stub.calls[-1].api_token == "typed-token"
+
+
+@pytest.mark.asyncio
+async def test_use_sprint_repo_without_any_token_is_422(async_client, db_session, verify_stub):
+    """A repo registered without a token is ordinary — public ones need
+    none to read — so the absence falls through to "enter one"."""
+    sprint = _seed_sprint(db_session)
+
+    resp = await async_client.put(f"/api/sprints/{sprint.id}/issue-tracker", json=_USE_REPO_PAYLOAD)
+
+    assert resp.status_code == 422
+    assert verify_stub.calls == []
+
+
+@pytest.mark.asyncio
+async def test_use_sprint_repo_falls_back_to_the_stored_config_token(
+    async_client, db_session, verify_stub
+):
+    """Rule 3 stays reachable: the box is ticked for the repository, and
+    the token the connection already had still applies."""
+    sprint = _seed_sprint(db_session)
+    await async_client.put(f"/api/sprints/{sprint.id}/issue-tracker", json=_GITHUB_PAYLOAD)
+
+    resp = await async_client.put(f"/api/sprints/{sprint.id}/issue-tracker", json=_USE_REPO_PAYLOAD)
+
+    assert resp.status_code == 200
+    assert verify_stub.calls[-1].api_token == "dummy-github-token"
+    assert resp.json()["target"] == "owner/repo"
+
+
+@pytest.mark.asyncio
+async def test_the_repos_token_carries_a_provider_switch(async_client, db_session, verify_stub):
+    """The repo's token is GitHub's by construction, so it is exactly the
+    thing a Jira→GitHub switch is otherwise missing."""
+    sprint = _seed_sprint(db_session)
+    _give_repo_a_token(db_session, sprint)
+    await async_client.put(f"/api/sprints/{sprint.id}/issue-tracker", json=_JIRA_PAYLOAD)
+
+    resp = await async_client.put(f"/api/sprints/{sprint.id}/issue-tracker", json=_USE_REPO_PAYLOAD)
+
+    assert resp.status_code == 200
+    assert verify_stub.calls[-1].api_token == "repo-token"
+
+
+@pytest.mark.asyncio
+async def test_use_sprint_repo_with_jira_is_422(async_client, db_session, verify_stub):
+    sprint = _seed_sprint(db_session)
+
+    resp = await async_client.put(
+        f"/api/sprints/{sprint.id}/issue-tracker",
+        json={**_JIRA_PAYLOAD, "use_sprint_repo": True},
+    )
+
+    assert resp.status_code == 422
+    assert "GitHub Issues only" in resp.json()["detail"]
+    assert verify_stub.calls == []
+
+
+@pytest.mark.asyncio
+async def test_use_sprint_repo_on_a_non_github_link_is_422(async_client, db_session, verify_stub):
+    sprint = _seed_sprint(db_session)
+    repo = _repo_of(db_session, sprint)
+    repo.github_link = "https://gitlab.com/acme/shop"
+    db_session.commit()
+
+    resp = await async_client.put(
+        f"/api/sprints/{sprint.id}/issue-tracker",
+        json={**_USE_REPO_PAYLOAD, "api_token": "typed-token"},
+    )
+
+    assert resp.status_code == 422
+    assert verify_stub.calls == []
 
 
 # ── DELETE ────────────────────────────────────────────────────────────

@@ -118,11 +118,12 @@ Register a GitHub repository. Validates the URL format and confirms the repo is 
   "name": "owner/repo",
   "description": "A description from GitHub",
   "active": true,
-  "created_at": "2026-07-13T12:00:00Z"
+  "created_at": "2026-07-13T12:00:00Z",
+  "has_access_token": false
 }
 ```
 
-The access token is never returned in responses.
+The access token is never returned in responses — only `has_access_token`, so the issue-tracker form can say whether the repo can supply a credential instead of the user learning it from a save that fails.
 
 **Errors:** 422 (invalid URL or inaccessible repo), 500 (missing `ENCRYPTION_KEY` when a token is supplied).
 
@@ -508,19 +509,22 @@ Connect a tracker, or re-point an existing connection — provider switch includ
 
 **Request:** `application/json`
 
-| Field           | Jira                                                 | GitHub                  |
-| --------------- | ---------------------------------------------------- | ----------------------- |
-| `provider`      | `"jira"`                                             | `"github"`              |
-| `base_url`      | required — `https://your-team.atlassian.net`         | ignored (nulled)        |
-| `account_email` | required — the Atlassian account                     | ignored (nulled)        |
-| `target`        | required — project key, e.g. `QA`                    | required — `owner/repo` |
-| `issue_type`    | required — e.g. `Bug`, validated against the project | ignored (nulled)        |
-| `api_token`     | API token                                            | personal access token   |
+| Field             | Jira                                                 | GitHub                  |
+| ----------------- | ---------------------------------------------------- | ----------------------- |
+| `provider`        | `"jira"`                                             | `"github"`              |
+| `base_url`        | required — `https://your-team.atlassian.net`         | ignored (nulled)        |
+| `account_email`   | required — the Atlassian account                     | ignored (nulled)        |
+| `target`          | required — project key, e.g. `QA`                    | required — `owner/repo` |
+| `issue_type`      | required — e.g. `Bug`, validated against the project | ignored (nulled)        |
+| `api_token`       | API token                                            | personal access token   |
+| `use_sprint_repo` | rejected (422)                                       | optional — see below    |
 
-Three edit rules:
+**`use_sprint_repo` (GitHub only)** files into the sprint's own registered repository: `target` may then be blank, since `owner/repo` is derived server-side from `Repo.github_link` rather than trusted from the request, and an omitted `api_token` falls back to the repo's stored access token. The token is **copied at save time** — decrypted, verified, re-encrypted into the tracker config — so the result is indistinguishable from a typed one and every export path is unchanged; rotating the repo's token later does not follow through, and the tracker is re-saved instead. A repo registered without a token is ordinary (public ones need none to read), so its absence simply falls through to the token rules below.
+
+Token resolution, first match wins: a token in the request → the sprint repo's token (when `use_sprint_repo` is set) → the stored one on a same-provider edit → 422. Three edit rules follow from that:
 
 - **The token may be omitted** when the provider is unchanged: blank or absent means "keep the stored one", which is decrypted and used for the verification call.
-- **The token is required when the provider changes** — a Jira API token is meaningless to GitHub, so reusing it silently would verify nothing and store a credential that can never work (422).
+- **The token is required when the provider changes** — a Jira API token is meaningless to GitHub, so reusing it silently would verify nothing and store a credential that can never work (422). `use_sprint_repo` is the exception, and only because that token is GitHub's by construction rather than the previous tracker's.
 - **Provider-irrelevant fields are cleared on a switch**, so a stale Jira site can never linger on a GitHub config.
 
 Already-filed findings are untouched by any edit: their issue links still point where they were actually filed, and they are excluded from the new tracker's de-duplication window. That exclusion matters most on GitHub, whose issue numbers are per-repo integers — without it, repo B's `#7` would answer "is it still open?" for repo A's `#7` and a finding would be attached to an unrelated ticket.
@@ -529,7 +533,7 @@ A GitHub repo is accepted with a fine-grained token holding Issues:write and no 
 
 **Response** (200): `IssueTrackerConfigResponse` (no token).
 
-**Errors:** 404 (sprint); 422 (missing provider-specific field, malformed target, unknown provider, missing token on a first connect or a provider switch, or the tracker refusing — bad credentials, unknown project/repo, unknown issue type, issues disabled); 500 (`ENCRYPTION_KEY` unset); 502 (the tracker could not be reached).
+**Errors:** 404 (sprint); 422 (missing provider-specific field, malformed target, unknown provider, missing token on a first connect or a provider switch, `use_sprint_repo` with a non-GitHub provider or on a sprint whose repo link is not a GitHub URL, or the tracker refusing — bad credentials, unknown project/repo, unknown issue type, issues disabled); 500 (`ENCRYPTION_KEY` unset); 502 (the tracker could not be reached).
 
 #### `DELETE /api/sprints/{sprint_id}/issue-tracker`
 

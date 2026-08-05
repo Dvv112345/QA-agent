@@ -34,6 +34,9 @@ class RepoResponse(SQLModel):
     description: str | None = None
     active: bool
     created_at: datetime
+    # Whether a token is stored, never the token (Convention #10): the
+    # issue-tracker form needs to know if the repo can supply a credential.
+    has_access_token: bool = False
 
 
 class ReadmeStatusResponse(SQLModel):
@@ -200,6 +203,10 @@ class IssueTrackerConfigRequest(SQLModel):
     # meaningless to GitHub.
     api_token: str | None = None
     issue_type: str | None = None  # Jira issue type name
+    # GitHub only: file into the sprint's own registered repository. The
+    # route derives ``owner/repo`` from ``Repo.github_link`` (so ``target``
+    # may be blank) and, when no token is typed, uses the repo's stored one.
+    use_sprint_repo: bool = False
 
 
 class TrackerIssueGroup(SQLModel):
@@ -223,6 +230,11 @@ class ExportRollup(SQLModel):
     offers the button, the other words it.
     """
 
+    # The run's own toggle — the one *stored* field here, and the only
+    # thing that distinguishes "was set to file and has not yet" from
+    # "was never set to file". The button files either way, so this only
+    # ever changes the wording.
+    export_findings: bool = False
     exported_finding_count: int = 0
     exported_issue_count: int = 0
     export_error_count: int = 0

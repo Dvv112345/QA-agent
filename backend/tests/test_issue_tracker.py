@@ -70,21 +70,58 @@ def _context(**overrides) -> FindingContext:
     return FindingContext(**defaults)
 
 
+_JIRA_ISSUETYPES_URL = f"{_JIRA_SITE}/rest/api/3/issue/createmeta/QA/issuetypes?maxResults=200"
+
+
 def _jira_verify_responses(httpx_mock, *, issue_types=("Bug", "Task")):
     httpx_mock.add_response(url=f"{_JIRA_SITE}/rest/api/3/myself", json={"accountId": "abc"})
     httpx_mock.add_response(
         url=f"{_JIRA_SITE}/rest/api/3/project/QA", json={"name": "Quality Assurance"}
     )
+    # The per-project shape. The older `createmeta?projectKeys=&expand=`
+    # form is deprecated and current Cloud sites answer it without the
+    # `projects` key it was read through — which surfaced as "issue type
+    # does not exist" rather than as an API error.
     httpx_mock.add_response(
-        url=f"{_JIRA_SITE}/rest/api/3/issue/createmeta?projectKeys=QA&expand=projects.issuetypes",
-        json={"projects": [{"issuetypes": [{"name": name} for name in issue_types]}]},
+        url=_JIRA_ISSUETYPES_URL,
+        json={
+            "maxResults": 200,
+            "startAt": 0,
+            "total": len(issue_types),
+            "issueTypes": [{"id": str(i), "name": name} for i, name in enumerate(issue_types)],
+        },
     )
+
+
+class TestSecretsStayOutOfRepr:
+    """A credential reaching a log through a generated __repr__ is the
+    kind of leak nothing in the module's own discipline would catch."""
+
+    def test_the_token_is_not_in_the_config_repr(self):
+        assert "dummy-token" not in repr(_jira_config())
+
+    def test_env_values_are_not_in_the_context_repr(self):
+        context = _context(secret_values=frozenset({"s3cr3t-passw0rd"}))
+        assert "s3cr3t-passw0rd" not in repr(context)
 
 
 class TestJiraVerify:
     def test_succeeds_and_returns_a_display_label(self, httpx_mock):
         _jira_verify_responses(httpx_mock)
         assert verify(_jira_config()) == "Quality Assurance (QA)"
+
+    def test_reads_issue_types_from_the_per_project_endpoint(self, httpx_mock):
+        """Pinned against the URL, because the deprecated form fails in the
+        one way a test of the *result* cannot see: current Cloud sites
+        answer it 200 with no `projects` key, which reads as "this project
+        has no issue types" and refuses a valid config."""
+        _jira_verify_responses(httpx_mock)
+
+        verify(_jira_config())
+
+        requested = [str(request.url) for request in httpx_mock.get_requests()]
+        assert _JIRA_ISSUETYPES_URL in requested
+        assert not any("projectKeys=" in url for url in requested)
 
     def test_bad_credentials_raise(self, httpx_mock):
         httpx_mock.add_response(url=f"{_JIRA_SITE}/rest/api/3/myself", status_code=401)
@@ -215,6 +252,23 @@ class TestJiraCreateIssue:
         request = httpx_mock.get_requests()[-1]
         labels = httpx.Response(200, content=request.content).json()["fields"]["labels"]
         assert "qa-agent-exploratory" in labels
+
+    def test_a_label_with_a_space_raises_before_the_request(self, httpx_mock):
+        """Jira 400s the whole create over a space in a label, so this is
+        raised locally as the error the tracker would have returned —
+        which keeps it inside `_export`'s TrackerError handler, costing
+        one group rather than aborting the run's whole export. Not an
+        assert, which `python -O` would strip.
+
+        `httpx_mock` is requested but left unstubbed on purpose: a
+        regression here has to fail as a raise that did not happen, never
+        as a real request to a real Jira site.
+        """
+        with pytest.raises(TrackerError) as exc:
+            create_issue(_jira_config(), _report(), _context(extra_labels=("needs triage",)))
+
+        assert "must not contain a space" in str(exc.value)
+        assert httpx_mock.get_requests() == []
 
     def test_also_observed_and_supersede_note_reach_the_body(self, httpx_mock):
         """Nothing is ever appended to a ticket afterwards, so this list is
@@ -354,6 +408,16 @@ class TestIssueIsOpen:
             url="https://api.github.com/repos/acme/shop/issues/7", status_code=404
         )
         assert issue_is_open(_github_config(), "7") is False
+
+    def test_an_unexpected_body_shape_reads_as_closed(self, httpx_mock):
+        """The contract is "resolve every doubt to False", so the handler
+        catches everything — a body that is a list, not an object, would
+        otherwise escape and abort the caller's whole export over one
+        state check."""
+        httpx_mock.add_response(
+            url=f"{_JIRA_SITE}/rest/api/3/issue/QA-1?fields=status", json=["unexpected"]
+        )
+        assert issue_is_open(_jira_config(), "QA-1") is False
 
     def test_transport_error_reads_as_closed_and_does_not_raise(self, httpx_mock):
         httpx_mock.add_exception(httpx.ConnectError("no route"))

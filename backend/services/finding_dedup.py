@@ -156,7 +156,22 @@ def _merge_with_llm(
         # answer: it came from identical text, which is stronger evidence
         # than a judgement call. Otherwise take the model's, but only if
         # it names a ticket that actually exists.
-        key = next((matched[p] for p in positions if p in matched), None)
+        prefiltered = list(dict.fromkeys(matched[p] for p in positions if p in matched))
+        key = prefiltered[0] if prefiltered else None
+        if len(prefiltered) > 1:
+            # The merged buckets had matched *different* existing tickets,
+            # so the tracker already holds two for one defect. One has to
+            # win — a group is one ticket by definition — and the losers
+            # are left exactly as they are: nothing is reopened, closed,
+            # or commented on, and the findings filed under them keep
+            # their own receipts. Logged because that duplicate pair is
+            # otherwise invisible; it is the tracker that needs tidying,
+            # not this run.
+            logger.info(
+                "Merged findings matched several filed tickets (%s); adopting %s",
+                ", ".join(prefiltered),
+                key,
+            )
         if key is None and group.existing_key in valid_keys:
             key = group.existing_key
         if key is not None:

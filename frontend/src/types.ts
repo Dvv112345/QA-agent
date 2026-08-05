@@ -13,6 +13,8 @@ export interface RepoResponse {
   description: string | null
   active: boolean
   created_at: string
+  /** Whether a token is stored — never the token itself. */
+  has_access_token: boolean
 }
 
 export interface SprintResponse {
@@ -190,6 +192,12 @@ export interface IssueTrackerConfigInput {
   account_email?: string | null
   api_token?: string | null
   issue_type?: string | null
+  /**
+   * GitHub only: file into the sprint's own repository. The backend derives
+   * `owner/repo` (so `target` may be blank) and falls back to the repo's
+   * stored access token when none is typed.
+   */
+  use_sprint_repo?: boolean
 }
 
 // ── Run staleness (shared by scripted and exploratory runs) ─────────
@@ -250,6 +258,13 @@ export interface TrackerIssueGroup {
  * other words it.
  */
 export interface ExportRollup {
+  /**
+   * The run's own start-time toggle — the one *stored* field here. The
+   * button files either way, so this only changes the wording: it is what
+   * separates "was set to file and has not yet" from "was never set to
+   * file".
+   */
+  export_findings: boolean
   exported_finding_count: number
   exported_issue_count: number
   export_error_count: number

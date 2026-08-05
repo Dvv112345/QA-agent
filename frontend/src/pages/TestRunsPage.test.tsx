@@ -69,6 +69,7 @@ function makeRun(overrides: Partial<TestRunResponse> = {}): TestRunResponse {
     passed_cases: 2,
     failed_cases: 0,
     error_cases: 0,
+    export_findings: false,
     exported_finding_count: 0,
     exported_issue_count: 0,
     export_error_count: 0,

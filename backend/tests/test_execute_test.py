@@ -863,6 +863,22 @@ class TestFindingExportWiring:
 
         assert export_spy == []
 
+    def test_not_called_when_the_execution_is_superseded_mid_run(
+        self, db_session, llm_stub, script_runner_stub, export_spy
+    ):
+        """An upstream edit leaves a finding set that is incomplete and
+        known to be — the run page's button is where a human decides."""
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.FAILED
+        assert export_spy == []
+
     def test_not_called_on_a_terminal_record_failure(
         self, db_session, llm_stub, script_runner_stub, export_spy
     ):

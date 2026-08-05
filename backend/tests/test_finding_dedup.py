@@ -312,6 +312,34 @@ def test_an_exact_match_outranks_the_models_answer(monkeypatch):
     assert groups[0].existing_key == "QA-142"
 
 
+def test_merging_two_matched_buckets_adopts_one_key_and_says_so(monkeypatch, caplog):
+    """Two tickets already describe one defect, and the model has just
+    said so by merging the buckets that matched them.
+
+    A group is one ticket by definition, so one key has to win. The loser
+    is left exactly as it is — nothing is reopened, closed, or commented
+    on — which means the duplicate pair in the tracker is invisible
+    unless this says so.
+    """
+    monkeypatch.setattr(
+        llm,
+        "group_findings",
+        _GroupStub(groups=[{"indices": [0, 1], "existing_key": None}]),
+    )
+    filed = [_filed("QA-1", "Checkout returns 500"), _filed("QA-9", "Order endpoint errors")]
+    candidates = [_candidate("Checkout returns 500"), _candidate("Order endpoint errors")]
+
+    with caplog.at_level("INFO", logger="backend.services.finding_dedup"):
+        groups = finding_dedup.group_findings(candidates, filed)
+
+    assert len(groups) == 1
+    assert groups[0].existing_key == "QA-1"
+    # Both candidates still travel with it — the discard is of a key, never
+    # of a finding.
+    assert sorted(groups[0].members) == [0, 1]
+    assert "QA-9" in caplog.text and "QA-1" in caplog.text
+
+
 def test_every_candidate_lands_in_exactly_one_group(group_stub):
     """The invariant the caller relies on: no finding is filed twice, and
     none is silently dropped."""

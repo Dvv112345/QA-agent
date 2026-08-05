@@ -355,22 +355,32 @@ def _attach_screenshot(config: TrackerConfig, key: str, entry: _Row) -> None:
 # ── The one public function ───────────────────────────────────────────
 
 
-def export_findings(session: Session, parent: object) -> ExportOutcome:
+def export_findings(session: Session, parent: object, *, requested: bool = False) -> ExportOutcome:
     """File *parent*'s unfiled bug findings; never raises.
 
     Commits per group, so a failure part-way keeps every ticket that
     already landed — the alternative is re-filing them on the next
     attempt, which is the one mistake this whole module is arranged to
     avoid.
+
+    *requested* separates the two callers, and the distinction is the
+    whole reason the run's toggle exists.  The toggle decides what happens
+    **unasked**: the tasks call this on their completion path with
+    ``requested=False``, and a run whose toggle was off files nothing.
+    The retry routes pass ``requested=True``, because a user pressing
+    "File 6 bugs" *is* the consent the toggle stands in for — reading the
+    toggle there would leave a run started before the tracker was
+    connected with no way to file its bugs at all, behind a button that
+    silently did nothing.
     """
     try:
-        return _export(session, parent)
+        return _export(session, parent, requested=requested)
     except Exception:
         logger.exception("Exporting findings failed for %r", parent)
         return ExportOutcome()
 
 
-def _export(session: Session, parent: object) -> ExportOutcome:
+def _export(session: Session, parent: object, *, requested: bool) -> ExportOutcome:
     spec = _spec_for(parent)
     if spec is None:
         return ExportOutcome()
@@ -378,7 +388,11 @@ def _export(session: Session, parent: object) -> ExportOutcome:
     # Fast exit before any config load or network call. This is what makes
     # calling export from every completion path free, and it is why every
     # pre-existing run test is unaffected: export_findings defaults false.
-    if not spec.export_findings or not spec.rows:
+    #
+    # The `not spec.rows` half stays unconditional — a run with nothing to
+    # file is a no-op however it got here, which is what keeps the retry
+    # button from being a trap.
+    if (not requested and not spec.export_findings) or not spec.rows:
         return ExportOutcome()
 
     sprint = spec.sprint
@@ -502,14 +516,28 @@ def _existing_url(session: Session, sprint: Sprint, target: str, key: str) -> st
 
 
 def _filed_rows_with_key(session: Session, sprint: Sprint, target: str, key: str):
-    """Every persisted finding already carrying *key* for this tracker."""
+    """Every persisted finding in *sprint* already carrying *key* for this tracker.
+
+    Scoped through the run to the sprint, the same joins ``_already_filed``
+    uses — the key came out of that sprint's de-duplication window, so
+    that is the window it should be read back through.
+    """
     cases = session.exec(
         select(TestCaseExecution)
+        .join(TestExecution, TestCaseExecution.test_execution_id == TestExecution.id)
+        .join(TestRun, TestExecution.test_run_id == TestRun.id)
+        .where(TestRun.sprint_id == sprint.id)
         .where(TestCaseExecution.tracker_issue_key == key)
         .where(TestCaseExecution.tracker_target == target)
     ).all()
     findings = session.exec(
         select(ExploratoryFinding)
+        .join(
+            ExploratorySession,
+            ExploratoryFinding.exploratory_session_id == ExploratorySession.id,
+        )
+        .join(ExploratoryRun, ExploratorySession.exploratory_run_id == ExploratoryRun.id)
+        .where(ExploratoryRun.sprint_id == sprint.id)
         .where(ExploratoryFinding.tracker_issue_key == key)
         .where(ExploratoryFinding.tracker_target == target)
     ).all()

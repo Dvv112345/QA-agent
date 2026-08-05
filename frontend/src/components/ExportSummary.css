@@ -32,6 +32,12 @@
   margin-top: 0.6rem;
 }
 
+.export-summary-note {
+  margin: 0.2rem 0 0;
+  color: var(--color-text-secondary, #666);
+  font-size: 0.85rem;
+}
+
 .export-summary-error {
   margin: 0.5rem 0 0;
   color: var(--color-error, #c00);

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import IssueTrackerModal from './IssueTrackerModal'
-import type { IssueTrackerConfig } from '../types'
+import type { IssueTrackerConfig, RepoResponse } from '../types'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -34,10 +34,31 @@ function makeConfig(overrides: Partial<IssueTrackerConfig> = {}): IssueTrackerCo
   }
 }
 
-function renderModal(config: IssueTrackerConfig | null = null) {
+function makeRepo(overrides: Partial<RepoResponse> = {}): RepoResponse {
+  return {
+    id: 1,
+    github_link: 'https://github.com/acme/shop',
+    name: 'acme/shop',
+    description: null,
+    active: true,
+    created_at: '2026-01-01T00:00:00Z',
+    has_access_token: true,
+    ...overrides,
+  }
+}
+
+function renderModal(config: IssueTrackerConfig | null = null, repo: RepoResponse | null = null) {
   const onSaved = vi.fn()
   const onClose = vi.fn()
-  render(<IssueTrackerModal sprintId={1} config={config} onSaved={onSaved} onClose={onClose} />)
+  render(
+    <IssueTrackerModal
+      sprintId={1}
+      config={config}
+      repo={repo}
+      onSaved={onSaved}
+      onClose={onClose}
+    />,
+  )
   return { onSaved, onClose }
 }
 
@@ -83,6 +104,7 @@ describe('IssueTrackerModal', () => {
       account_email: null,
       issue_type: null,
       api_token: 'tok',
+      use_sprint_repo: false,
     })
   })
 
@@ -133,6 +155,71 @@ describe('IssueTrackerModal', () => {
     fireEvent.click(screen.getByLabelText('Jira'))
 
     expect(screen.getByLabelText(/Project key/)).toHaveValue('QA')
+  })
+
+  it("offers the sprint's own repository, ticked, on a fresh GitHub connection", () => {
+    renderModal(null, makeRepo())
+
+    fireEvent.click(screen.getByLabelText('GitHub Issues'))
+
+    expect(screen.getByLabelText(/Use this sprint's repository/)).toBeChecked()
+    // The free-text field gives way to the derived repository.
+    expect(screen.queryByLabelText(/Repository/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/API token/)).toHaveAttribute(
+      'placeholder',
+      "Leave blank to use the repository's access token",
+    )
+  })
+
+  it('sends use_sprint_repo with a blank target, leaving the backend to derive it', async () => {
+    renderModal(null, makeRepo())
+    fireEvent.click(screen.getByLabelText('GitHub Issues'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(mockSave).toHaveBeenCalled())
+    expect(mockSave).toHaveBeenCalledWith(1, {
+      provider: 'github',
+      target: '',
+      base_url: null,
+      account_email: null,
+      issue_type: null,
+      api_token: '',
+      use_sprint_repo: true,
+    })
+  })
+
+  it('unticking the box restores the free-text repository field', () => {
+    renderModal(null, makeRepo())
+    fireEvent.click(screen.getByLabelText('GitHub Issues'))
+
+    fireEvent.click(screen.getByLabelText(/Use this sprint's repository/))
+
+    expect(screen.getByLabelText(/Repository/)).toHaveValue('')
+  })
+
+  it('says a token is needed when the repository has none stored', () => {
+    renderModal(null, makeRepo({ has_access_token: false }))
+
+    fireEvent.click(screen.getByLabelText('GitHub Issues'))
+
+    expect(screen.getByText(/registered without an access token/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/API token/)).toHaveAttribute('placeholder', '')
+  })
+
+  it('leaves the box unticked when the saved config points somewhere else', () => {
+    // A GitHub target other than the sprint's repo was a deliberate
+    // choice — reopening the dialog must not quietly re-point it.
+    renderModal(makeConfig({ provider: 'github', target: 'acme/other' }), makeRepo())
+
+    expect(screen.getByLabelText(/Use this sprint's repository/)).not.toBeChecked()
+    expect(screen.getByLabelText(/Repository/)).toHaveValue('acme/other')
+  })
+
+  it('keeps the box ticked when the saved config already is the sprint repo', () => {
+    renderModal(makeConfig({ provider: 'github', target: 'acme/shop' }), makeRepo())
+
+    expect(screen.getByLabelText(/Use this sprint's repository/)).toBeChecked()
   })
 
   it('renders the verification error inline and stays open', async () => {

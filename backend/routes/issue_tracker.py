@@ -23,6 +23,7 @@ from backend.services import issue_tracker
 from backend.services.issue_tracker import TrackerConfig, TrackerError, TrackerUnavailableError
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token, encrypt_token
+from backend.utils.github_utils import parse_github_url
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ _TOKEN_REQUIRED_ON_SWITCH = (
     "An API token is required when changing provider — "
     "the stored one belongs to the previous tracker."
 )
+
+_UNREADABLE_TOKEN = "The stored API token could not be read. Enter it again."
 
 
 def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
@@ -47,19 +50,74 @@ def _clean(value: str | None) -> str | None:
     return stripped or None
 
 
-def _resolve_token(payload: IssueTrackerConfigRequest, existing: IssueTrackerConfig | None) -> str:
+def _sprint_repo_target(sprint: Sprint) -> str:
+    """``owner/repo`` for the sprint's own registered repository.
+
+    Derived here rather than trusted from the form: the point of the
+    option is that the application already knows which repository this
+    sprint is about, and a value the browser sent back could name any
+    other one.
+    """
+    repo = sprint.repo
+    if repo is None:
+        raise HTTPException(
+            status_code=422, detail="This sprint has no registered repository to file into."
+        )
+    try:
+        owner, name = parse_github_url(repo.github_link)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return f"{owner}/{name}"
+
+
+def _repo_token(sprint: Sprint) -> str | None:
+    """The sprint repo's stored access token, or ``None`` if it has none.
+
+    A repo registered without a token is ordinary — public repositories
+    need none to read — so the absence falls through to the remaining
+    rules rather than failing the save here.
+    """
+    repo = sprint.repo
+    if repo is None or not repo.github_token:
+        return None
+    try:
+        return decrypt_token(repo.github_token)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:  # corrupted ciphertext — unusable, not fatal to the app
+        logger.warning("Repo id=%s: stored access token could not be decrypted", repo.id)
+        raise HTTPException(status_code=422, detail=_UNREADABLE_TOKEN) from exc
+
+
+def _resolve_token(
+    payload: IssueTrackerConfigRequest,
+    existing: IssueTrackerConfig | None,
+    sprint: Sprint,
+) -> str:
     """The plaintext token this save should verify and store.
 
-    Blank means "keep the stored one", which is the whole point of the
-    rule: re-entering a secret to change a project key is the kind of
-    friction that gets a token pasted into a chat window.  It applies
-    **only** to a same-provider edit — a Jira API token is meaningless to
-    GitHub, so silently reusing it across a switch would verify nothing
-    and store a credential that can never work.
+    Four rules, first match wins:
+
+    1. a token typed into the form — explicit always beats derived;
+    2. the sprint repo's own token, when ``use_sprint_repo`` asked for it.
+       Above rule 3 on purpose: ticking the box and clearing the field is
+       how a user moves an existing connection onto the repo's token, and
+       it is also what makes a Jira→GitHub switch work without retyping,
+       since this token is GitHub's by construction rather than the
+       previous tracker's;
+    3. the stored one on a **same-provider** edit — re-entering a secret
+       to change a project key is the kind of friction that gets a token
+       pasted into a chat window.  A Jira API token is meaningless to
+       GitHub, so reusing it across a switch would verify nothing;
+    4. nothing left to try.
     """
     supplied = _clean(payload.api_token)
     if supplied:
         return supplied
+    if payload.use_sprint_repo:
+        from_repo = _repo_token(sprint)
+        if from_repo:
+            return from_repo
     if existing is None:
         raise HTTPException(status_code=422, detail="An API token is required.")
     if existing.provider != payload.provider:
@@ -72,12 +130,29 @@ def _resolve_token(payload: IssueTrackerConfigRequest, existing: IssueTrackerCon
         logger.warning(
             "Sprint id=%s: stored tracker token could not be decrypted", existing.sprint_id
         )
+        raise HTTPException(status_code=422, detail=_UNREADABLE_TOKEN) from exc
+
+
+def _resolve_target(payload: IssueTrackerConfigRequest, sprint: Sprint) -> str | None:
+    """Where findings go, before the provider-specific checks see it.
+
+    Resolved ahead of ``_validate_provider_fields`` so a form that left
+    the repository blank because the box was ticked is validated on the
+    derived ``owner/repo`` — one shape check, not two.
+    """
+    if not payload.use_sprint_repo:
+        return _clean(payload.target)
+    if payload.provider != IssueTrackerProvider.GITHUB:
         raise HTTPException(
-            status_code=422, detail="The stored API token could not be read. Enter it again."
-        ) from exc
+            status_code=422,
+            detail="Using this sprint's repository applies to GitHub Issues only.",
+        )
+    return _sprint_repo_target(sprint)
 
 
-def _validate_provider_fields(payload: IssueTrackerConfigRequest) -> TrackerConfig:
+def _validate_provider_fields(
+    payload: IssueTrackerConfigRequest, target: str | None
+) -> TrackerConfig:
     """Reject a payload whose provider-specific fields are missing.
 
     Checked here rather than in the schema because which fields are
@@ -85,7 +160,6 @@ def _validate_provider_fields(payload: IssueTrackerConfigRequest) -> TrackerConf
     validating the *combination* is what lets the error name the field
     instead of reading as a malformed request.
     """
-    target = _clean(payload.target)
     if not target:
         raise HTTPException(status_code=422, detail="A project key or repository is required.")
 
@@ -152,6 +226,14 @@ async def save_issue_tracker(
     later, and the only moment a credential problem is cheap to fix is
     while the user is looking at the form.
 
+    ``use_sprint_repo`` files into the sprint's own registered repository:
+    the target is derived from ``Repo.github_link`` and a blank token
+    falls back to ``Repo.github_token``.  Both are resolved into an
+    ordinary config here — the token is verified and re-encrypted exactly
+    like a typed one, so what lands in the row is a **copy** taken at save
+    time.  Rotating the repo's token later does not follow through, which
+    is the price of leaving every export path untouched.
+
     Already-filed findings are deliberately untouched by an edit.  Their
     ``tracker_issue_url`` still points where they were actually filed,
     and their ``tracker_target`` keeps them out of the new tracker's
@@ -160,8 +242,8 @@ async def save_issue_tracker(
     sprint = _get_sprint_or_404(session, sprint_id)
     existing = sprint.issue_tracker
 
-    config = _validate_provider_fields(payload)
-    token = _resolve_token(payload, existing)
+    config = _validate_provider_fields(payload, _resolve_target(payload, sprint))
+    token = _resolve_token(payload, existing, sprint)
     # Verified with the plaintext token; encrypted only once it works.
     config = TrackerConfig(
         provider=config.provider,

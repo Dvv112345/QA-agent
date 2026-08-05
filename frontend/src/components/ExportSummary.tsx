@@ -22,6 +22,7 @@ export default function ExportSummary({ rollup, onExport }: Props) {
   const [error, setError] = useState<string | null>(null)
 
   const {
+    export_findings: autoFiling,
     exported_finding_count: exported,
     exported_issue_count: issues,
     export_error_count: errors,
@@ -55,9 +56,15 @@ export default function ExportSummary({ rollup, onExport }: Props) {
         <ul className="export-summary-groups">
           {groups.map((group) => (
             <li key={group.issue_key}>
-              <a href={group.issue_url} target="_blank" rel="noreferrer">
-                {group.issue_key} ↗
-              </a>{' '}
+              {/* An unrecorded URL costs the link, never the key — see
+                  FindingCard, which gates on the same field. */}
+              {group.issue_url ? (
+                <a href={group.issue_url} target="_blank" rel="noreferrer">
+                  {group.issue_key} ↗
+                </a>
+              ) : (
+                <span>{group.issue_key}</span>
+              )}{' '}
               — {plural(group.finding_count, 'finding')}
             </li>
           ))}
@@ -71,6 +78,16 @@ export default function ExportSummary({ rollup, onExport }: Props) {
               ? `${plural(errors, 'finding')} could not be filed.`
               : `${plural(unexported, 'bug')} not yet filed.`}
           </p>
+          {/* Said only in the state it distinguishes: a run that was never
+              set to file did not fail at anything, and reading "not yet
+              filed" alone would suggest it had. The button still works —
+              pressing it is itself the instruction the toggle stands in
+              for. */}
+          {!autoFiling && errors === 0 && (
+            <p className="export-summary-note">
+              This run was not set to file findings automatically.
+            </p>
+          )}
           {/* The `unexported` half is the whole manual path, not a
               fallback: a run that ended any way other than completed
               arrives here with its bugs unfiled by design. The label says
