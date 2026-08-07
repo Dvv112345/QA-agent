@@ -21,11 +21,25 @@ Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
 | `/sprints/:id`                                 | `SprintDetailPage`         | Enter requirements manually or upload a PRD to split into requirements; follow analysis via polling, answer/confirm/confirm all                                                                                             |
 | `/sprints/:id/test-environment`                | `TestEnvironmentPage`      | Describe test environment access, answer clarifications, confirm                                                                                                                                                            |
 | `/sprints/:id/test-plans`                      | `TestPlansPage`            | Generate, review, give feedback on, edit, and approve/approve all test plans                                                                                                                                                |
-| `/sprints/:id/test-runs`                       | `TestRunsPage`             | Two lists: exploratory sessions and scripted test runs; start either. Also holds the issue-tracker panel — connect, change, or disconnect Jira / GitHub Issues for the sprint                                               |
+| `/sprints/:id/test-runs`                       | `TestRunsPage`             | QA metrics panel over two lists: exploratory sessions and scripted test runs; start either. Also holds the issue-tracker panel — connect, change, or disconnect Jira / GitHub Issues for the sprint                         |
 | `/sprints/:id/test-runs/:runId`                | `TestRunDetailPage`        | Per-requirement, per-case execution results; failed and errored cases show a finding card (same one exploratory sessions use); download scripts; restart failed executions; file or retry bug findings to the issue tracker |
 | `/sprints/:id/exploratory-runs/:runId`         | `ExploratoryRunDetailPage` | One requirement's exploration: summary, finding counts, session list; restart or retry the summary; file or retry bug findings to the issue tracker                                                                         |
 | `/sprints/:id/exploratory-sessions/:sessionId` | `ExploratorySessionPage`   | SBTM session sheet: charter, SFDIPOT areas, actions used, notes, findings with screenshots, action log; polls while the session is queued or exploring                                                                      |
 | `/repos`                                       | `RepoListPage`             | Registered repos; deactivate unused ones                                                                                                                                                                                    |
+
+## QA metrics
+
+`SprintMetricsPanel` sits above both run lists on the test-runs page, fed by `GET /api/sprints/:id/qa-metrics` and refreshed on the same poll as the lists. Four tiles: test cases run, exploratory sessions, distinct bugs, and defect density — plus a per-requirement breakdown ordered worst-first, with archived requirements marked `(deleted)`.
+
+Every figure is computed in Python. Nothing here divides one number by another (Convention #10): the definition living in two places is what `test_plans_missing` exists to remember, and the ticket-based bug collapse cannot be done client-side at all.
+
+Three things the panel deliberately says rather than smooths over:
+
+- **Test cases are reported at two levels.** The headline is _distinct_ cases; executions sit beneath it, labelled. A case run three times adds 1 to the first and 3 to the second, and the density figure uses the first — otherwise re-running an unfixed plan would make the sprint read healthier.
+- **Density has three readings, not two.** `—` means nothing was tested, `0.00` means tested and clean, and `< 0.01` means tested with a real but tiny defect rate. "0.00 bugs / case" on a sprint that found bugs is the one output the tile must never produce.
+- **Excluded runs are named.** Only completed runs are counted, so a run still going or one that failed is reported as excluded rather than silently dropped.
+
+A footnote explains rows summing above the headline — one defect can affect several requirements — and appears only when they actually differ.
 
 ## Issue tracker
 
