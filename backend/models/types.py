@@ -510,3 +510,91 @@ class ExploratoryRunCreateRequest(SQLModel):
     base_url_env_vars: list[str]
     # See TestRunCreateRequest.export_findings.
     export_findings: bool = False
+
+
+# ── QA metrics ────────────────────────────────────────────────────────
+
+
+class RequirementMetrics(SQLModel):
+    """One requirement's row in the sprint breakdown.
+
+    Present for **every** requirement a counted run covered, including
+    those with no findings at all: a tested-and-clean requirement is a
+    result worth showing, and a table listing only requirements with bugs
+    reads as the whole picture when it is half of it.
+    """
+
+    requirement_id: int
+    requirement_name: str
+    # Archived requirements stay in the breakdown, flagged. Their bugs are
+    # in the headline, so hiding the row would make the numbers not add up
+    # — the failure mode ``FindingType.normalize``'s docstring names.
+    requirement_deleted: bool = False
+    bug_count: int
+    issue_count: int
+    # Distinct, matching the sprint-level headline (see below).
+    distinct_test_cases_run: int
+    exploratory_sessions: int
+
+
+class SprintMetricsResponse(SQLModel):
+    """How QA went for one sprint, computed at response time.
+
+    Never stored — the treatment ``export_rollup`` already established for
+    exactly this problem, one level up.  The definitions live in Python
+    (Convention #10): a frontend dividing ``bug_count / requirement_count``
+    itself would be one more place they can drift, and could not do the
+    ticket collapse at all.
+    """
+
+    sprint_id: int
+    # ── scripted: two levels, deliberately not reconciled ──
+    # ``distinct_test_cases_run`` is the density denominator; the execution
+    # counts describe how much testing was done. A case run three times
+    # adds 1 to the first and 3 across the second. Keeping them separate is
+    # what removes any need for a "what status does that case have?"
+    # tiebreak — each level's numbers add up within itself.
+    distinct_test_cases_run: int
+    case_executions: int
+    executions_passed: int
+    executions_failed: int
+    executions_errored: int
+    # ── exploratory ──
+    # Never summed with the scripted counts: a 25-action browser session
+    # and a 3-step script are not the same unit.
+    exploratory_sessions: int
+    requirements_explored: int
+    # ── defects (distinct, after collapse) ──
+    bug_count: int
+    issue_count: int
+    # A group's severity is the **highest** among its members, mirroring
+    # how ``finding_dedup._elect`` picks a group's representative (highest
+    # severity, then lowest position). Taking the first member's would let
+    # a high-severity defect hide behind a medium duplicate.
+    high_severity_bug_count: int
+    # ── density ──
+    # ``requirements_covered`` = distinct requirements (archived included)
+    # touched by the *counted* runs, either mode. It is the denominator of
+    # ``bugs_per_requirement``: a sprint that tested 1 of 5 features must
+    # not divide its real bugs across 4 nobody touched, which would report
+    # a fifth of the true density and improve every time an untested
+    # requirement is added. ``requirements_total`` sits beside it so
+    # coverage stays legible rather than being baked invisibly into the
+    # ratio.
+    requirements_covered: int
+    requirements_total: int
+    # None when the denominator is zero, so the UI renders "—" and there is
+    # no divide guard in TSX.
+    bugs_per_requirement: float | None = None
+    bugs_per_test_case: float | None = None
+    # ── breakdown ──
+    # Ordered by bug count descending, then by name: the reader's question
+    # is "which feature is worst", and id order buries it.
+    per_requirement: list[RequirementMetrics] = []
+    # ── exclusions ──
+    # Only completed runs feed the numbers, mirroring the export rule: a
+    # run that finished reports; anything else waits for a human. Counted
+    # and named rather than silently dropped, so a short number is never
+    # silently short.
+    excluded_runs_running: int = 0
+    excluded_runs_failed: int = 0
