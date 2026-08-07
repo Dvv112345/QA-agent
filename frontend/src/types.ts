@@ -414,3 +414,45 @@ export interface ExploratoryCharterDraftResponse {
   charter_count: number
   projected_minutes: number
 }
+
+// ── QA metrics ────────────────────────────────────────────────────────
+
+export interface RequirementMetrics {
+  requirement_id: number
+  requirement_name: string
+  requirement_deleted: boolean
+  bug_count: number
+  issue_count: number
+  distinct_test_cases_run: number
+  exploratory_sessions: number
+}
+
+/**
+ * Mirrors `SprintMetricsResponse`. Every figure here is computed in
+ * Python — nothing in this file may be re-derived from the others, for
+ * the reason `test_plans_missing` exists: a definition that lives in two
+ * places drifts, and the ticket collapse behind `bug_count` cannot be
+ * done client-side at all.
+ */
+export interface SprintMetrics {
+  sprint_id: number
+  distinct_test_cases_run: number
+  case_executions: number
+  executions_passed: number
+  executions_failed: number
+  executions_errored: number
+  exploratory_sessions: number
+  requirements_explored: number
+  bug_count: number
+  issue_count: number
+  high_severity_bug_count: number
+  requirements_covered: number
+  requirements_total: number
+  /** Null when nothing was covered — render an em dash, never a zero. */
+  bugs_per_requirement: number | null
+  /** Null when no test case ran. */
+  bugs_per_test_case: number | null
+  per_requirement: RequirementMetrics[]
+  excluded_runs_running: number
+  excluded_runs_failed: number
+}

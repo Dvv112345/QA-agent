@@ -11,6 +11,7 @@ import type {
   RepoResponse,
   RequirementInput,
   RequirementResponse,
+  SprintMetrics,
   SprintResponse,
   TestEnvironmentResponse,
   TestExecutionResponse,
@@ -348,6 +349,11 @@ export async function restartTestExecution(executionId: number): Promise<TestExe
     method: 'POST',
   })
   return handleResponse<TestExecutionResponse>(response)
+}
+
+export async function fetchSprintMetrics(sprintId: number): Promise<SprintMetrics> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/qa-metrics`)
+  return handleResponse<SprintMetrics>(response)
 }
 
 export function scriptDownloadUrl(caseExecutionId: number): string {
