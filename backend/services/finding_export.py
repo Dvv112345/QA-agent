@@ -102,6 +102,11 @@ def _scripted_rows(execution: TestExecution) -> list[_Row]:
     """This execution's unfiled bug findings, in case order."""
     rows: list[_Row] = []
     for case in execution.cases:
+        # `finding_type` is derived from `status` alone, so the title check
+        # is not redundant with it — and it is the last guard before an
+        # outbound write: a case marked `failed` with no report would file
+        # an empty ticket into Jira or GitHub, which this application
+        # cannot take back.
         if case.finding_type != FindingType.BUG or not case.finding_title:
             continue
         if case.tracker_issue_key:

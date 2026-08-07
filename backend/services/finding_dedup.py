@@ -70,6 +70,26 @@ def _normalize(*fields: str) -> str:
     return " ".join(_NOISE_RE.sub(" ", stripped.casefold()).split())
 
 
+def dedup_key(title: str, expected: str, actual: str) -> str:
+    """The text identity of a defect, for callers with no ticket to group by.
+
+    ``_prefilter`` below groups by exactly this, so a caller that has to
+    answer "are these the same defect?" outside a filing run — the QA
+    metrics aggregator, which collapses findings for a sprint whose
+    tracker was never connected — gets the same answer this module would
+    give, rather than a second opinion.
+
+    Sharing the *name* would not be enough: the two paths have to agree on
+    **which fields** are normalized.  A caller that keyed on the title
+    alone would report a different grouping of the same findings, with
+    nothing to say which was right — a metrics panel reading five bugs
+    beside a tracker holding seven.  Hence the fixed triple here and the
+    variadic ``_normalize`` beneath it, which stays private as the general
+    mechanic.
+    """
+    return _normalize(title, expected, actual)
+
+
 def _elect(candidates: list[FindingCandidate], indices: list[int]) -> int:
     """The member whose report becomes the ticket.
 
@@ -99,7 +119,7 @@ def _prefilter(
     """
     filed_by_key: dict[str, str] = {}
     for filed in already_filed:
-        key = _normalize(filed.title, filed.expected, filed.actual)
+        key = dedup_key(filed.title, filed.expected, filed.actual)
         # setdefault keeps the *first* — newest — key for a repeated defect.
         filed_by_key.setdefault(key, filed.issue_key)
 
@@ -107,7 +127,7 @@ def _prefilter(
     seen: dict[str, int] = {}
     matched: dict[int, str] = {}
     for index, candidate in enumerate(candidates):
-        key = _normalize(candidate.title, candidate.expected, candidate.actual)
+        key = dedup_key(candidate.title, candidate.expected, candidate.actual)
         if key in seen:
             buckets[seen[key]].append(index)
             continue

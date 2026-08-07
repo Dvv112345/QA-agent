@@ -349,3 +349,64 @@ def test_every_candidate_lands_in_exactly_one_group(group_stub):
 
     placed = sorted(i for group in groups for i in group.members)
     assert placed == list(range(5))
+
+
+# ── The shared text key ───────────────────────────────────────────────
+#
+# `dedup_key` is public so callers with no ticket to group by (the QA
+# metrics aggregator) get the same answer this module's prefilter gives.
+# These tests pin the normalization *and* the agreement between the two.
+
+
+def test_identical_text_shares_a_key():
+    assert finding_dedup.dedup_key(
+        "Checkout returns 500", "Order created", "500 error"
+    ) == finding_dedup.dedup_key("Checkout returns 500", "Order created", "500 error")
+
+
+def test_digits_are_ignored():
+    """A generated id differs per run while the defect does not."""
+    assert finding_dedup.dedup_key(
+        "Order 8814 was not created", "An order exists", "No row"
+    ) == finding_dedup.dedup_key("Order 9021 was not created", "An order exists", "No row")
+
+
+def test_case_accents_and_punctuation_are_ignored():
+    assert finding_dedup.dedup_key(
+        "Checkout RETURNS 500!!", "Order créated", "err"
+    ) == finding_dedup.dedup_key("checkout returns 500", "order created", "err")
+
+
+def test_genuinely_different_text_does_not_share_a_key():
+    assert finding_dedup.dedup_key(
+        "Checkout returns 500", "Order created", "500"
+    ) != finding_dedup.dedup_key("Login rejects valid password", "Signed in", "401")
+
+
+def test_all_three_fields_participate_in_the_key():
+    """Keying on the title alone would merge distinct defects — the exact
+    divergence sharing this function exists to prevent."""
+    base = finding_dedup.dedup_key("Checkout fails", "Order created", "500")
+    assert base != finding_dedup.dedup_key("Checkout fails", "Order created", "timeout")
+    assert base != finding_dedup.dedup_key("Checkout fails", "Order rejected", "500")
+
+
+def test_prefilter_groups_exactly_as_dedup_key_predicts(group_stub):
+    """The invariant behind sharing the function: a caller keying with
+    `dedup_key` reaches the same grouping the prefilter does."""
+    candidates = [
+        _candidate("Order 1 missing", actual="no row"),
+        _candidate("Order 2 missing", actual="no row"),  # same once digits drop
+        _candidate("Login rejects valid password", actual="401"),
+    ]
+
+    groups = finding_dedup.group_findings(candidates, [])
+
+    by_key: dict[str, set[int]] = {}
+    for index, candidate in enumerate(candidates):
+        key = finding_dedup.dedup_key(candidate.title, candidate.expected, candidate.actual)
+        by_key.setdefault(key, set()).add(index)
+
+    assert {frozenset(group.members) for group in groups} == {
+        frozenset(members) for members in by_key.values()
+    }

@@ -789,9 +789,15 @@ class TestRun(SQLModel, table=True):
     def bug_findings(self) -> list["TestCaseExecution"]:
         """Every case in this run that reported the product being wrong.
 
-        Gated on ``finding_title`` for the same reason ``finding`` is:
-        rows written before findings were structured are ``failed`` with
-        nothing to report.
+        Gated on ``finding_title`` as well as type, and for a reason of its
+        own: this list is what ``export_rollup`` counts and what
+        ``finding_export`` files.  An ungated case with no report would land
+        in ``unexported_finding_count``, so the run page would offer to file
+        a bug that does not exist — and pressing the button would hand that
+        row to the exporter.
+
+        ``finding_type`` is derived from ``status`` alone, which is what
+        makes the extra condition necessary rather than redundant.
         """
         return [
             case
@@ -970,9 +976,18 @@ class TestCaseExecution(SQLModel, table=True):
         Keyed to match ``FindingBase`` in ``models/types.py`` so FastAPI can
         validate it straight into the nested response model.
 
-        Gated on ``finding_title`` rather than on status: rows written
-        before this feature are ``failed`` with no finding, and must not
-        surface as an empty card.
+        **Gated on ``finding_title`` rather than on status**, and the gate
+        is load-bearing: ``FindingBase.title`` is declared ``str`` over a
+        nullable column, so an ungated null title fails response validation
+        and 500s the *whole* run-detail response rather than just this
+        card.  That is the same argument the coalescing below rests on —
+        the gate is simply where it applies to the title itself.
+
+        (The gate originally read as an accommodation for rows written
+        before findings were structured.  It is not: ``finding_type`` is
+        derived from ``status`` alone, so *any* path that marks a case
+        ``failed`` without writing the report — today's writer does write
+        them as a group — would take the whole page down with it.)
 
         The five required fields below the title are coalesced because
         ``FindingBase`` declares them non-optional over nullable columns: a
