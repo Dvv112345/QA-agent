@@ -372,10 +372,10 @@ def _compute(sprint) -> dict:
         "bug_count": bug_count,
         "issue_count": len(issue_findings),
         # A group is high-severity when *any* member reported it so — the
-        # highest severity among them, mirroring how `finding_dedup._elect`
-        # picks the representative whose report becomes the ticket. Taking
-        # the first member's would let a high-severity defect hide behind a
-        # medium duplicate.
+        # highest severity among them, mirroring how
+        # `finding_dedup.elect_representative` picks the report that speaks
+        # for a group. Taking the first member's would let a high-severity
+        # defect hide behind a medium duplicate.
         "high_severity_bug_count": sum(
             1 for group in bug_groups if any(f.severity == FindingSeverity.HIGH for f in group)
         ),

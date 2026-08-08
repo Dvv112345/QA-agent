@@ -568,9 +568,10 @@ class SprintMetricsResponse(SQLModel):
     bug_count: int
     issue_count: int
     # A group's severity is the **highest** among its members, mirroring
-    # how ``finding_dedup._elect`` picks a group's representative (highest
-    # severity, then lowest position). Taking the first member's would let
-    # a high-severity defect hide behind a medium duplicate.
+    # how ``finding_dedup.elect_representative`` picks the report that
+    # speaks for a group (highest severity, then lowest position). Taking
+    # the first member's would let a high-severity defect hide behind a
+    # medium duplicate.
     high_severity_bug_count: int
     # ── density ──
     # ``requirements_covered`` = distinct requirements (archived included)
