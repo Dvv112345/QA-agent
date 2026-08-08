@@ -29,15 +29,16 @@ Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
 
 ## QA metrics
 
-`SprintMetricsPanel` sits above both run lists on the test-runs page, fed by `GET /api/sprints/:id/qa-metrics` and refreshed on the same poll as the lists. Four tiles: test cases run, exploratory sessions, distinct bugs, and defect density — plus a per-requirement breakdown ordered worst-first, with archived requirements marked `(deleted)`.
+`SprintMetricsPanel` sits above both run lists on the test-runs page, fed by `GET /api/sprints/:id/qa-metrics` and refreshed on the same poll as the lists. Four tiles: test cases run, exploratory sessions, distinct bugs, and defect density — plus a per-requirement breakdown ordered worst-first, with archived requirements marked `(deleted)`. Only the bug figure is a distinct-defect count; the issue count beside it is raw, because an issue reports obstructed testing rather than a defect (see `backend/README.md`).
 
 Every figure is computed in Python. Nothing here divides one number by another (Convention #10): the definition living in two places is what `test_plans_missing` exists to remember, and the ticket-based bug collapse cannot be done client-side at all.
 
-Three things the panel deliberately says rather than smooths over:
+Four things the panel deliberately says rather than smooths over:
 
 - **Test cases are reported at two levels.** The headline is _distinct_ cases; executions sit beneath it, labelled. A case run three times adds 1 to the first and 3 to the second, and the density figure uses the first — otherwise re-running an unfixed plan would make the sprint read healthier.
 - **Density has three readings, not two.** `—` means nothing was tested, `0.00` means tested and clean, and `< 0.01` means tested with a real but tiny defect rate. "0.00 bugs / case" on a sprint that found bugs is the one output the tile must never produce.
 - **Excluded runs are named.** Only completed runs are counted, so a run still going or one that failed is reported as excluded rather than silently dropped.
+- **Coverage is two facts, not a fraction.** The tile reads `5 requirements covered · 7 currently confirmed`, never `5 of 7`. Coverage is what runs already did, while the total is a live snapshot — so a covered requirement that is later edited (back to `analyzing`) or deleted puts covered _above_ total, and `1 of 0 requirements covered` would read as a broken panel. "currently" is what makes that case self-explaining.
 
 A footnote explains rows summing above the headline — one defect can affect several requirements — and appears only when they actually differ.
 

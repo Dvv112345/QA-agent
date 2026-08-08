@@ -421,7 +421,14 @@ def test_group_severity_is_the_highest_among_its_members():
     assert metrics["high_severity_bug_count"] == 1
 
 
-def test_issues_collapse_by_text_and_never_enter_the_bug_count():
+def test_issues_are_counted_raw_and_never_enter_the_bug_count():
+    """Issues are deliberately *not* collapsed, unlike bugs.
+
+    An issue says testing was obstructed, not that the product is wrong, so
+    two cases blocked by the same unreachable environment are two pieces of
+    testing that did not happen — collapsing them to one would understate
+    how much of the run was lost.
+    """
     sprint = _sprint(
         requirements=[_requirement(1, "Checkout")],
         test_runs=[
@@ -449,12 +456,47 @@ def test_issues_collapse_by_text_and_never_enter_the_bug_count():
 
     metrics = compute_sprint_metrics(sprint)
 
-    assert metrics["issue_count"] == 1
+    assert metrics["issue_count"] == 2
     assert metrics["bug_count"] == 0
+    # The scripted half of the same figure, in the same units.
+    assert metrics["executions_errored"] == 2
+
+
+def test_issue_rows_sum_to_the_issue_headline():
+    """Ungrouped issues cannot diverge from their per-requirement rows.
+
+    The bug headline legitimately reads *below* the sum of its rows, because
+    one sprint-scoped group can span two requirements. Issues have no groups,
+    so that gap is structurally impossible for them.
+    """
+    sprint = _sprint(
+        requirements=[_requirement(1, "Login"), _requirement(2, "Checkout")],
+        test_runs=[
+            _run(
+                [
+                    _execution(
+                        1, [_case(10, TestCaseExecutionStatus.ERROR, title="Env unreachable")]
+                    ),
+                    _execution(
+                        2, [_case(20, TestCaseExecutionStatus.ERROR, title="Env unreachable")]
+                    ),
+                ]
+            )
+        ],
+    )
+
+    metrics = compute_sprint_metrics(sprint)
+
+    assert metrics["issue_count"] == 2
+    assert sum(row["issue_count"] for row in metrics["per_requirement"]) == 2
 
 
 def test_a_bug_and_an_issue_with_the_same_text_stay_separate():
-    """Types are grouped in their own namespaces, never merged."""
+    """Identical text across the two types must never conflate them.
+
+    ``dedup_key`` is type-blind, so the guarantee comes from ``_compute``
+    partitioning by ``finding_type`` before either count is taken.
+    """
     sprint = _sprint(
         requirements=[_requirement(1, "Checkout")],
         exploratory_runs=[

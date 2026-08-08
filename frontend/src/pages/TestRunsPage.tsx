@@ -107,7 +107,14 @@ export default function TestRunsPage() {
       // Fetched once here and passed down as a prop, so neither run modal
       // needs a second round trip to decide its export toggle.
       fetchIssueTracker(sprintId),
-      fetchSprintMetrics(sprintId),
+      // Swallowed, unlike the four above: the panel is decoration and the
+      // run lists are the page. `services/qa_metrics.py` already never
+      // raises so a metrics failure cannot 500 this endpoint — but that
+      // contract stops at the service boundary, and an unreachable one
+      // would otherwise replace both lists with an error string. Same
+      // reason the poll below swallows its own failures; `metrics` is
+      // already nullable and the panel renders behind it.
+      fetchSprintMetrics(sprintId).catch(() => null),
     ])
       .then(([sprintData, runData, exploratoryData, trackerData, metricsData]) => {
         if (!cancelled) {

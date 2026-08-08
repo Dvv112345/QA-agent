@@ -30,7 +30,15 @@ number moving for a reason that has nothing to do with testing:
 * **One bug is one defect**, collapsed by ticket where one was filed and
   by normalized text otherwise (``finding_dedup.dedup_key``, shared rather
   than reimplemented so the panel and the tracker cannot report different
-  groupings of the same findings).
+  groupings of the same findings).  **Issues are never collapsed.**  An
+  issue records that testing was obstructed, not that the product is wrong
+  — the SBTM distinction — so "how many distinct defects" is not a question
+  it answers.  Three cases erroring on the same unreachable environment are
+  three pieces of testing that did not happen, and collapsing them to one
+  would understate how much of the run was lost.  That also puts
+  ``issue_count`` in the same units as ``executions_errored`` beside it,
+  which is the scripted half of the same figure, rather than silently
+  mixing a cumulative count with a distinct-defect one.
 """
 
 from __future__ import annotations
@@ -323,7 +331,11 @@ def _compute(sprint) -> dict:
     counted = _collect(sprint)
 
     bug_groups = _group([f for f in counted.findings if f.finding_type == FindingType.BUG])
-    issue_groups = _group([f for f in counted.findings if f.finding_type == FindingType.ISSUE])
+    # Issues are counted raw, never grouped — see `_compute`'s sibling rule in
+    # the module docstring. An issue says testing was obstructed, not that the
+    # product is wrong, so "how many distinct defects" is not a question it
+    # answers.
+    issue_findings = [f for f in counted.findings if f.finding_type == FindingType.ISSUE]
 
     distinct_cases = sum(len(cases) for cases in counted.cases_by_requirement.values())
     covered = counted.scripted_requirements | counted.explored_requirements
@@ -340,7 +352,7 @@ def _compute(sprint) -> dict:
         "exploratory_sessions": sum(counted.sessions_by_requirement.values()),
         "requirements_explored": len(counted.explored_requirements),
         "bug_count": bug_count,
-        "issue_count": len(issue_groups),
+        "issue_count": len(issue_findings),
         # A group is high-severity when *any* member reported it so — the
         # highest severity among them, mirroring how `finding_dedup._elect`
         # picks the representative whose report becomes the ticket. Taking
@@ -354,12 +366,18 @@ def _compute(sprint) -> dict:
         # shown beside `requirements_covered` so coverage is legible. It is
         # a display figure only: nothing divides by it (see `_density`
         # below and the Decision it implements).
+        #
+        # It can read *below* `requirements_covered`, and legitimately: a
+        # requirement covered by a run and then edited goes back to
+        # `analyzing`, and an archived one leaves `sprint.requirements`
+        # entirely, while the coverage it already contributed stands. The
+        # two are therefore reported side by side and never as a fraction.
         "requirements_total": sum(
             1 for r in sprint.requirements if r.status == RequirementStatus.CONFIRMED
         ),
         "bugs_per_requirement": _density(bug_count, len(covered)),
         "bugs_per_test_case": _density(bug_count, distinct_cases),
-        "per_requirement": _per_requirement(sprint, counted, bug_groups, issue_groups),
+        "per_requirement": _per_requirement(sprint, counted, bug_groups, issue_findings),
         "excluded_runs_running": counted.excluded_running,
         "excluded_runs_failed": counted.excluded_failed,
     }
@@ -369,40 +387,55 @@ def _per_requirement(
     sprint,
     counted: _Counted,
     bug_groups: list[list[_Finding]],
-    issue_groups: list[list[_Finding]],
+    issue_findings: list[_Finding],
 ) -> list[dict]:
     """The breakdown, one row per requirement a counted run covered.
 
-    A group is counted against **every** requirement it touches, so the
-    rows can sum above the headline: grouping is sprint-scoped, and one
+    A bug *group* is counted against **every** requirement it touches, so
+    those rows can sum above the headline: grouping is sprint-scoped, and one
     broken dependency genuinely breaks login *and* checkout.  The rejected
     alternative was electing an owner requirement per group, which would
     make a requirement with real failures read as zero — a worse lie than a
     number needing one sentence of explanation.  The panel footnotes it,
     and only when the sums actually differ.
+
+    Issue rows cannot diverge that way, because issues are not grouped: each
+    finding belongs to exactly one requirement, so the rows sum to the
+    headline exactly.  The footnote is therefore a bug-only concern.
     """
     labels = _requirement_labels(sprint)
     covered = counted.scripted_requirements | counted.explored_requirements
 
     bugs_by_requirement: dict[int, int] = {}
     issues_by_requirement: dict[int, int] = {}
-    for groups, tally in ((bug_groups, bugs_by_requirement), (issue_groups, issues_by_requirement)):
-        for group in groups:
-            for requirement_id in {f.requirement_id for f in group}:
-                tally[requirement_id] = tally.get(requirement_id, 0) + 1
+    for group in bug_groups:
+        for requirement_id in {f.requirement_id for f in group}:
+            bugs_by_requirement[requirement_id] = bugs_by_requirement.get(requirement_id, 0) + 1
+    for finding in issue_findings:
+        issues_by_requirement[finding.requirement_id] = (
+            issues_by_requirement.get(finding.requirement_id, 0) + 1
+        )
 
-    rows = [
-        {
-            "requirement_id": requirement_id,
-            "requirement_name": labels.get(requirement_id, ("", False))[0],
-            "requirement_deleted": labels.get(requirement_id, ("", True))[1],
-            "bug_count": bugs_by_requirement.get(requirement_id, 0),
-            "issue_count": issues_by_requirement.get(requirement_id, 0),
-            "distinct_test_cases_run": len(counted.cases_by_requirement.get(requirement_id, ())),
-            "exploratory_sessions": counted.sessions_by_requirement.get(requirement_id, 0),
-        }
-        for requirement_id in covered
-    ]
+    rows: list[dict] = []
+    for requirement_id in covered:
+        # One lookup, one default. A covered id came from a counted run, so
+        # it necessarily has a row in `all_requirements` and this default is
+        # unreachable — it reads "deleted" so that the impossible case
+        # understates rather than inventing a live requirement.
+        name, deleted = labels.get(requirement_id, ("", True))
+        rows.append(
+            {
+                "requirement_id": requirement_id,
+                "requirement_name": name,
+                "requirement_deleted": deleted,
+                "bug_count": bugs_by_requirement.get(requirement_id, 0),
+                "issue_count": issues_by_requirement.get(requirement_id, 0),
+                "distinct_test_cases_run": len(
+                    counted.cases_by_requirement.get(requirement_id, ())
+                ),
+                "exploratory_sessions": counted.sessions_by_requirement.get(requirement_id, 0),
+            }
+        )
     # Worst first — the reader's question is "which feature is carrying the
     # defects", and id order buries it.
     rows.sort(key=lambda row: (-row["bug_count"], row["requirement_name"]))

@@ -176,6 +176,20 @@ describe('TestRunsPage', () => {
     expect(screen.getByText('3 passed / 1 failed')).toBeInTheDocument()
   })
 
+  it('keeps the run lists when the metrics endpoint fails', async () => {
+    // The panel is decoration; the run lists are the page. A metrics
+    // failure must cost the panel and nothing else — the frontend half of
+    // the never-raise contract `services/qa_metrics.py` keeps server-side.
+    mockFetchSprint.mockResolvedValue(makeSprint())
+    mockFetchTestRuns.mockResolvedValue([makeRun({ requirement_names: ['Login', 'Search'] })])
+    mockFetchSprintMetrics.mockRejectedValue(new Error('metrics unavailable'))
+    renderPage()
+
+    expect(await screen.findByText('Login, Search')).toBeInTheDocument()
+    expect(screen.queryByText('metrics unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByText('QA Metrics')).not.toBeInTheDocument()
+  })
+
   it('opens the modal on "Run new test"', async () => {
     mockFetchSprint.mockResolvedValue(makeSprint())
     mockFetchTestPlans.mockResolvedValue([makePlan()])
@@ -451,7 +465,7 @@ describe('TestRunsPage — QA metrics panel', () => {
 
     expect(await screen.findByText('QA Metrics')).toBeInTheDocument()
     expect(screen.getByText('60 executions')).toBeInTheDocument()
-    expect(screen.getByText('5 of 7 requirements covered')).toBeInTheDocument()
+    expect(screen.getByText('5 requirements covered · 7 currently confirmed')).toBeInTheDocument()
     expect(screen.getByText('0.45 bugs / case')).toBeInTheDocument()
   })
 

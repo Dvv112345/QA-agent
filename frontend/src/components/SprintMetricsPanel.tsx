@@ -106,9 +106,18 @@ export default function SprintMetricsPanel({ metrics }: Props) {
           <span className="sprint-metrics-tile-detail">{formatDensity(perCase)} bugs / case</span>
           {/* Coverage sits beside the ratio rather than inside it: the
               denominator above is what was actually exercised, so this is
-              the only place the untested remainder is visible. */}
+              the only place the untested remainder is visible.
+
+              Two facts, never a fraction. `covered` counts requirements a
+              counted run touched — archived ones included — while `total`
+              counts live confirmed ones, so editing or deleting a covered
+              requirement legitimately puts covered above total. Phrased as
+              "1 of 0 requirements covered" that reads as a broken panel and
+              costs the reader's trust in the tiles beside it. "currently"
+              is what makes the odd case self-explaining: the total is a
+              live snapshot, the coverage is what runs already did. */}
           <span className="sprint-metrics-tile-detail">
-            {covered} of {total} requirements covered
+            {plural(covered, 'requirement')} covered · {total} currently confirmed
           </span>
         </div>
       </div>
