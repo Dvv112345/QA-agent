@@ -8,7 +8,7 @@ import pytest
 
 from backend.services import finding_dedup, llm
 from backend.services.llm import FindingGroupingResult, FindingGroupItem
-from backend.services.llm_prompts import FiledFinding, FindingCandidate
+from backend.services.llm_prompts import FindingCandidate, KnownDefect
 
 
 def _candidate(title: str, *, severity: str = "medium", actual: str = "500", **overrides):
@@ -23,9 +23,9 @@ def _candidate(title: str, *, severity: str = "medium", actual: str = "500", **o
     return FindingCandidate(**defaults)
 
 
-def _filed(issue_key: str, title: str, *, actual: str = "500"):
-    return FiledFinding(
-        issue_key=issue_key,
+def _known(key: str, title: str, *, actual: str = "500"):
+    return KnownDefect(
+        key=key,
         title=title,
         expected="The order is created",
         actual=actual,
@@ -40,8 +40,8 @@ class _GroupStub:
         self.error = error
         self.calls: list = []
 
-    def __call__(self, candidates, already_filed):
-        self.calls.append((candidates, already_filed))
+    def __call__(self, candidates, known):
+        self.calls.append((candidates, known))
         if self.error is not None:
             raise self.error
         return FindingGroupingResult(groups=[FindingGroupItem(**group) for group in self.groups])
@@ -106,7 +106,7 @@ def test_a_single_bucket_still_asks_when_tickets_exist(group_stub):
     """There is a real question left — whether this defect already has a
     ticket — even with nothing to merge."""
     finding_dedup.group_findings(
-        [_candidate("Checkout returns 500")], [_filed("QA-1", "Orders fail")]
+        [_candidate("Checkout returns 500")], [_known("QA-1", "Orders fail")]
     )
     assert len(group_stub.calls) == 1
 
@@ -249,7 +249,7 @@ def test_unknown_severity_ranks_last(monkeypatch):
 
 def test_exact_match_against_a_filed_ticket_yields_its_key(group_stub):
     candidates = [_candidate("Checkout returns 500")]
-    filed = [_filed("QA-142", "Checkout returns 500")]
+    filed = [_known("QA-142", "Checkout returns 500")]
 
     groups = finding_dedup.group_findings(candidates, filed)
 
@@ -260,8 +260,8 @@ def test_several_matches_take_the_most_recent(group_stub):
     """`already_filed` arrives newest-first, so the first match wins."""
     candidates = [_candidate("Checkout returns 500")]
     filed = [
-        _filed("QA-300", "Checkout returns 500"),
-        _filed("QA-142", "Checkout returns 500"),
+        _known("QA-300", "Checkout returns 500"),
+        _known("QA-142", "Checkout returns 500"),
     ]
 
     groups = finding_dedup.group_findings(candidates, filed)
@@ -277,7 +277,7 @@ def test_llm_may_match_a_ticket_the_prefilter_missed(monkeypatch):
     )
     candidates = [_candidate("The order endpoint errors on submit")]
 
-    groups = finding_dedup.group_findings(candidates, [_filed("QA-142", "Checkout 500")])
+    groups = finding_dedup.group_findings(candidates, [_known("QA-142", "Checkout 500")])
 
     assert groups[0].existing_key == "QA-142"
 
@@ -292,7 +292,7 @@ def test_a_key_the_model_invented_is_ignored(monkeypatch):
     )
 
     groups = finding_dedup.group_findings(
-        [_candidate("Checkout returns 500")], [_filed("QA-142", "Something else")]
+        [_candidate("Checkout returns 500")], [_known("QA-142", "Something else")]
     )
 
     assert groups[0].existing_key is None
@@ -305,7 +305,7 @@ def test_an_exact_match_outranks_the_models_answer(monkeypatch):
         "group_findings",
         _GroupStub(groups=[{"indices": [0], "existing_key": "QA-9"}]),
     )
-    filed = [_filed("QA-9", "Unrelated"), _filed("QA-142", "Checkout returns 500")]
+    filed = [_known("QA-9", "Unrelated"), _known("QA-142", "Checkout returns 500")]
 
     groups = finding_dedup.group_findings([_candidate("Checkout returns 500")], filed)
 
@@ -326,7 +326,7 @@ def test_merging_two_matched_buckets_adopts_one_key_and_says_so(monkeypatch, cap
         "group_findings",
         _GroupStub(groups=[{"indices": [0, 1], "existing_key": None}]),
     )
-    filed = [_filed("QA-1", "Checkout returns 500"), _filed("QA-9", "Order endpoint errors")]
+    filed = [_known("QA-1", "Checkout returns 500"), _known("QA-9", "Order endpoint errors")]
     candidates = [_candidate("Checkout returns 500"), _candidate("Order endpoint errors")]
 
     with caplog.at_level("INFO", logger="backend.services.finding_dedup"):

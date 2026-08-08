@@ -883,3 +883,59 @@ class TestFindingExportWiring:
 
         db_session.expire_all()
         assert db_session.get(ExploratoryRun, run.id).status == ExploratoryRunStatus.COMPLETED
+
+
+class TestDefectGroupingWiring:
+    """Same placement as the scripted task, and the same ordering rule:
+    grouping commits before export files anything."""
+
+    @pytest.fixture
+    def order(self, monkeypatch):
+        calls: list = []
+
+        import backend.services.finding_export as export_module
+        import backend.services.finding_grouping as grouping_module
+
+        def _group(session, parent):
+            calls.append(("group", parent.id))
+
+        def _export(session, parent):
+            calls.append(("export", parent.id))
+            return export_module.ExportOutcome()
+
+        monkeypatch.setattr(grouping_module, "assign_defect_groups", _group)
+        monkeypatch.setattr(export_module, "export_findings", _export)
+        return calls
+
+    def test_grouping_precedes_export_on_the_completion_path(self, db_session, patched, order):
+        _, _, run = _seed_run_with_sessions(db_session, charters=("A", "B"))
+
+        explore_requirement_task(run.id)
+
+        assert order == [("group", run.id), ("export", run.id)]
+
+    def test_not_called_when_the_run_is_superseded_mid_run(self, db_session, patched, order):
+        sprint, requirement, run = _seed_run_with_sessions(db_session, charters=("A", "B"))
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        explore_requirement_task(run.id)
+
+        db_session.expire_all()
+        assert db_session.get(ExploratoryRun, run.id).status == ExploratoryRunStatus.FAILED
+        assert order == []
+
+    def test_a_raising_grouping_pass_cannot_fail_the_run(self, db_session, patched, monkeypatch):
+        import backend.services.finding_grouping as module
+
+        def _boom(session, parent):
+            raise RuntimeError("grouping exploded")
+
+        monkeypatch.setattr(module, "assign_defect_groups", _boom)
+        _, _, run = _seed_run_with_sessions(db_session)
+
+        explore_requirement_task(run.id)  # must not raise
+
+        db_session.expire_all()
+        assert db_session.get(ExploratoryRun, run.id).status == ExploratoryRunStatus.COMPLETED

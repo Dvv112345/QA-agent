@@ -41,7 +41,13 @@ from backend.models.database import (
     TestExecutionStatus,
     TestPlanStatus,
 )
-from backend.services import finalization, finding_export, llm, script_runner
+from backend.services import (
+    finalization,
+    finding_export,
+    finding_grouping,
+    llm,
+    script_runner,
+)
 from backend.services.llm_prompts import TestCaseLike
 from backend.utils import environment_utils, github_utils
 from backend.utils.crypto import decrypt_token
@@ -481,6 +487,16 @@ def execute_test_task(test_execution_id: int) -> None:
         # cost of being wrong is asymmetric — a job in RQ's failed
         # registry for a run that plainly succeeded is exactly the kind
         # of contradiction someone debugging spends an hour on.
+        # Ordering is load-bearing, not incidental: `export_findings` files
+        # one ticket per defect group, so the grouping has to be committed
+        # before it runs. Same placement rules as the export below — after
+        # the COMPLETED commit, outside the failure try, and never on a
+        # failure path.
+        try:
+            finding_grouping.assign_defect_groups(session, execution)
+        except Exception:
+            logger.exception("Grouping findings failed for execution %d", test_execution_id)
+
         try:
             finding_export.export_findings(session, execution)
         except Exception:

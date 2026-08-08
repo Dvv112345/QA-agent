@@ -55,7 +55,7 @@ from backend.services.issue_tracker import (
     TrackerConfig,
     TrackerError,
 )
-from backend.services.llm_prompts import FiledFinding, FindingCandidate
+from backend.services.llm_prompts import FindingCandidate, KnownDefect
 from backend.utils.crypto import decrypt_token
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ def _secret_values(sprint: Sprint) -> frozenset[str]:
     return frozenset(set(env_vars.values()) - base_urls)
 
 
-def _already_filed(session: Session, sprint: Sprint, tracker_target: str) -> list[FiledFinding]:
+def _already_filed(session: Session, sprint: Sprint, tracker_target: str) -> list[KnownDefect]:
     """Bug findings already filed for this sprint, newest first.
 
     Filtered on ``tracker_target``, not just the sprint.  The config is
@@ -277,11 +277,11 @@ def _already_filed(session: Session, sprint: Sprint, tracker_target: str) -> lis
 
     # Sorted newest-first, which is the order `finding_dedup` reads to
     # pick the most recent ticket when a defect matches several.
-    dated: list[tuple[object, FiledFinding]] = [
+    dated: list[tuple[object, KnownDefect]] = [
         (
             case.updated_at,
-            FiledFinding(
-                issue_key=case.tracker_issue_key,
+            KnownDefect(
+                key=case.tracker_issue_key,
                 title=case.finding_title or "",
                 expected=case.finding_expected or "",
                 actual=case.finding_actual or "",
@@ -291,8 +291,8 @@ def _already_filed(session: Session, sprint: Sprint, tracker_target: str) -> lis
     ] + [
         (
             finding.created_at,
-            FiledFinding(
-                issue_key=finding.tracker_issue_key,
+            KnownDefect(
+                key=finding.tracker_issue_key,
                 title=finding.title,
                 expected=finding.expected,
                 actual=finding.actual,

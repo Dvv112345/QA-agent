@@ -48,7 +48,13 @@ from backend.models.database import (
     FindingSeverity,
     FindingType,
 )
-from backend.services import browser_session, finalization, finding_export, llm
+from backend.services import (
+    browser_session,
+    finalization,
+    finding_export,
+    finding_grouping,
+    llm,
+)
 from backend.services.storage import StorageService
 from backend.utils.exploratory_utils import session_sheets
 from backend.utils.readme_utils import resolve_readme
@@ -359,6 +365,13 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
         # identical placement and second-guard note in
         # tasks/execute_test.py. A tracker outage must cost a ticket,
         # never re-drive a browser through every charter again.
+        # Before the export, and for the same reason it is there at all —
+        # see the ordering note in tasks/execute_test.py.
+        try:
+            finding_grouping.assign_defect_groups(session, run)
+        except Exception:
+            logger.exception("Grouping findings failed for run %d", exploratory_run_id)
+
         try:
             finding_export.export_findings(session, run)
         except Exception:

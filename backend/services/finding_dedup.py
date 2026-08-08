@@ -1,4 +1,10 @@
-"""Group findings that describe one defect, before any ticket is filed.
+"""Group findings that describe one defect.
+
+The mechanics only, shared by both callers that need the judgement:
+``finding_grouping`` asks it which of a run's findings are occurrences of
+the sprint's already-known defects, and ``finding_export`` asks it whose
+report becomes which ticket.  Neither identity means anything here — a
+match target is an opaque key with three fields of text.
 
 Two stages, and the order matters.  A deterministic prefilter collapses
 findings whose text is the same once normalized — the common case, since
@@ -21,7 +27,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from backend.services import llm
-from backend.services.llm_prompts import FiledFinding, FindingCandidate
+from backend.services.llm_prompts import FindingCandidate, KnownDefect
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +52,11 @@ class FindingGroup:
 
     representative: int
     duplicates: list[int]
-    # An already-filed ticket describing this same defect. The caller
-    # checks it is still open before adopting it: a closed ticket is a
-    # decision somebody made, and reopening it silently would undo that.
+    # The key of a known defect this group turned out to be another
+    # occurrence of, or None when it is new. The key is whatever the
+    # caller passed in — a `DefectGroup` id when the assignment pass is
+    # asking, a ticket key when a filing run is — and this module never
+    # inspects it.
     existing_key: str | None = None
 
     @property
@@ -90,15 +98,15 @@ def dedup_key(title: str, expected: str, actual: str) -> str:
     return _normalize(title, expected, actual)
 
 
-def _elect(candidates: list[FindingCandidate], indices: list[int]) -> int:
-    """The member whose report becomes the ticket.
+def elect_representative(candidates: list[FindingCandidate], indices: list[int]) -> int:
+    """The member whose report speaks for the group.
 
-    Chosen **in code**, never by the model: the ticket's title and body
-    come from this row, so letting the model pick would let a grouping
-    call quietly decide how a defect is described.  Highest severity
-    first, then earliest position — the most alarming report of a defect
-    is the one worth reading first, and ties resolve to the one observed
-    soonest.
+    Chosen **in code**, never by the model: this row's text becomes the
+    ticket's title and body, and the frozen text of a new ``DefectGroup``,
+    so letting the model pick would let a grouping call quietly decide how
+    a defect is described.  Highest severity first, then earliest position
+    — the most alarming report of a defect is the one worth reading first,
+    and ties resolve to the one observed soonest.
     """
     return min(
         indices,
@@ -108,20 +116,20 @@ def _elect(candidates: list[FindingCandidate], indices: list[int]) -> int:
 
 def _prefilter(
     candidates: list[FindingCandidate],
-    already_filed: list[FiledFinding],
+    known: list[KnownDefect],
 ) -> tuple[list[list[int]], dict[int, str]]:
-    """Collapse exact-equal normalized findings and match them to tickets.
+    """Collapse exact-equal normalized findings and match them to known defects.
 
     Returns the buckets (lists of candidate indices, in first-seen order)
-    and, per bucket index, the key of a filed ticket whose own normalized
-    text matches.  ``already_filed`` arrives newest-first, so the first
-    match found is the most recent ticket for that defect.
+    and, per bucket index, the key of a known defect whose own normalized
+    text matches.  ``known`` arrives newest-first, so the first match
+    found is the most recently recorded description of that defect.
     """
-    filed_by_key: dict[str, str] = {}
-    for filed in already_filed:
-        key = dedup_key(filed.title, filed.expected, filed.actual)
+    known_by_key: dict[str, str] = {}
+    for defect in known:
+        key = dedup_key(defect.title, defect.expected, defect.actual)
         # setdefault keeps the *first* — newest — key for a repeated defect.
-        filed_by_key.setdefault(key, filed.issue_key)
+        known_by_key.setdefault(key, defect.key)
 
     buckets: list[list[int]] = []
     seen: dict[str, int] = {}
@@ -133,14 +141,14 @@ def _prefilter(
             continue
         seen[key] = len(buckets)
         buckets.append([index])
-        if key in filed_by_key:
-            matched[len(buckets) - 1] = filed_by_key[key]
+        if key in known_by_key:
+            matched[len(buckets) - 1] = known_by_key[key]
     return buckets, matched
 
 
 def _merge_with_llm(
     candidates: list[FindingCandidate],
-    already_filed: list[FiledFinding],
+    known: list[KnownDefect],
     buckets: list[list[int]],
     matched: dict[int, str],
 ) -> tuple[list[list[int]], dict[int, str]]:
@@ -151,12 +159,12 @@ def _merge_with_llm(
     prompt size and nothing else.
     """
     leaders = [bucket[0] for bucket in buckets]
-    result = llm.group_findings([candidates[i] for i in leaders], already_filed)
+    result = llm.group_findings([candidates[i] for i in leaders], known)
 
     merged: list[list[int]] = []
     merged_matches: dict[int, str] = {}
     placed: set[int] = set()
-    valid_keys = {filed.issue_key for filed in already_filed}
+    valid_keys = {defect.key for defect in known}
 
     for group in result.groups:
         # The model answers in *leader* positions, so every index has to
@@ -175,20 +183,20 @@ def _merge_with_llm(
         # A key the prefilter already matched wins over the model's
         # answer: it came from identical text, which is stronger evidence
         # than a judgement call. Otherwise take the model's, but only if
-        # it names a ticket that actually exists.
+        # it names a known defect that actually exists.
         prefiltered = list(dict.fromkeys(matched[p] for p in positions if p in matched))
         key = prefiltered[0] if prefiltered else None
         if len(prefiltered) > 1:
-            # The merged buckets had matched *different* existing tickets,
-            # so the tracker already holds two for one defect. One has to
-            # win — a group is one ticket by definition — and the losers
-            # are left exactly as they are: nothing is reopened, closed,
-            # or commented on, and the findings filed under them keep
-            # their own receipts. Logged because that duplicate pair is
-            # otherwise invisible; it is the tracker that needs tidying,
-            # not this run.
+            # The merged buckets had matched *different* known defects, so
+            # the sprint already holds two records of what is really one.
+            # One has to win — a group is one defect by definition — and
+            # the losers are left exactly as they are: no group is merged
+            # or rewritten, and no ticket is reopened, closed, or
+            # commented on. Logged because that duplicate pair is
+            # otherwise invisible; it is the older record that needs
+            # tidying, not this run.
             logger.info(
-                "Merged findings matched several filed tickets (%s); adopting %s",
+                "Merged findings matched several known defects (%s); adopting %s",
                 ", ".join(prefiltered),
                 key,
             )
@@ -210,19 +218,19 @@ def _merge_with_llm(
 
 def group_findings(
     candidates: list[FindingCandidate],
-    already_filed: list[FiledFinding],
+    known: list[KnownDefect],
 ) -> list[FindingGroup]:
-    """Group *candidates* into one ticket's worth each; never raises."""
+    """Group *candidates* into one defect's worth each; never raises."""
     if not candidates:
         return []  # nothing to group, and nothing worth an LLM call
 
-    buckets, matched = _prefilter(candidates, already_filed)
+    buckets, matched = _prefilter(candidates, known)
 
-    # One bucket with nothing already filed has no grouping question left
+    # One bucket with nothing already known has no grouping question left
     # to answer, and the call would cost a round trip to be told so.
-    if len(buckets) > 1 or already_filed:
+    if len(buckets) > 1 or known:
         try:
-            buckets, matched = _merge_with_llm(candidates, already_filed, buckets, matched)
+            buckets, matched = _merge_with_llm(candidates, known, buckets, matched)
         except llm.LLMError as exc:
             logger.warning("Finding grouping fell back to exact matching: %s", exc)
         except Exception:  # never raise into a run that already finished
@@ -230,7 +238,7 @@ def group_findings(
 
     groups: list[FindingGroup] = []
     for position, members in enumerate(buckets):
-        representative = _elect(candidates, members)
+        representative = elect_representative(candidates, members)
         groups.append(
             FindingGroup(
                 representative=representative,

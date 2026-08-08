@@ -26,8 +26,8 @@ from backend.services.llm import (
 )
 from backend.services.llm_prompts import (
     EXPLORATION_SYSTEM_PROMPT,
-    FiledFinding,
     FindingCandidate,
+    KnownDefect,
     TestCaseLike,
 )
 
@@ -2034,14 +2034,14 @@ class TestGroupFindings:
 
         assert [group.existing_key for group in result.groups] == [None, None]
 
-    def test_prompt_carries_indices_and_filed_tickets(self, stub_client):
+    def test_prompt_carries_indices_and_known_defects(self, stub_client):
         stub_client.content = json.dumps({"groups": [{"indices": [0, 1]}]})
 
         llm.group_findings(
             self._candidates(),
             [
-                FiledFinding(
-                    issue_key="QA-142",
+                KnownDefect(
+                    key="QA-142",
                     title="Orders cannot be placed",
                     expected="The order is created",
                     actual="HTTP 500",
@@ -2051,15 +2051,16 @@ class TestGroupFindings:
 
         prompt = _user_prompt(stub_client)
         assert "[0]" in prompt and "[1]" in prompt
+        assert "Known defects in this sprint:" in prompt
         assert "[QA-142]" in prompt
         assert "Orders cannot be placed" in prompt
 
-    def test_says_so_when_nothing_is_filed_yet(self, stub_client):
+    def test_says_so_when_no_defect_is_known_yet(self, stub_client):
         stub_client.content = json.dumps({"groups": [{"indices": [0, 1]}]})
 
         llm.group_findings(self._candidates(), [])
 
-        assert "(nothing yet)" in _user_prompt(stub_client)
+        assert "Known defects in this sprint: (none yet)" in _user_prompt(stub_client)
 
     def test_sends_no_tools(self, stub_client):
         """Grouping judges sameness only. Repo access is what turns that

@@ -56,8 +56,8 @@ from backend.services.llm_prompts import (
     TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
     TEST_SCRIPT_SYSTEM_PROMPT,
     ExploratorySessionLike,
-    FiledFinding,
     FindingCandidate,
+    KnownDefect,
     TestCaseLike,
     charter_context,
     context_sections,
@@ -582,7 +582,7 @@ def diagnose_and_fix_script(
 
 
 class FindingGroupItem(SQLModel):
-    """One group of new findings, optionally matched to a filed ticket."""
+    """One group of new findings, optionally matched to a known defect."""
 
     indices: list[int]
     existing_key: str | None = None
@@ -594,9 +594,9 @@ class FindingGroupingResult(SQLModel):
 
 def group_findings(
     candidates: list[FindingCandidate],
-    already_filed: list[FiledFinding],
+    known: list[KnownDefect],
 ) -> FindingGroupingResult:
-    """Decide which findings describe one defect, and which already have a ticket.
+    """Decide which findings describe one defect, and which defect is already known.
 
     A single completion with no tools and no repository access.  Nothing
     is judged here except sameness: whether a finding is real was settled
@@ -608,7 +608,7 @@ def group_findings(
     falls back to its deterministic prefilter, which is a worse grouping
     rather than no grouping.
     """
-    parts = finding_grouping_context(candidates, already_filed)
+    parts = finding_grouping_context(candidates, known)
     return _complete(FINDING_GROUPING_SYSTEM_PROMPT, "\n\n".join(parts), FindingGroupingResult)
 
 
