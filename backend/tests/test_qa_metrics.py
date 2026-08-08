@@ -39,6 +39,7 @@ def _case(
     actual: str = "",
     key: str | None = None,
     target: str | None = None,
+    group: int | None = None,
 ) -> TestCaseExecution:
     return TestCaseExecution(
         test_case_id=test_case_id,
@@ -50,6 +51,7 @@ def _case(
         finding_actual=actual,
         tracker_issue_key=key,
         tracker_target=target,
+        defect_group_id=group,
     )
 
 
@@ -78,6 +80,7 @@ def _finding(
     actual: str = "",
     key: str | None = None,
     target: str | None = None,
+    group: int | None = None,
 ) -> ExploratoryFinding:
     return ExploratoryFinding(
         position=0,
@@ -89,6 +92,7 @@ def _finding(
         actual=actual,
         tracker_issue_key=key,
         tracker_target=target,
+        defect_group_id=group,
     )
 
 
@@ -377,9 +381,191 @@ def test_differently_worded_findings_do_not_collapse():
         ],
     )
 
-    # Paraphrase grouping is the LLM stage, which stays behind the tracker
-    # path — the metrics endpoint is polled, so it makes no LLM call.
+    # This endpoint makes no LLM call, so paraphrases it was never told
+    # about stay apart. What closes that gap is `defect_group_id`, written
+    # by the assignment pass when the run completed — see below.
     assert compute_sprint_metrics(sprint)["bug_count"] == 2
+
+
+def test_a_shared_defect_group_collapses_findings_with_nothing_else_in_common():
+    """The paraphrase case, answered by a column instead of a call.
+
+    Different wording, no ticket, two requirements — one defect, because
+    ``finding_grouping`` said so at completion and wrote it down.
+    """
+    sprint = _sprint(
+        requirements=[_requirement(1, "Checkout"), _requirement(2, "Orders")],
+        test_runs=[
+            _run(
+                [
+                    _execution(
+                        1,
+                        [
+                            _case(
+                                10,
+                                TestCaseExecutionStatus.FAILED,
+                                title="Checkout returns 500",
+                                group=7,
+                            )
+                        ],
+                    ),
+                    _execution(
+                        2,
+                        [
+                            _case(
+                                11,
+                                TestCaseExecutionStatus.FAILED,
+                                title="The order endpoint errors on submit",
+                                group=7,
+                            )
+                        ],
+                    ),
+                ]
+            )
+        ],
+    )
+
+    metrics = compute_sprint_metrics(sprint)
+
+    assert metrics["bug_count"] == 1
+    # Grouping is sprint-scoped, so one broken dependency genuinely breaks
+    # two features — both rows carry it, and they sum above the headline.
+    assert [row["bug_count"] for row in metrics["per_requirement"]] == [1, 1]
+
+
+def test_one_group_filed_under_two_tickets_is_still_one_bug():
+    """The group outranks ticket identity, and this is why.
+
+    Filing is idempotent per tracker, not per defect: a re-run whose
+    filing failed and was retried, or a group re-elected after an error,
+    can leave two keys on one defect. Counting keys would report two.
+    """
+    sprint = _sprint(
+        requirements=[_requirement(1, "Checkout")],
+        test_runs=[
+            _run(
+                [
+                    _execution(
+                        1,
+                        [
+                            _case(
+                                10,
+                                TestCaseExecutionStatus.FAILED,
+                                title="Order not created",
+                                key="QA-1",
+                                target="jira:QA",
+                                group=7,
+                            ),
+                            _case(
+                                11,
+                                TestCaseExecutionStatus.FAILED,
+                                title="Order not created",
+                                key="QA-2",
+                                target="jira:QA",
+                                group=7,
+                            ),
+                        ],
+                    )
+                ]
+            )
+        ],
+    )
+
+    assert compute_sprint_metrics(sprint)["bug_count"] == 1
+
+
+def test_a_defect_found_either_side_of_a_tracker_switch_is_one_bug():
+    """The case that settles the precedence.
+
+    Ticket identity is the ``(target, key)`` **pair**, so ticket-first
+    would count this defect twice for a reason that has nothing to do with
+    the product — somebody re-pointed the sprint at another tracker.
+    """
+    sprint = _sprint(
+        requirements=[_requirement(1, "Checkout")],
+        test_runs=[
+            _run(
+                [
+                    _execution(
+                        1,
+                        [
+                            _case(
+                                10,
+                                TestCaseExecutionStatus.FAILED,
+                                title="Order not created",
+                                key="QA-1",
+                                target="jira:QA",
+                                group=7,
+                            ),
+                            _case(
+                                11,
+                                TestCaseExecutionStatus.FAILED,
+                                title="Order not created",
+                                key="7",
+                                target="github:acme/shop",
+                                group=7,
+                            ),
+                        ],
+                    )
+                ]
+            )
+        ],
+    )
+
+    assert compute_sprint_metrics(sprint)["bug_count"] == 1
+
+
+def test_an_ungrouped_finding_falls_back_to_ticket_then_to_text():
+    """Today's behaviour, unchanged, for rows the pass never reached.
+
+    Three findings: one grouped, one ungrouped but filed, one with
+    neither — and the ungrouped pair share text but not a ticket, so they
+    stay apart on ticket identity exactly as before.
+    """
+    sprint = _sprint(
+        requirements=[_requirement(1, "Checkout")],
+        exploratory_runs=[
+            _exploratory_run(
+                1,
+                [
+                    _session(
+                        [
+                            _finding("Grouped", group=7),
+                            _finding("Same words", key="QA-9", target="jira:QA"),
+                            _finding("Same words"),
+                        ]
+                    )
+                ],
+            )
+        ],
+    )
+
+    assert compute_sprint_metrics(sprint)["bug_count"] == 3
+
+
+def test_group_severity_is_the_highest_among_a_grouped_pair():
+    """Same rule as the ticket-grouped case, over the new key."""
+    sprint = _sprint(
+        requirements=[_requirement(1, "Checkout")],
+        exploratory_runs=[
+            _exploratory_run(
+                1,
+                [
+                    _session(
+                        [
+                            _finding("A", severity="low", group=7),
+                            _finding("B", severity="high", group=7),
+                        ]
+                    )
+                ],
+            )
+        ],
+    )
+
+    metrics = compute_sprint_metrics(sprint)
+
+    assert metrics["bug_count"] == 1
+    assert metrics["high_severity_bug_count"] == 1
 
 
 def test_group_severity_is_the_highest_among_its_members():

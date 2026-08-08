@@ -8,11 +8,14 @@ endpoint the test-runs page polls.
 
 import pytest
 from sqlalchemy import event
+from sqlmodel import select
 
 from backend.models.database import (
+    DefectGroup,
     ExploratoryRunStatus,
     ExploratorySessionStatus,
     RequirementStatus,
+    TestCaseExecution,
     TestCaseExecutionStatus,
     TestExecutionStatus,
     TestPlanStatus,
@@ -163,6 +166,48 @@ async def test_the_breakdown_names_an_archived_requirement(async_client, db_sess
     assert len(rows) == 1
     assert rows[0]["requirement_name"] == "Removed feature"
     assert rows[0]["requirement_deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_grouped_findings_collapse_without_reading_the_group_table(async_client, db_session):
+    """Two differently-worded findings in one ``DefectGroup`` are one bug.
+
+    And the endpoint never queries ``defectgroup`` to work that out: it
+    counts a raw column on rows it already eager-loads.  That is why this
+    needed no new ``selectinload`` — and why the panel gets counts rather
+    than representative text.
+    """
+    sprint = _seed_sprint(db_session)
+    requirement = _seed_requirement(
+        db_session, sprint, status=RequirementStatus.CONFIRMED, name="Checkout"
+    )
+    _seed_completed_scripted_run(
+        db_session, sprint, requirement, _seed_plan_cases(db_session, requirement, 2), bugs=2
+    )
+    group = DefectGroup(
+        sprint_id=sprint.id, title="Defect 0", expected="It works", actual="It does not"
+    )
+    db_session.add(group)
+    db_session.commit()
+    for case in db_session.exec(select(TestCaseExecution)).all():
+        case.defect_group_id = group.id
+        db_session.add(case)
+    db_session.commit()
+    db_session.expire_all()
+
+    statements: list[str] = []
+    engine = db_session.get_bind()
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _record(conn, cursor, statement, params, context, executemany):
+        statements.append(statement)
+
+    resp = await async_client.get(f"/api/sprints/{sprint.id}/qa-metrics")
+    event.remove(engine, "before_cursor_execute", _record)
+
+    assert resp.status_code == 200
+    assert resp.json()["bug_count"] == 1
+    assert not [s for s in statements if "defectgroup" in s.lower()]
 
 
 @pytest.mark.asyncio

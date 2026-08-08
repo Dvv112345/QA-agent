@@ -27,9 +27,10 @@ number moving for a reason that has nothing to do with testing:
   done.  Dividing by executions would make a sprint read three times
   healthier for re-running an unfixed plan — a metric that rewards noise.
 
-* **One bug is one defect**, collapsed by ticket where one was filed and
-  by normalized text otherwise (``finding_dedup.dedup_key``, shared rather
-  than reimplemented so the panel and the tracker cannot report different
+* **One bug is one defect**, collapsed by the ``DefectGroup`` the
+  assignment pass assigned at run completion, then by ticket, then by
+  normalized text (``finding_dedup.dedup_key``, shared rather than
+  reimplemented so the panel and the tracker cannot report different
   groupings of the same findings).  **Issues are never collapsed.**  An
   issue records that testing was obstructed, not that the product is wrong
   — the SBTM distinction — so "how many distinct defects" is not a question
@@ -99,29 +100,44 @@ class _Finding:
     actual: str
     tracker_issue_key: str | None
     tracker_target: str | None
+    defect_group_id: int | None
     requirement_id: int
 
 
-def _defect_key(finding: _Finding) -> tuple[str, str] | str:
-    """What makes two findings the same defect.
+def _defect_key(finding: _Finding) -> tuple:
+    """What makes two findings the same defect — three keys, in order.
 
-    Ticket identity wins where it exists: it records a decision an external
-    system already made, which is stronger evidence than text similarity.
-    That precedence mirrors ``finding_dedup._merge_with_llm``, where a
-    prefilter match beats the model's judgement for the same reason.
+    Uniformly tagged tuples, so three kinds of identity cannot collide in
+    one dict.
 
-    The **pair**, never the bare key: GitHub issue numbers are per-repo
-    integers, so without ``tracker_target`` a sprint whose tracker was
-    switched mid-way would merge repo B's ``#7`` into repo A's.
+    **The stored group outranks ticket identity.**  A ``DefectGroup`` is
+    not text similarity: it is the same paraphrase-aware judgement, made
+    once when the run completed and remembered, so it is the best answer
+    available whenever it exists.
 
-    Falling back to ``dedup_key`` rather than to row identity is what makes
-    a sprint with no tracker connected collapse its re-runs at all — one
-    broken dependency fails every case in a plan with the same words, which
-    that function's own module calls the common case.
+    What settles the order is the tracker switch.  Ticket identity is the
+    **pair** ``(tracker_target, issue_key)`` — it has to be, since GitHub
+    issue numbers are per-repo integers and repo B's ``#7`` would
+    otherwise answer for repo A's — but that pair changes when the sprint
+    is re-pointed at another tracker, so one defect found either side of a
+    switch would count as two bugs.  ``tracker_target`` guards a *filing*
+    hazard; letting it reach the headline fragments defect identity on a
+    change that has nothing to do with the product.  Defect identity is a
+    property of the product, ticket identity a property of where you
+    happen to be filing, and the group is the only one of the three that
+    expresses the first.
+
+    The ticket branch survives beneath it for rows the assignment pass
+    never grouped — a run that never completed, or a pass that fell over —
+    where it is still the best evidence available.  ``dedup_key`` beneath
+    that is what makes a sprint with no tracker and no grouping collapse
+    its re-runs at all.
     """
+    if finding.defect_group_id is not None:
+        return ("group", finding.defect_group_id)
     if finding.tracker_issue_key:
-        return (finding.tracker_target or "", finding.tracker_issue_key)
-    return dedup_key(finding.title, finding.expected, finding.actual)
+        return ("ticket", finding.tracker_target or "", finding.tracker_issue_key)
+    return ("text", dedup_key(finding.title, finding.expected, finding.actual))
 
 
 def _scripted_findings(execution) -> list[_Finding]:
@@ -151,6 +167,7 @@ def _scripted_findings(execution) -> list[_Finding]:
                 actual=case.finding_actual or "",
                 tracker_issue_key=case.tracker_issue_key,
                 tracker_target=case.tracker_target,
+                defect_group_id=case.defect_group_id,
                 requirement_id=execution.requirement_id,
             )
         )
@@ -174,6 +191,7 @@ def _exploratory_findings(run, exploratory_session) -> list[_Finding]:
             actual=finding.actual,
             tracker_issue_key=finding.tracker_issue_key,
             tracker_target=finding.tracker_target,
+            defect_group_id=finding.defect_group_id,
             requirement_id=run.requirement_id,
         )
         for finding in exploratory_session.findings
@@ -268,7 +286,7 @@ def _collect(sprint) -> _Counted:
 
 def _group(findings: list[_Finding]) -> list[list[_Finding]]:
     """Collapse *findings* of one type into one list per distinct defect."""
-    groups: dict[tuple[str, str] | str, list[_Finding]] = {}
+    groups: dict[tuple, list[_Finding]] = {}
     for finding in findings:
         groups.setdefault(_defect_key(finding), []).append(finding)
     return list(groups.values())
