@@ -361,12 +361,13 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
             _record_failure(session, exploratory_run_id, exc)
             return
 
-        # After the COMPLETED commit and outside the try above — see the
-        # identical placement and second-guard note in
+        # Both calls sit after the COMPLETED commit and outside the try
+        # above — see the identical placement and second-guard note in
         # tasks/execute_test.py. A tracker outage must cost a ticket,
         # never re-drive a browser through every charter again.
-        # Before the export, and for the same reason it is there at all —
-        # see the ordering note in tasks/execute_test.py.
+
+        # Before the export, because that files one ticket per defect
+        # group — the same ordering note as in tasks/execute_test.py.
         try:
             finding_grouping.assign_defect_groups(session, run)
         except Exception:

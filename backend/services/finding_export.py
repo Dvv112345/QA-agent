@@ -298,9 +298,19 @@ def _ticket_for(
 
 
 def _record_group_ticket(
-    session: Session, defect_group_id: int | None, target: str, key: str, url: str
+    session: Session,
+    defect_group_id: int | None,
+    target: str,
+    key: str,
+    url: str,
+    existing: DefectGroupTicket | None,
 ) -> None:
     """Point this defect's row for *target* at the ticket just created.
+
+    *existing* is the row ``_export`` already resolved to decide adopt vs
+    supersede vs file — passed in rather than looked up again, because it
+    is the same row in the same transaction and a second read would only
+    suggest it could have changed.
 
     An **upsert**, because the unique constraint makes it the only legal
     move: a second insert for the same ``(group, target)`` raises.  The
@@ -324,7 +334,6 @@ def _record_group_ticket(
     """
     if defect_group_id is None:
         return  # an ungrouped bucket has no defect to record the ticket against
-    existing = _ticket_for(session, defect_group_id, target)
     if existing is not None:
         existing.issue_key = key
         existing.issue_url = url
@@ -494,6 +503,23 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
     for entry in spec.rows:
         buckets.setdefault(_bucket_key(entry), []).append(entry)
 
+    if any(bucket[0] == "text" for bucket in buckets):
+        # The assignment pass above never raises, so reaching here means it
+        # failed and rolled back. Filing still goes ahead — a grouping
+        # problem must cost a duplicate, never an unfiled bug, the same
+        # asymmetry `issue_is_open` rests on — but the consequence outlives
+        # this run and is otherwise impossible to trace back to its cause:
+        # an ungrouped bucket records no `DefectGroupTicket`, so once a
+        # later pass does group these rows, the next run to join that group
+        # finds nothing to adopt and files a second ticket. Exactly one,
+        # since that filing writes the row — but a run or two after the
+        # failure that caused it.
+        logger.warning(
+            "Filing %s on a partly ungrouped finding set — the assignment pass did not run. "
+            "Paraphrases file separately, and an affected defect may duplicate once later.",
+            spec.run_label,
+        )
+
     filed = linked = failed = 0
     for bucket_key, members in buckets.items():
         defect_group_id = bucket_key[1] if bucket_key[0] == "group" else None
@@ -561,7 +587,7 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
                 continue
             key, url = ref.key, ref.url
             filed += 1
-            _record_group_ticket(session, defect_group_id, target, key, url or "")
+            _record_group_ticket(session, defect_group_id, target, key, url or "", existing)
             _attach_screenshot(config, key, representative)
         else:
             linked += 1
