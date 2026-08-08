@@ -9,16 +9,21 @@ deterministic prefilter, with ``llm.group_findings`` stubbed.
 import json
 
 import pytest
+from sqlmodel import select
 
 from backend.models.database import (
+    DefectGroup,
+    DefectGroupTicket,
     ExploratoryRunStatus,
     IssueTrackerConfig,
     RequirementStatus,
     TestCaseExecutionStatus,
     TestEnvironmentStatus,
+    TestExecutionStatus,
 )
-from backend.services import finding_export, issue_tracker, llm
+from backend.services import finding_export, finding_grouping, issue_tracker, llm
 from backend.services.issue_tracker import IssueRef, TrackerError, TrackerUnavailableError
+from backend.services.qa_metrics import compute_sprint_metrics
 from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
 from backend.tests.test_sprints import (
     _seed_exploratory_finding,
@@ -156,6 +161,25 @@ def _scripted_run(
             status=status,
             **(_finding_fields(title=title) if status != TestCaseExecutionStatus.PASSED else {}),
         )
+    db_session.refresh(execution)
+    return sprint, execution
+
+
+def _scripted_run_in(db_session, sprint, *, title="Checkout returns 500"):
+    """Another completed run in an existing sprint, holding one finding."""
+    requirement = _seed_requirement(
+        db_session, sprint, name="Later", status=RequirementStatus.CONFIRMED
+    )
+    plan = _seed_test_plan(db_session, requirement)
+    run = _seed_test_run(db_session, sprint, export_findings=True)
+    execution = _seed_test_execution(db_session, run, requirement)
+    _seed_test_case_execution(
+        db_session,
+        execution,
+        _seed_test_case(db_session, plan),
+        status=TestCaseExecutionStatus.FAILED,
+        **_finding_fields(title=title),
+    )
     db_session.refresh(execution)
     return sprint, execution
 
@@ -409,8 +433,9 @@ def test_the_adopted_url_is_read_back_not_reconstructed(db_session, tracker):
 
 def test_the_adopted_url_is_read_back_from_this_sprint_only(db_session, tracker):
     """Two sprints can share one tracker, and Jira keys are per-project —
-    so the same key exists in both. The read-back is scoped through the
-    run to the sprint, exactly as the de-duplication window is."""
+    so the same key exists in both. The URL now comes off the defect's own
+    ``DefectGroupTicket``, and a defect group belongs to one sprint, so
+    the scoping is structural rather than a filter that could be dropped."""
     # Seeded first, so an unscoped scan would find this row's URL first.
     other_sprint, other_execution = _scripted_run(db_session)
     other_case = other_execution.cases[0]
@@ -547,6 +572,311 @@ def test_an_unexpected_exception_never_escapes(db_session, tracker, monkeypatch)
     )
 
     assert finding_export.export_findings(db_session, execution) == finding_export.ExportOutcome()
+
+
+# ── One ticket per defect group ───────────────────────────────────────
+
+
+def _group_tickets(db_session, defect_group_id=None):
+    statement = select(DefectGroupTicket)
+    if defect_group_id is not None:
+        statement = statement.where(DefectGroupTicket.defect_group_id == defect_group_id)
+    return db_session.exec(statement.order_by(DefectGroupTicket.id)).all()
+
+
+def _group_rows(db_session):
+    return db_session.exec(select(DefectGroup).order_by(DefectGroup.id)).all()
+
+
+def _preassign(db_session, sprint, executions, *, title="Checkout returns 500"):
+    """Put every finding on *executions* into one ``DefectGroup``.
+
+    Exactly what ``assign_defect_groups`` writes, seeded directly so a
+    test can give two findings genuinely different wording without
+    needing the LLM stage to agree.
+    """
+    group = DefectGroup(
+        sprint_id=sprint.id, title=title, expected="The order is created", actual="HTTP 500"
+    )
+    db_session.add(group)
+    db_session.commit()
+    db_session.refresh(group)
+    for execution in executions:
+        for case in execution.cases:
+            case.defect_group_id = group.id
+            db_session.add(case)
+    db_session.commit()
+    return group
+
+
+def test_one_group_with_two_wordings_files_one_ticket(db_session, tracker):
+    """The capability the whole feature is for: paraphrases, one ticket.
+
+    Text de-duplication alone files two here, since the reports share
+    barely a word.
+    """
+    sprint, execution = _scripted_run(
+        db_session,
+        case_count=2,
+        titles=["Checkout returns 500", "The order endpoint errors on submit"],
+    )
+    _preassign(db_session, sprint, [execution])
+    db_session.expire_all()
+
+    outcome = finding_export.export_findings(db_session, execution)
+
+    assert outcome.filed == 1
+    assert outcome.linked == 1
+    db_session.expire_all()
+    keys = [case.tracker_issue_key for case in execution.cases]
+    assert keys == ["QA-1", "QA-1"]
+    assert [case.tracker_is_duplicate for case in execution.cases] == [False, True]
+
+
+def test_a_filed_group_records_its_ticket(db_session, tracker):
+    sprint, execution = _scripted_run(db_session)
+
+    finding_export.export_findings(db_session, execution)
+
+    (group,) = _group_rows(db_session)
+    (ticket,) = _group_tickets(db_session)
+    assert (ticket.defect_group_id, ticket.tracker_target) == (group.id, "jira:QA")
+    assert ticket.issue_key == "QA-1"
+    assert ticket.issue_url.endswith("/QA-1")
+
+
+def test_filing_the_same_group_twice_upserts_one_row(db_session, tracker):
+    """The unique constraint states the rule; the upsert obeys it."""
+    sprint, execution = _scripted_run(db_session)
+    finding_export.export_findings(db_session, execution)
+    _file_first_run(db_session, tracker, sprint)  # same text, same group
+
+    assert len(_group_tickets(db_session)) == 1
+
+
+# ── Switching tracker, and switching back ─────────────────────────────
+
+
+def _switch_to_github(db_session, sprint, target="acme/shop"):
+    db_session.expire_all()
+    sprint.issue_tracker.provider = "github"
+    sprint.issue_tracker.target = target
+    db_session.commit()
+
+
+def _switch_to_jira(db_session, sprint):
+    db_session.expire_all()
+    sprint.issue_tracker.provider = "jira"
+    sprint.issue_tracker.target = "QA"
+    db_session.commit()
+
+
+def test_a_tracker_switch_files_a_new_ticket_and_keeps_the_old_row(db_session, tracker):
+    """One defect, two trackers, two tickets — and still one defect.
+
+    The team is looking at the new tracker now, so the defect has to
+    appear there; the old ticket is somebody's record and is untouched.
+    """
+    sprint, first = _scripted_run(db_session)
+    finding_export.export_findings(db_session, first)
+    (group,) = _group_rows(db_session)
+
+    _switch_to_github(db_session, sprint)
+    _, second = _scripted_run_in(db_session, sprint)
+
+    outcome = finding_export.export_findings(db_session, second)
+
+    assert outcome.filed == 1  # a fresh ticket, not an adoption
+    assert tracker.open_checks == []  # the Jira key was never even considered
+    tickets = _group_tickets(db_session, group.id)
+    assert {t.tracker_target for t in tickets} == {"jira:QA", "github:acme/shop"}
+
+    # And the panel still reports one bug, which is the whole point of
+    # `qa_metrics._defect_key` reading the group before the ticket pair.
+    # (Only completed runs are counted, so the seeds have to say so.)
+    for execution in (first, second):
+        execution.status = TestExecutionStatus.COMPLETED
+        db_session.add(execution)
+    db_session.commit()
+    db_session.expire_all()
+    assert compute_sprint_metrics(sprint)["bug_count"] == 1
+
+
+def test_switching_back_adopts_the_original_ticket(db_session, tracker):
+    sprint, first = _scripted_run(db_session)
+    finding_export.export_findings(db_session, first)
+    _switch_to_github(db_session, sprint)
+    _, second = _scripted_run_in(db_session, sprint)
+    finding_export.export_findings(db_session, second)
+    _switch_to_jira(db_session, sprint)
+    _, third = _scripted_run_in(db_session, sprint)
+    tracker.created.clear()
+
+    outcome = finding_export.export_findings(db_session, third)
+
+    assert outcome.linked == 1
+    assert tracker.created == []  # adopted QA-1 rather than filing a third
+    db_session.expire_all()
+    assert third.cases[0].tracker_issue_key == "QA-1"
+    assert len(_group_tickets(db_session)) == 2  # still one row per tracker
+
+
+# ── Supersession ──────────────────────────────────────────────────────
+
+
+def test_a_superseded_ticket_row_is_updated_in_place(db_session, tracker):
+    """The row is the *current* answer to "where does this defect live
+    here", never the history — that lives in the tracker's own chain and
+    in the per-finding receipts, neither of which this touches."""
+    sprint, first = _scripted_run(db_session)
+    finding_export.export_findings(db_session, first)
+    (before,) = _group_tickets(db_session)
+    filed_at = before.filed_at
+    tracker.is_open = False
+    _, second = _scripted_run_in(db_session, sprint)
+
+    finding_export.export_findings(db_session, second)
+
+    db_session.expire_all()
+    tickets = _group_tickets(db_session)
+    assert len(tickets) == 1  # updated, never a second row
+    assert tickets[0].issue_key == "QA-2"
+    assert tickets[0].filed_at > filed_at  # a default_factory would not have moved
+    # The finding filed under the closed key keeps its own receipt.
+    assert first.cases[0].tracker_issue_key == "QA-1"
+
+
+def test_a_third_run_adopts_the_replacement_not_the_closed_original(db_session, tracker):
+    """Asserts the update actually took — a row-count check would not."""
+    sprint, first = _scripted_run(db_session)
+    finding_export.export_findings(db_session, first)
+    tracker.is_open = False
+    _, second = _scripted_run_in(db_session, sprint)
+    finding_export.export_findings(db_session, second)
+
+    tracker.is_open = True
+    tracker.open_checks.clear()
+    tracker.created.clear()
+    _, third = _scripted_run_in(db_session, sprint)
+
+    outcome = finding_export.export_findings(db_session, third)
+
+    assert tracker.open_checks == ["QA-2"]
+    assert outcome.linked == 1
+    assert tracker.created == []
+
+
+def test_a_failed_supersede_leaves_the_row_naming_the_closed_ticket(db_session, tracker):
+    """Nothing is written before ``create_issue`` returns, so the retry
+    re-runs the same supersede path rather than adopting a ticket that
+    was never created."""
+    sprint, first = _scripted_run(db_session)
+    finding_export.export_findings(db_session, first)
+    (before,) = _group_tickets(db_session)
+    filed_at = before.filed_at
+    tracker.is_open = False
+    tracker.create_error = TrackerError("Jira rejected the request (403)")
+    _, second = _scripted_run_in(db_session, sprint)
+
+    outcome = finding_export.export_findings(db_session, second)
+
+    assert outcome.failed == 1
+    db_session.expire_all()
+    (ticket,) = _group_tickets(db_session)
+    assert (ticket.issue_key, ticket.filed_at) == ("QA-1", filed_at)
+
+
+def test_a_create_failure_writes_no_ticket_row(db_session, tracker):
+    _, execution = _scripted_run(db_session, case_count=2)
+    tracker.create_error = TrackerError("nope")
+
+    finding_export.export_findings(db_session, execution)
+
+    assert _group_tickets(db_session) == []
+
+
+def test_a_conflicting_concurrent_insert_does_not_lose_the_receipts(
+    db_session, tracker, monkeypatch
+):
+    """The highest-rated risk in the plan, and invisible without a test.
+
+    The ticket row joins the receipts in one commit that runs *after*
+    ``create_issue`` already succeeded, so an ``IntegrityError`` escaping
+    it would be swallowed by ``export_findings``' catch-all — leaving a
+    ticket in the tracker that no finding carries the key of, which the
+    next retry would file all over again.  A stale read is simulated by
+    making the lookup miss.
+    """
+    sprint, first = _scripted_run(db_session)
+    finding_export.export_findings(db_session, first)  # a row now exists
+    _, second = _scripted_run_in(db_session, sprint)
+    tracker.is_open = False  # force the create path rather than an adoption
+    monkeypatch.setattr(finding_export, "_ticket_for", lambda session, group_id, target: None)
+
+    outcome = finding_export.export_findings(db_session, second)
+
+    assert outcome.filed == 1
+    db_session.expire_all()
+    assert second.cases[0].tracker_issue_key == "QA-2"
+    assert len(_group_tickets(db_session)) == 1  # the other job's row survived
+
+
+# ── Grouping before filing ────────────────────────────────────────────
+
+
+def test_a_hand_filed_run_is_grouped_first(db_session, tracker):
+    """A run that never completed has ungrouped findings, and its
+    paraphrased duplicates would otherwise each become a permanent ticket
+    in a system this application does not own."""
+    sprint, execution = _scripted_run(
+        db_session, export_findings=False, case_count=2, titles=["Same defect", "Same defect"]
+    )
+    assert _group_rows(db_session) == []
+
+    outcome = finding_export.export_findings(db_session, execution, requested=True)
+
+    assert outcome.filed == 1
+    assert len(_group_rows(db_session)) == 1  # the pass ran, and wrote it down
+
+
+def test_a_retry_on_an_already_grouped_run_makes_no_grouping_call(db_session, tracker, monkeypatch):
+    """The common retry — after a ``tracker_error`` on a completed run —
+    costs nothing, because every row is already grouped and the fast exit
+    fires before the sprint-wide read."""
+    sprint, execution = _scripted_run(db_session)
+    tracker.create_error = TrackerError("down")
+    finding_export.export_findings(db_session, execution)
+    tracker.create_error = None
+
+    calls: list = []
+
+    def _record(candidates, known):
+        calls.append(candidates)
+        raise llm.LLMError("must not be reached")
+
+    monkeypatch.setattr(llm, "group_findings", _record)
+
+    outcome = finding_export.export_findings(db_session, execution, requested=True)
+
+    assert outcome.filed == 1
+    assert calls == []
+
+
+def test_ungrouped_rows_still_file_when_the_pass_does_nothing(db_session, tracker, monkeypatch):
+    """Standing in for the pass throwing: text identity is the floor.
+
+    Pins the degenerate case without pinning ``_already_filed``, which no
+    longer exists.
+    """
+    monkeypatch.setattr(finding_grouping, "assign_defect_groups", lambda session, parent: None)
+    _, execution = _scripted_run(
+        db_session, case_count=3, titles=["Same", "Same", "Different defect entirely"]
+    )
+
+    outcome = finding_export.export_findings(db_session, execution)
+
+    assert outcome.filed == 2  # the identical pair collapsed, the third did not
+    assert _group_tickets(db_session) == []  # nothing to record a ticket against
 
 
 # ── Exploratory findings ──────────────────────────────────────────────

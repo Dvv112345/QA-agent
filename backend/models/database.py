@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
 from backend.config import (
@@ -598,6 +599,45 @@ class DefectGroup(SQLModel, table=True):
     )
 
     sprint: Optional["Sprint"] = Relationship(back_populates="defect_groups")
+    tickets: list["DefectGroupTicket"] = Relationship(back_populates="defect_group")
+
+
+class DefectGroupTicket(SQLModel, table=True):
+    """Where one defect lives in one tracker.  Written only by finding_export.
+
+    A child table rather than three columns on ``DefectGroup``, because a
+    defect can outlive the tracker it was first filed to.  With one triple
+    on the group, filing into a newly connected tracker would overwrite
+    the old target and forget the earlier ticket — so switching **back**
+    would file a duplicate of a ticket that already exists and is probably
+    still open.
+
+    The unique constraint states the invariant in the schema: one defect
+    gets at most one ticket in any given tracker.  That is the
+    group-is-one-ticket rule extended along the axis a config edit moves
+    on, and it is also what makes the upsert in ``finding_export`` the
+    only legal move rather than a preference.
+
+    (Note the claim is about the *row*, not the tracker: two sibling jobs
+    exporting concurrently can still both create an issue, since nothing
+    serializes ``_export`` itself.  Only one row survives, and the extra
+    ticket is a duplicate a human can close.)
+    """
+
+    __table_args__ = (UniqueConstraint("defect_group_id", "tracker_target"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    defect_group_id: int = Field(foreign_key="defectgroup.id", index=True)
+    tracker_target: str  # "{provider}:{target}", as stamped at file time
+    issue_key: str  # "QA-142" | "7"
+    issue_url: str  # absolute; "" when the provider gave none
+    # Advanced explicitly whenever this row is repointed at a replacement
+    # ticket: a default_factory fires on insert only.
+    filed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    defect_group: Optional["DefectGroup"] = Relationship(back_populates="tickets")
 
 
 # ── Export roll-up (shared by scripted and exploratory runs) ─────────
