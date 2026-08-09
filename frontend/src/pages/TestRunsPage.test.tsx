@@ -465,7 +465,8 @@ describe('TestRunsPage — QA metrics panel', () => {
 
     expect(await screen.findByText('QA Metrics')).toBeInTheDocument()
     expect(screen.getByText('60 executions')).toBeInTheDocument()
-    expect(screen.getByText('5 requirements covered · 7 currently confirmed')).toBeInTheDocument()
+    expect(screen.getByText('5 requirements covered')).toBeInTheDocument()
+    expect(screen.getByText('7 current requirements')).toBeInTheDocument()
     expect(screen.getByText('0.45 bugs / case')).toBeInTheDocument()
   })
 

@@ -38,7 +38,7 @@ Four things the panel deliberately says rather than smooths over:
 - **Test cases are reported at two levels.** The headline is _distinct_ cases; executions sit beneath it, labelled. A case run three times adds 1 to the first and 3 to the second, and the density figure uses the first — otherwise re-running an unfixed plan would make the sprint read healthier.
 - **Density has three readings, not two.** `—` means nothing was tested, `0.00` means tested and clean, and `< 0.01` means tested with a real but tiny defect rate. "0.00 bugs / case" on a sprint that found bugs is the one output the tile must never produce.
 - **Excluded runs are named.** Only completed runs are counted, so a run still going or one that failed is reported as excluded rather than silently dropped.
-- **Coverage is two facts, not a fraction.** The tile reads `5 requirements covered · 7 currently confirmed`, never `5 of 7`. Coverage is what runs already did, while the total is a live snapshot — so a covered requirement that is later edited (back to `analyzing`) or deleted puts covered _above_ total, and `1 of 0 requirements covered` would read as a broken panel. "currently" is what makes that case self-explaining.
+- **Coverage is two facts, not a fraction.** The tile reads `5 requirements covered` and `7 current requirements`, never `5 of 7`. Coverage is what runs already did, while the total is a live snapshot — so a covered requirement that is later edited (back to `analyzing`) or deleted puts covered _above_ total, and `1 of 0 requirements covered` would read as a broken panel. "currently" is what makes that case self-explaining.
 
 A footnote explains rows summing above the headline — one defect can affect several requirements — and appears only when they actually differ.
 

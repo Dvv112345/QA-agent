@@ -117,9 +117,12 @@ export default function SprintMetricsPanel({ metrics }: Props) {
               is what makes the odd case self-explaining: the total is a
               live snapshot, the coverage is what runs already did. */}
           <span className="sprint-metrics-tile-detail">
-            {plural(covered, 'requirement')} covered
+            {' '}
+            {plural(covered, 'requirement')} covered{' '}
           </span>
-          <span className="sprint-metrics-tile-detail">{total} current requirements</span>
+          <span className="sprint-metrics-tile-detail">
+            {total} current {plural(total, 'requirement')}
+          </span>
         </div>
       </div>
 
