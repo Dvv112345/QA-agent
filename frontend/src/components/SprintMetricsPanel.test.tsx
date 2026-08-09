@@ -63,7 +63,8 @@ describe('SprintMetricsPanel', () => {
     expect(screen.getByText('2 issues')).toBeInTheDocument()
     expect(screen.getByText('1.80')).toBeInTheDocument()
     expect(screen.getByText('0.45 bugs / case')).toBeInTheDocument()
-    expect(screen.getByText('5 requirements covered · 7 currently confirmed')).toBeInTheDocument()
+    expect(screen.getByText('5 requirements covered')).toBeInTheDocument()
+    expect(screen.getByText('7 current requirements')).toBeInTheDocument()
   })
 
   it('renders an em dash rather than a zero for a null density', () => {
