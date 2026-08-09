@@ -922,3 +922,98 @@ class TestFindingExportWiring:
         execute_test_task(execution.id)  # must not raise
 
         assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.COMPLETED
+
+
+class TestDefectGroupingWiring:
+    """Grouping fires on the completion path, and always before export.
+
+    The order is load-bearing rather than incidental: export files one
+    ticket per defect group, so a grouping that ran afterwards would file
+    the tickets the grouping existed to prevent.
+    """
+
+    @pytest.fixture
+    def order(self, monkeypatch):
+        """Both calls, in the order the task made them."""
+        calls: list = []
+
+        import backend.services.finding_export as export_module
+        import backend.services.finding_grouping as grouping_module
+
+        def _group(session, parent):
+            calls.append(("group", parent.id))
+
+        def _export(session, parent):
+            calls.append(("export", parent.id))
+            return export_module.ExportOutcome()
+
+        monkeypatch.setattr(grouping_module, "assign_defect_groups", _group)
+        monkeypatch.setattr(export_module, "export_findings", _export)
+        return calls
+
+    def test_grouping_precedes_export_on_the_completion_path(
+        self, db_session, llm_stub, script_runner_stub, order
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)
+
+        assert order == [("group", execution.id), ("export", execution.id)]
+
+    def test_not_called_when_the_execution_is_superseded_mid_run(
+        self, db_session, llm_stub, script_runner_stub, order
+    ):
+        """`_fail_execution`'s chokepoint — an incomplete finding set is
+        not what the sprint's defect list should be built from."""
+        sprint, requirement, plan, cases = _seed_setup(db_session, case_count=2)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+
+        execute_test_task(execution.id)
+
+        assert order == []
+
+    def test_not_called_on_a_terminal_record_failure(
+        self, db_session, llm_stub, script_runner_stub, order
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(
+            db_session, sprint, requirement, cases, retry_count=MAX_AUTO_RETRIES - 1
+        )
+        llm_stub.script_result = LLMError("model down")
+
+        execute_test_task(execution.id)
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.FAILED
+        assert order == []
+
+    def test_a_raising_grouping_pass_cannot_fail_the_run_or_stop_the_export(
+        self, db_session, llm_stub, script_runner_stub, monkeypatch
+    ):
+        """`assign_defect_groups` never raises; the task guards it anyway,
+        and the export still runs — an ungrouped finding is still a bug
+        worth filing."""
+        import backend.services.finding_export as export_module
+        import backend.services.finding_grouping as grouping_module
+
+        exported: list = []
+
+        def _boom(session, parent):
+            raise RuntimeError("grouping exploded")
+
+        monkeypatch.setattr(grouping_module, "assign_defect_groups", _boom)
+        monkeypatch.setattr(
+            export_module,
+            "export_findings",
+            lambda session, parent: exported.append(parent.id) or export_module.ExportOutcome(),
+        )
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+
+        execute_test_task(execution.id)  # must not raise
+
+        assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.COMPLETED
+        assert exported == [execution.id]

@@ -4,21 +4,51 @@ import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
 import IssueTrackerModal from '../components/IssueTrackerModal'
 import OutdatedBadge from '../components/OutdatedBadge'
 import RunTestModal from '../components/RunTestModal'
+import SprintMetricsPanel from '../components/SprintMetricsPanel'
 import {
   fetchExploratoryRuns,
   fetchIssueTracker,
   fetchSprint,
+  fetchSprintMetrics,
   fetchTestRuns,
 } from '../services/api'
 import type {
   ExploratoryRunResponse,
   IssueTrackerConfig,
+  SprintMetrics,
   SprintResponse,
   TestRunResponse,
 } from '../types'
 import './TestRunsPage.css'
 
 const POLL_INTERVAL_MS = 2500
+
+/**
+ * How long to keep polling once only the export is outstanding (~2 min) —
+ * the same budget, for the same race, as the twin constant on
+ * `TestRunDetailPage`. It matters on this page too because the metrics
+ * panel's bug count depends on tracker keys, which arrive *after* the run
+ * reads terminal: a poll condition keyed purely on `running` tears itself
+ * down inside the export window and freezes the panel on a pre-export
+ * count until someone reloads.
+ */
+const EXPORT_GRACE_TICKS = 48
+
+/** A completed run whose bugs are unfiled with nothing having failed. */
+function awaitingExport(run: { status: string } & ExportPending): boolean {
+  return (
+    run.status === 'completed' &&
+    run.export_findings &&
+    run.unexported_finding_count > 0 &&
+    run.export_error_count === 0
+  )
+}
+
+interface ExportPending {
+  export_findings: boolean
+  unexported_finding_count: number
+  export_error_count: number
+}
 
 const STATUS_LABELS: Record<string, string> = {
   running: 'Running',
@@ -58,6 +88,7 @@ export default function TestRunsPage() {
   const [sprint, setSprint] = useState<SprintResponse | null>(null)
   const [runs, setRuns] = useState<TestRunResponse[]>([])
   const [exploratoryRuns, setExploratoryRuns] = useState<ExploratoryRunResponse[]>([])
+  const [metrics, setMetrics] = useState<SprintMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showRunModal, setShowRunModal] = useState(false)
@@ -76,13 +107,22 @@ export default function TestRunsPage() {
       // Fetched once here and passed down as a prop, so neither run modal
       // needs a second round trip to decide its export toggle.
       fetchIssueTracker(sprintId),
+      // Swallowed, unlike the four above: the panel is decoration and the
+      // run lists are the page. `services/qa_metrics.py` already never
+      // raises so a metrics failure cannot 500 this endpoint — but that
+      // contract stops at the service boundary, and an unreachable one
+      // would otherwise replace both lists with an error string. Same
+      // reason the poll below swallows its own failures; `metrics` is
+      // already nullable and the panel renders behind it.
+      fetchSprintMetrics(sprintId).catch(() => null),
     ])
-      .then(([sprintData, runData, exploratoryData, trackerData]) => {
+      .then(([sprintData, runData, exploratoryData, trackerData, metricsData]) => {
         if (!cancelled) {
           setSprint(sprintData)
           setRuns(runData)
           setExploratoryRuns(exploratoryData)
           setTracker(trackerData)
+          setMetrics(metricsData)
           setLoading(false)
         }
       })
@@ -97,20 +137,42 @@ export default function TestRunsPage() {
     }
   }, [sprintId])
 
-  const shouldPoll =
+  const inProgress =
     runs.some((run) => run.status === 'running') ||
     exploratoryRuns.some((run) => run.status === 'pending' || run.status === 'running')
+  // Keyed on `completed` rather than on any terminal status, and on there
+  // being no export error: every other way to reach "unfiled bugs" is a
+  // standing state, not a pending one. A failed run never calls export at
+  // all, and every known bad ending inside it writes a tracker error.
+  const exportPending = runs.some(awaitingExport) || exploratoryRuns.some(awaitingExport)
+  const shouldPoll = inProgress || exportPending
 
   useEffect(() => {
     if (!shouldPoll) return
 
+    // Unbounded while a run is still working — it is the run that says
+    // when that ends. Bounded once only the export is outstanding.
+    let ticksLeft = inProgress ? Number.POSITIVE_INFINITY : EXPORT_GRACE_TICKS
     const pollId = setInterval(() => {
       if (fetchingRef.current) return
+      if (ticksLeft <= 0) {
+        clearInterval(pollId)
+        return
+      }
+      ticksLeft -= 1
       fetchingRef.current = true
-      Promise.all([fetchTestRuns(sprintId), fetchExploratoryRuns(sprintId)])
-        .then(([runData, exploratoryData]) => {
+      // The metrics ride along with the run lists rather than on their own
+      // interval: the panel summarizes exactly these rows, so refreshing
+      // them apart would let the two disagree on screen.
+      Promise.all([
+        fetchTestRuns(sprintId),
+        fetchExploratoryRuns(sprintId),
+        fetchSprintMetrics(sprintId),
+      ])
+        .then(([runData, exploratoryData, metricsData]) => {
           setRuns(runData)
           setExploratoryRuns(exploratoryData)
+          setMetrics(metricsData)
         })
         .catch(() => {
           /* transient poll failure — retry on next tick */
@@ -121,7 +183,7 @@ export default function TestRunsPage() {
     }, POLL_INTERVAL_MS)
 
     return () => clearInterval(pollId)
-  }, [shouldPoll, sprintId])
+  }, [shouldPoll, inProgress, sprintId])
 
   if (loading) return <p className="test-runs-message">Loading test runs&hellip;</p>
   if (loadError) return <p className="test-runs-message test-runs-error">{loadError}</p>
@@ -182,6 +244,8 @@ export default function TestRunsPage() {
         </p>
       ) : (
         <>
+          {metrics && <SprintMetricsPanel metrics={metrics} />}
+
           <section className="test-runs-section">
             <div className="test-runs-section-header">
               <h2>Exploratory Sessions</h2>

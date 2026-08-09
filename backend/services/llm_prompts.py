@@ -812,14 +812,14 @@ def exploration_summary_context(
     return parts
 
 
-# ── Finding grouping (issue-tracker de-duplication) ───────────────────
+# ── Finding grouping (one defect, however many findings describe it) ──
 
 FINDING_GROUPING_SYSTEM_PROMPT = (
-    "You are a QA lead triaging bug reports before they are filed into an "
-    "issue tracker. You are given new findings from one sprint, and the "
-    "findings already filed as tickets for that sprint. Decide which of the "
-    "new findings describe the SAME underlying defect as each other, and "
-    "which describe a defect that already has a ticket.\n\n"
+    "You are a QA lead triaging bug reports from one sprint's testing. You "
+    "are given new findings, and the defects already known in this sprint — "
+    "one representative report each. Decide which of the new findings "
+    "describe the SAME underlying defect as each other, and which describe a "
+    "defect that is already known.\n\n"
     "Group only when the same root cause is evident from the reports "
     "themselves — the same broken behaviour, reached the same way, failing "
     "the same expectation. Two findings that merely sound similar, or that "
@@ -837,8 +837,8 @@ FINDING_GROUPING_SYSTEM_PROMPT = (
     '"existing_key": string | null}]}, where:\n'
     "- every new finding's index appears in exactly one group;\n"
     "- a group holding one index means that finding is on its own;\n"
-    "- `existing_key` is the key of an already-filed ticket describing the "
-    "same defect, or null when this defect has no ticket yet."
+    "- `existing_key` is the key of an already-known defect this group "
+    "describes, or null when the defect is new to this sprint."
 )
 
 
@@ -858,10 +858,17 @@ class FindingCandidate:
 
 
 @dataclass(frozen=True)
-class FiledFinding:
-    """An already-filed finding, offered as a de-duplication target."""
+class KnownDefect:
+    """A defect the sprint already knows about, offered as a match target.
 
-    issue_key: str
+    ``key`` is an opaque identity the caller hands back in a group's
+    ``existing_key``; neither this module nor ``finding_dedup`` inspects
+    what it means.  It carries a ``DefectGroup`` id — the sprint's memory
+    of a distinct defect, which exists whether or not a tracker is
+    connected.
+    """
+
+    key: str
     title: str
     expected: str
     actual: str
@@ -878,21 +885,21 @@ def _finding_block(index: int, candidate: FindingCandidate) -> str:
 
 def finding_grouping_context(
     candidates: list[FindingCandidate],
-    already_filed: list[FiledFinding],
+    known: list[KnownDefect],
 ) -> list[str]:
     """User-prompt blocks for the grouping call."""
     parts = [
-        "New findings awaiting a ticket:\n"
+        "New findings to triage:\n"
         + "\n".join(_finding_block(index, c) for index, c in enumerate(candidates))
     ]
-    if already_filed:
+    if known:
         parts.append(
-            "Already filed for this sprint:\n"
+            "Known defects in this sprint:\n"
             + "\n".join(
-                f"[{f.issue_key}] {f.title}\n    Expected: {f.expected}\n    Actual: {f.actual}"
-                for f in already_filed
+                f"[{d.key}] {d.title}\n    Expected: {d.expected}\n    Actual: {d.actual}"
+                for d in known
             )
         )
     else:
-        parts.append("Already filed for this sprint: (nothing yet)")
+        parts.append("Known defects in this sprint: (none yet)")
     return parts

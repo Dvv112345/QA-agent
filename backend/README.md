@@ -489,7 +489,7 @@ A sprint can be connected to a **Jira project** or a **GitHub Issues repo** from
 
 **One rule governs when filing happens automatically:** a run that **finished** reports its bugs; anything else waits for a human. Every abnormal ending — superseded by an upstream edit, retries exhausted, the sprint finished underneath it, a worker crash — leaves a finding set that is incomplete _and known to be incomplete_, and that is not written unasked into a tracker other people read. Those findings are not stranded: they stay on the run page with their cards, and the run's **File / Retry** button files them on request. That also keeps every outbound tracker call inside a worker or an explicit user action — the web process never files anything on a background sweep, and neither the reconciler nor finish-sprint touch a tracker.
 
-**Findings are grouped before filing**, so one defect becomes one ticket rather than one ticket per failing test case. A deterministic prefilter collapses findings whose text is identical once normalized — the common case, since one broken dependency fails every case in a plan with the same words — and a single LLM call catches paraphrases the prefilter misses. Grouping is deliberately conservative: a defect wrongly split into two tickets costs a few minutes of triage, while one wrongly merged disappears. The findings that were grouped in are listed on the ticket under _Also observed as_ with their run and timestamp, since nothing is ever appended to a ticket afterwards. Every finding keeps its own card in-app regardless.
+**Findings are grouped before filing**, so one defect becomes one ticket rather than one ticket per failing test case. The grouping is not computed here — it is the sprint-wide one described under [Defect grouping](#defect-grouping) below, which runs when a run completes and again before anything is filed, so a run filed by hand after never completing is still grouped before an irreversible write. A deterministic prefilter collapses findings whose text is identical once normalized — the common case, since one broken dependency fails every case in a plan with the same words — and a single LLM call catches paraphrases the prefilter misses. Grouping is deliberately conservative: a defect wrongly split into two tickets costs a few minutes of triage, while one wrongly merged disappears. A defect remembers **one ticket per tracker** (`DefectGroupTicket`), so switching the sprint to another tracker files a fresh ticket there and switching back adopts the original rather than filing a third. The findings that were grouped in are listed on the ticket under _Also observed as_ with their run and timestamp, since nothing is ever appended to a ticket afterwards. Every finding keeps its own card in-app regardless.
 
 **De-duplication is scoped to the sprint and to the currently connected tracker.** Before adopting an existing ticket the exporter checks it is still open; a closed ticket is a decision somebody made, so a new ticket is filed carrying a back-reference rather than the old one being silently reused.
 
@@ -565,6 +565,54 @@ Each finding additionally carries `tracker_issue_key`, `tracker_issue_url`, `tra
 
 Run creation on both run types accepts `"export_findings": true` to arm the automatic path; it 422s when set with no tracker connected. The flag is decided at run start and never after, so a tracker connected (or disconnected) later cannot retroactively change what a finished run was supposed to do.
 
+### Defect grouping
+
+No endpoint of its own — it runs inside the worker, and both the tracker export and the QA metrics panel read its result.
+
+A sprint remembers its **distinct defects** as `DefectGroup` rows, one per defect, with every bug finding on either carrier pointing at one through a nullable `defect_group_id`. `services/finding_grouping.py` assigns them when a run completes, immediately before the export, and once more inside the export itself so a run filed by hand after never completing is grouped before an irreversible write. One rule: **grouping happens when a run completes, and again before anything is filed.**
+
+This is what makes paraphrase-aware grouping available with **no issue tracker connected** — previously the LLM pass only ran on the way to filing, so a sprint without a tracker fell back to exact-text matching and reported the same defect several times.
+
+Three properties are worth knowing:
+
+- **Append-only.** A finding joins an existing group or opens a new one; nothing existing is ever rewritten, and a group's representative text is frozen at creation. That keeps the reported numbers stable between polls and keeps the model's match targets from drifting run to run.
+- **`bug_count` is monotonic within a sprint.** Fixing a bug does not lower it: the failed row that observed the defect keeps its finding and its group, and that run still completed. The panel reports what the sprint's testing _found_, not what is currently open. A regression rejoins its original group rather than opening a second one.
+- **A clean run costs nothing** — no LLM call and no query. The pass exits before reading the sprint's defects when the run produced no bug findings.
+
+A defect remembers **one ticket per tracker** (`DefectGroupTicket`, unique on `(defect_group_id, tracker_target)`), so a tracker switch files a fresh ticket in the new tracker while the old one stays where it was, and switching back adopts the original rather than filing a third.
+
+**Data egress note:** with no tracker connected, bug text now reaches the LLM provider where previously it did not. Not new exposure in practice — scripted findings were _written_ by `diagnose_and_fix_script` and exploratory ones by the `record_finding` tool, so the provider has already seen every word — but it is a real change in when the call happens, and worth stating rather than discovering.
+
+### QA Metrics
+
+#### `GET /api/sprints/{sprint_id}/qa-metrics`
+
+How QA went for one sprint. A pure read — no LLM call, no write, nothing stored — computed from the rows that already exist, so it is safe for the test-runs page to poll on the same 2.5 s interval as the run lists. 404 if the sprint is unknown.
+
+**Only `completed` runs are counted**, mirroring the export rule: an aborted or in-flight run's finding set is incomplete _and known to be incomplete_, and its case denominator under-counts because the cases it never reached never ran. Excluded runs are counted and named rather than silently dropped.
+
+| Field                                                            | Meaning                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `distinct_test_cases_run`                                        | Distinct test cases with at least one terminal execution in a counted run. **The density denominator.**                                                                                                                                                                                                                                                         |
+| `case_executions`                                                | How many times a case ran. A case executed three times adds 1 to the count above and 3 to this one.                                                                                                                                                                                                                                                             |
+| `executions_passed` / `executions_failed` / `executions_errored` | The execution split, one status each.                                                                                                                                                                                                                                                                                                                           |
+| `exploratory_sessions` / `requirements_explored`                 | Counted separately and **never summed** with the scripted counts — a 25-action browser session and a 3-step script are not the same unit.                                                                                                                                                                                                                       |
+| `bug_count`                                                      | **Distinct defects**, not findings. See the collapse rule below.                                                                                                                                                                                                                                                                                                |
+| `issue_count`                                                    | Issue findings, counted **raw** — issues are never collapsed. See the collapse rule below.                                                                                                                                                                                                                                                                      |
+| `high_severity_bug_count`                                        | Defects where any member reported `high` — the highest severity in the group, so one cannot hide behind a medium duplicate.                                                                                                                                                                                                                                     |
+| `requirements_covered` / `requirements_total`                    | Distinct requirements touched by a counted run (either mode), and the sprint's confirmed requirements beside it so coverage stays legible. `covered` can exceed `total` — coverage is what runs already did, the total is a live snapshot, so a covered requirement later edited or deleted leaves the two crossed. Reported side by side, never as a fraction. |
+| `bugs_per_requirement` / `bugs_per_test_case`                    | Both `null` when their denominator is zero. Divided by `requirements_covered` and `distinct_test_cases_run` respectively — never by the sprint total, never by execution count.                                                                                                                                                                                 |
+| `per_requirement`                                                | The breakdown, worst first. One row per **covered** requirement, findings or not; archived requirements included and flagged `requirement_deleted`.                                                                                                                                                                                                             |
+| `excluded_runs_running` / `excluded_runs_failed`                 | Runs left out and why.                                                                                                                                                                                                                                                                                                                                          |
+
+**Two counting levels for scripted cases, deliberately never reconciled.** `bugs_per_test_case` divides by distinct cases rather than by executions because otherwise re-running an unfixed plan three times makes the sprint read three times healthier — a metric that rewards noise. Keeping the levels separate is also what removes any need for a "what status does that case have?" tiebreak: each execution contributes its own single status, and the distinct count never asks.
+
+**One bug is one defect.** Bug findings collapse three ways, in order: by the `DefectGroup` assigned when the run completed, then by `(tracker_target, tracker_issue_key)` where a ticket was filed — the pair, never the bare key, since GitHub issue numbers are per-repo integers — then by normalized text, reusing `finding_dedup.dedup_key` so the panel and the tracker cannot report different groupings of the same findings. The stored group outranks ticket identity: a defect found either side of a tracker switch is one bug, not two. Paraphrase grouping therefore works with **no tracker connected**, and still costs this endpoint nothing — the judgement happened at run completion, and `defect_group_id` is a plain column on rows the endpoint already loads.
+
+**Issues are never collapsed.** An issue records that testing was obstructed, not that the product is wrong — the SBTM distinction — so "how many distinct defects" is not a question it answers. Three cases erroring on the same unreachable environment are three pieces of testing that did not happen, and collapsing them to one would understate how much of the run was lost. It also keeps `issue_count` in the same units as `executions_errored` beside it, which is the scripted half of the same figure.
+
+**Per-requirement bug rows may sum above the headline.** Grouping is sprint-scoped, so one broken dependency can break login _and_ checkout: the defect counts once overall and once per requirement it touches. The frontend footnotes this only when the two actually differ. Issue rows cannot diverge this way — ungrouped findings each belong to exactly one requirement, so they sum to the headline exactly.
+
 ### Authentication
 
 #### `POST /api/auth/verify`
@@ -617,7 +665,7 @@ backend/
   routes/
     auth.py            # POST /api/auth/verify, GET /api/auth/check
     repos.py           # Repo registration, listing, deactivation, README status
-    sprints.py         # Sprint create/list/get/finish
+    sprints.py         # Sprint create/list/get/finish + QA metrics
     requirements.py    # Requirement CRUD, PRD upload/split + clarification/confirm/restart
     test_environment.py # Test environment get/submit/answer/confirm (synchronous LLM check) + env-var extraction/edit
     test_plans.py      # Test plan generate/list/feedback/edit/approve/restart
@@ -632,8 +680,10 @@ backend/
     script_runner.py    # Subprocess execution of generated test scripts (no sandboxing beyond a timeout)
     browser_session.py  # One Playwright browser + the exploratory tool executors (DB-free)
     issue_tracker.py    # Jira/GitHub transport: verify, create issue, state check, screenshot attach, redaction
-    finding_dedup.py    # Grouping: deterministic prefilter + one LLM pass; never raises
+    finding_dedup.py    # Grouping mechanics: deterministic prefilter + one LLM pass; never raises
+    finding_grouping.py # Assigns a run's bug findings to the sprint's DefectGroup rows; never raises
     finding_export.py   # Which findings to file, and writing the receipts back; never raises
+    qa_metrics.py       # Per-sprint QA metrics, computed at response time; never raises
     invalidation.py     # What editing a confirmed artifact invalidates
     finalization.py     # A terminal parent leaves no non-terminal children
     reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions)

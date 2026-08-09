@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
 from backend.config import (
@@ -63,6 +64,11 @@ class Sprint(SQLModel, table=True):
     )
     test_runs: list["TestRun"] = Relationship(back_populates="sprint")
     exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="sprint")
+    # The sprint's distinct defects. Deliberately *not* eager-loaded by the
+    # metrics endpoint: it counts `defect_group_id` on rows it already
+    # loads and never dereferences one, so the panel needs counts rather
+    # than representative text.
+    defect_groups: list["DefectGroup"] = Relationship(back_populates="sprint")
     issue_tracker: Optional["IssueTrackerConfig"] = Relationship(
         back_populates="sprint", sa_relationship_kwargs={"uselist": False}
     )
@@ -555,6 +561,85 @@ class FindingSeverity(str, Enum):
         return value if value in {member.value for member in cls} else cls.MEDIUM.value
 
 
+class DefectGroup(SQLModel, table=True):
+    """One distinct defect in a sprint — what several findings describe.
+
+    Written only by ``services/finding_grouping.py``, once per completed
+    run, and **append-only**: a group's membership grows, and neither the
+    group nor an existing member is ever rewritten.  Both finding carriers
+    point here through a nullable ``defect_group_id``, so "how many bugs
+    did this sprint find" is answered by counting groups rather than
+    finding texts — paraphrase-aware, and independent of whether an issue
+    tracker is connected.
+
+    The three text fields are **frozen at creation**.  They are what the
+    model is shown as the sprint's known defects on every later run, so a
+    representative re-elected per run would describe the same defect
+    differently each week and make matching progressively harder.  The
+    ticket body still comes from a live finding row, which carries steps,
+    severity, environment, and a screenshot; this text is for *matching*.
+
+    Deliberately no ``severity`` column: severity is the max over the
+    group's members, computed where it is already computed
+    (``qa_metrics``' ``high_severity_bug_count``).  Storing it would mean
+    rewriting a group whenever a higher-severity member joined — a write
+    on the one path whose whole point is that nothing rewrites an existing
+    group — and would become a second source of truth the first time one
+    of those writes was missed.  Same argument
+    ``TestCaseExecution.finding_type`` already rests on.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    title: str
+    expected: str
+    actual: str
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Optional["Sprint"] = Relationship(back_populates="defect_groups")
+    tickets: list["DefectGroupTicket"] = Relationship(back_populates="defect_group")
+
+
+class DefectGroupTicket(SQLModel, table=True):
+    """Where one defect lives in one tracker.  Written only by finding_export.
+
+    A child table rather than three columns on ``DefectGroup``, because a
+    defect can outlive the tracker it was first filed to.  With one triple
+    on the group, filing into a newly connected tracker would overwrite
+    the old target and forget the earlier ticket — so switching **back**
+    would file a duplicate of a ticket that already exists and is probably
+    still open.
+
+    The unique constraint states the invariant in the schema: one defect
+    gets at most one ticket in any given tracker.  That is the
+    group-is-one-ticket rule extended along the axis a config edit moves
+    on, and it is also what makes the upsert in ``finding_export`` the
+    only legal move rather than a preference.
+
+    (Note the claim is about the *row*, not the tracker: two sibling jobs
+    exporting concurrently can still both create an issue, since nothing
+    serializes ``_export`` itself.  Only one row survives, and the extra
+    ticket is a duplicate a human can close.)
+    """
+
+    __table_args__ = (UniqueConstraint("defect_group_id", "tracker_target"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    defect_group_id: int = Field(foreign_key="defectgroup.id", index=True)
+    tracker_target: str  # "{provider}:{target}", as stamped at file time
+    issue_key: str  # "QA-142" | "7"
+    issue_url: str  # absolute; "" when the provider gave none
+    # Advanced explicitly whenever this row is repointed at a replacement
+    # ticket: a default_factory fires on insert only.
+    filed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    defect_group: Optional["DefectGroup"] = Relationship(back_populates="tickets")
+
+
 # ── Export roll-up (shared by scripted and exploratory runs) ─────────
 
 
@@ -789,9 +874,15 @@ class TestRun(SQLModel, table=True):
     def bug_findings(self) -> list["TestCaseExecution"]:
         """Every case in this run that reported the product being wrong.
 
-        Gated on ``finding_title`` for the same reason ``finding`` is:
-        rows written before findings were structured are ``failed`` with
-        nothing to report.
+        Gated on ``finding_title`` as well as type, and for a reason of its
+        own: this list is what ``export_rollup`` counts and what
+        ``finding_export`` files.  An ungated case with no report would land
+        in ``unexported_finding_count``, so the run page would offer to file
+        a bug that does not exist — and pressing the button would hand that
+        row to the exporter.
+
+        ``finding_type`` is derived from ``status`` alone, which is what
+        makes the extra condition necessary rather than redundant.
         """
         return [
             case
@@ -938,6 +1029,14 @@ class TestCaseExecution(SQLModel, table=True):
     # IssueTrackerConfig.tracker_target as it stood when this was filed.
     tracker_target: str | None = Field(default=None)
     tracker_is_duplicate: bool = Field(default=False)  # grouped into another finding's ticket
+    # ── which distinct defect this finding is an occurrence of ──
+    # Never cleared. A finalized case is never re-walked
+    # (tasks/execute_test.py's loop skips terminal rows) and nothing else
+    # writes these rows, so a fixed bug leaves its old failed row — and
+    # this FK — exactly as they were, in the run that observed it. A
+    # re-run writes new rows. Deliberately absent from `_NO_FINDING`,
+    # which would be clearing something unreachable.
+    defect_group_id: int | None = Field(default=None, foreign_key="defectgroup.id", index=True)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -970,9 +1069,18 @@ class TestCaseExecution(SQLModel, table=True):
         Keyed to match ``FindingBase`` in ``models/types.py`` so FastAPI can
         validate it straight into the nested response model.
 
-        Gated on ``finding_title`` rather than on status: rows written
-        before this feature are ``failed`` with no finding, and must not
-        surface as an empty card.
+        **Gated on ``finding_title`` rather than on status**, and the gate
+        is load-bearing: ``FindingBase.title`` is declared ``str`` over a
+        nullable column, so an ungated null title fails response validation
+        and 500s the *whole* run-detail response rather than just this
+        card.  That is the same argument the coalescing below rests on —
+        the gate is simply where it applies to the title itself.
+
+        (The gate originally read as an accommodation for rows written
+        before findings were structured.  It is not: ``finding_type`` is
+        derived from ``status`` alone, so *any* path that marks a case
+        ``failed`` without writing the report — today's writer does write
+        them as a group — would take the whole page down with it.)
 
         The five required fields below the title are coalesced because
         ``FindingBase`` declares them non-optional over nullable columns: a
@@ -1230,6 +1338,10 @@ class ExploratoryFinding(SQLModel, table=True):
     tracker_error: str | None = Field(default=None)
     tracker_target: str | None = Field(default=None)
     tracker_is_duplicate: bool = Field(default=False)
+    # Which distinct defect this is an occurrence of — see
+    # TestCaseExecution's identical column. Never cleared: `record_finding`
+    # only ever creates rows, and the restart route leaves child rows alone.
+    defect_group_id: int | None = Field(default=None, foreign_key="defectgroup.id", index=True)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )

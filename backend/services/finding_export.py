@@ -1,9 +1,18 @@
 """File a finished run's bug findings into the sprint's issue tracker.
 
 The orchestration layer between three modules that each know one thing:
-``finding_dedup`` decides what is a duplicate of what, ``issue_tracker``
-speaks HTTP, and this module decides *which* findings to file, reads the
-context they need, and writes the receipts back.
+``finding_grouping`` decides what is an occurrence of what,
+``issue_tracker`` speaks HTTP, and this module decides *which* findings to
+file, reads the context they need, and writes the receipts back.
+
+Grouping is **consumed, not computed**.  This module used to run its own
+``finding_dedup`` pass, whose answer nobody else could see — so the panel
+and the tracker could report different groupings of the same findings.  It
+now reads ``defect_group_id`` off the rows, and calls
+``assign_defect_groups`` itself first so that filing a run whose pass never
+ran still groups before it writes to a system this application does not
+own.  What it keeps from ``finding_dedup`` is the election: whose report
+becomes the ticket.
 
 **Never raises.**  It is called immediately after a run has been marked
 ``completed`` — deliberately outside the ``try`` that feeds
@@ -35,27 +44,25 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from backend.models.database import (
-    ExploratoryFinding,
+    DefectGroupTicket,
     ExploratoryRun,
-    ExploratorySession,
     FindingType,
     IssueTrackerConfig,
     Sprint,
-    TestCaseExecution,
     TestExecution,
-    TestRun,
 )
-from backend.services import finding_dedup, issue_tracker
+from backend.services import finding_dedup, finding_grouping, issue_tracker
 from backend.services.issue_tracker import (
     FindingContext,
     FindingReport,
     TrackerConfig,
     TrackerError,
 )
-from backend.services.llm_prompts import FiledFinding, FindingCandidate
+from backend.services.llm_prompts import FindingCandidate
 from backend.utils.crypto import decrypt_token
 
 logger = logging.getLogger(__name__)
@@ -102,6 +109,11 @@ def _scripted_rows(execution: TestExecution) -> list[_Row]:
     """This execution's unfiled bug findings, in case order."""
     rows: list[_Row] = []
     for case in execution.cases:
+        # `finding_type` is derived from `status` alone, so the title check
+        # is not redundant with it — and it is the last guard before an
+        # outbound write: a case marked `failed` with no report would file
+        # an empty ticket into Jira or GitHub, which this application
+        # cannot take back.
         if case.finding_type != FindingType.BUG or not case.finding_title:
             continue
         if case.tracker_issue_key:
@@ -239,67 +251,119 @@ def _secret_values(sprint: Sprint) -> frozenset[str]:
     return frozenset(set(env_vars.values()) - base_urls)
 
 
-def _already_filed(session: Session, sprint: Sprint, tracker_target: str) -> list[FiledFinding]:
-    """Bug findings already filed for this sprint, newest first.
+# ── Grouping, and the ticket a group already holds ────────────────────
 
-    Filtered on ``tracker_target``, not just the sprint.  The config is
-    editable, and without the filter a sprint re-pointed at another
-    project would offer keys belonging to the tracker it used to point
-    at.  On Jira an adopted stale key merely 404s; on GitHub, whose issue
-    numbers are per-repo integers, repo B's ``#7`` answers
-    ``issue_is_open`` for repo A's ``#7`` and the finding is attached to
-    an unrelated ticket.
+
+def _bucket_key(entry: _Row) -> tuple:
+    """Which defect this finding is an occurrence of.
+
+    Read off the row **after** ``assign_defect_groups`` has committed, not
+    snapshotted into ``_Row`` by ``_spec_for``, which runs before it.
+
+    The same shape ``qa_metrics._defect_key`` uses, minus its ticket
+    branch: a receipt cannot be a *grouping* key here, since every row
+    that reaches this point is unfiled by definition.  A ``("text", …)``
+    bucket therefore means the assignment pass never grouped the row,
+    which after the call above only happens if it hit an unexpected
+    exception — and text identity is then the best evidence left.
     """
-    scripted = session.exec(
-        select(TestCaseExecution)
-        .join(TestExecution, TestCaseExecution.test_execution_id == TestExecution.id)
-        .join(TestRun, TestExecution.test_run_id == TestRun.id)
-        .where(TestRun.sprint_id == sprint.id)
-        .where(TestCaseExecution.tracker_issue_key.is_not(None))
-        .where(TestCaseExecution.tracker_target == tracker_target)
-    ).all()
-    exploratory = session.exec(
-        select(ExploratoryFinding)
-        .join(
-            ExploratorySession,
-            ExploratoryFinding.exploratory_session_id == ExploratorySession.id,
-        )
-        .join(ExploratoryRun, ExploratorySession.exploratory_run_id == ExploratoryRun.id)
-        .where(ExploratoryRun.sprint_id == sprint.id)
-        .where(ExploratoryFinding.tracker_issue_key.is_not(None))
-        .where(ExploratoryFinding.tracker_target == tracker_target)
-    ).all()
-
-    # Sorted newest-first, which is the order `finding_dedup` reads to
-    # pick the most recent ticket when a defect matches several.
-    dated: list[tuple[object, FiledFinding]] = [
-        (
-            case.updated_at,
-            FiledFinding(
-                issue_key=case.tracker_issue_key,
-                title=case.finding_title or "",
-                expected=case.finding_expected or "",
-                actual=case.finding_actual or "",
-            ),
-        )
-        for case in scripted
-    ] + [
-        (
-            finding.created_at,
-            FiledFinding(
-                issue_key=finding.tracker_issue_key,
-                title=finding.title,
-                expected=finding.expected,
-                actual=finding.actual,
-            ),
-        )
-        for finding in exploratory
-    ]
-    dated.sort(key=lambda item: item[0], reverse=True)
-    return [entry for _, entry in dated]
+    if entry.row.defect_group_id is not None:
+        return ("group", entry.row.defect_group_id)
+    return (
+        "text",
+        finding_dedup.dedup_key(entry.report.title, entry.report.expected, entry.report.actual),
+    )
 
 
-def _also_observed(rows: list[_Row], duplicates: list[int], run_label: str) -> tuple[str, ...]:
+def _ticket_for(
+    session: Session, defect_group_id: int | None, target: str
+) -> DefectGroupTicket | None:
+    """The ticket this defect already holds **in this tracker**, if any.
+
+    One lookup, no fork.  No row for this target means the defect has
+    never been filed *here*, so it files fresh — the defect is the same,
+    the tracker is not, and the team is now looking at the new one.  The
+    target scoping is not optional in the other direction either: GitHub
+    issue numbers are per-repo integers, so an unscoped lookup would adopt
+    repo B's ``#7`` for repo A's, which is the exact failure
+    ``tracker_target`` was introduced for.
+    """
+    if defect_group_id is None:
+        return None
+    return session.exec(
+        select(DefectGroupTicket)
+        .where(DefectGroupTicket.defect_group_id == defect_group_id)
+        .where(DefectGroupTicket.tracker_target == target)
+    ).first()
+
+
+def _record_group_ticket(
+    session: Session,
+    defect_group_id: int | None,
+    target: str,
+    key: str,
+    url: str,
+    existing: DefectGroupTicket | None,
+) -> None:
+    """Point this defect's row for *target* at the ticket just created.
+
+    *existing* is the row ``_export`` already resolved to decide adopt vs
+    supersede vs file — passed in rather than looked up again, because it
+    is the same row in the same transaction and a second read would only
+    suggest it could have changed.
+
+    An **upsert**, because the unique constraint makes it the only legal
+    move: a second insert for the same ``(group, target)`` raises.  The
+    update path is the supersession case — the row named a ticket somebody
+    closed, a replacement has just been filed carrying a
+    ``Previously filed as …`` back-reference, and the row has to name the
+    replacement now, because that is what the next run should try to
+    adopt.  Nothing is lost by overwriting: the chain lives in the
+    tracker, and every finding filed under the closed key keeps its own
+    receipt.
+
+    The insert goes inside a **savepoint**.  This write shares the
+    per-group ``session.commit()`` with the receipts, and that commit runs
+    *after* ``create_issue`` already succeeded — so an ``IntegrityError``
+    escaping here would fail the commit, escape ``_export``, and be
+    swallowed by ``export_findings``' catch-all, leaving a ticket in the
+    tracker that no finding carries the key of.  Two sibling jobs
+    completing together make that reachable.  The savepoint keeps the
+    failed insert from poisoning the transaction, and the row the other
+    job wrote is the correct answer anyway.
+    """
+    if defect_group_id is None:
+        return  # an ungrouped bucket has no defect to record the ticket against
+    if existing is not None:
+        existing.issue_key = key
+        existing.issue_url = url
+        # Explicit: `default_factory` fires on insert only, so leaving it
+        # would keep the superseded ticket's timestamp on a row that now
+        # names its replacement.
+        existing.filed_at = datetime.now(timezone.utc)
+        session.add(existing)
+        return
+    try:
+        with session.begin_nested():
+            session.add(
+                DefectGroupTicket(
+                    defect_group_id=defect_group_id,
+                    tracker_target=target,
+                    issue_key=key,
+                    issue_url=url,
+                )
+            )
+    except IntegrityError:
+        won = _ticket_for(session, defect_group_id, target)
+        logger.info(
+            "Defect group %s already had a ticket for %s (%s); keeping it",
+            defect_group_id,
+            target,
+            won.issue_key if won is not None else "unknown",
+        )
+
+
+def _also_observed(duplicates: list[_Row], run_label: str) -> tuple[str, ...]:
     """The other findings this ticket stands for, one line each.
 
     Title, run, and timestamp rather than the title alone: nothing is
@@ -307,9 +371,7 @@ def _also_observed(rows: list[_Row], duplicates: list[int], run_label: str) -> t
     entire record of how often and when the defect was seen.
     """
     observed = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return tuple(
-        f"{rows[index].report.title} — {run_label}, {observed}" for index in sorted(duplicates)
-    )
+    return tuple(f"{entry.report.title} — {run_label}, {observed}" for entry in duplicates)
 
 
 # ── Persisting ────────────────────────────────────────────────────────
@@ -400,6 +462,20 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
         logger.warning("Cannot export findings: no sprint reachable from %r", parent)
         return ExportOutcome()
 
+    # One rule, no special cases: **grouping happens when a run completes,
+    # and again before anything is filed.** Filing has always grouped
+    # first — this used to call `finding_dedup.group_findings` itself — so
+    # this is that responsibility using the shared, persisted answer
+    # instead of a private one nobody else could see.
+    #
+    # It costs nothing in the common case: a retry after a `tracker_error`
+    # is on a completed run whose rows are already grouped, so the pass
+    # fast-exits with no LLM call and no query. The case it exists for is
+    # the other one — a run that never completed, filed by hand, whose
+    # paraphrased duplicates would otherwise each become a permanent
+    # ticket in a system this application does not own.
+    finding_grouping.assign_defect_groups(session, parent)
+
     tracker_row = sprint.issue_tracker
     if tracker_row is None:
         # The tracker was disconnected between run start and completion.
@@ -421,39 +497,66 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
 
     target = tracker_row.tracker_target
     secrets = _secret_values(sprint)
-    already_filed = _already_filed(session, sprint, target)
-    candidates = [
-        FindingCandidate(
-            severity=entry.report.severity,
-            title=entry.report.title,
-            steps_to_reproduce=entry.report.steps_to_reproduce,
-            expected=entry.report.expected,
-            actual=entry.report.actual,
+
+    # One bucket per distinct defect, in row order.
+    buckets: dict[tuple, list[_Row]] = {}
+    for entry in spec.rows:
+        buckets.setdefault(_bucket_key(entry), []).append(entry)
+
+    if any(bucket[0] == "text" for bucket in buckets):
+        # The assignment pass above never raises, so reaching here means it
+        # failed and rolled back. Filing still goes ahead — a grouping
+        # problem must cost a duplicate, never an unfiled bug, the same
+        # asymmetry `issue_is_open` rests on — but the consequence outlives
+        # this run and is otherwise impossible to trace back to its cause:
+        # an ungrouped bucket records no `DefectGroupTicket`, so once a
+        # later pass does group these rows, the next run to join that group
+        # finds nothing to adopt and files a second ticket. Exactly one,
+        # since that filing writes the row — but a run or two after the
+        # failure that caused it.
+        logger.warning(
+            "Filing %s on a partly ungrouped finding set — the assignment pass did not run. "
+            "Paraphrases file separately, and an affected defect may duplicate once later.",
+            spec.run_label,
         )
-        for entry in spec.rows
-    ]
-    groups = finding_dedup.group_findings(candidates, already_filed)
 
     filed = linked = failed = 0
-    for group in groups:
-        representative = spec.rows[group.representative]
-        members = [spec.rows[index] for index in group.members]
+    for bucket_key, members in buckets.items():
+        defect_group_id = bucket_key[1] if bucket_key[0] == "group" else None
+        # Whose report becomes the ticket is still elected in code from a
+        # *live row* — the group's frozen text is for matching, while a
+        # ticket body needs steps, severity, environment, and a screenshot
+        # path, which only the row carries.
+        candidates = [
+            FindingCandidate(
+                severity=entry.report.severity,
+                title=entry.report.title,
+                steps_to_reproduce=entry.report.steps_to_reproduce,
+                expected=entry.report.expected,
+                actual=entry.report.actual,
+            )
+            for entry in members
+        ]
+        elected = finding_dedup.elect_representative(candidates, list(range(len(members))))
+        representative = members[elected]
+        duplicates = [entry for entry in members if entry is not representative]
 
         key: str | None = None
         url: str | None = None
         superseded_key: str | None = None
 
-        if group.existing_key:
-            if issue_tracker.issue_is_open(config, group.existing_key):
+        existing = _ticket_for(session, defect_group_id, target)
+        if existing is not None:
+            if issue_tracker.issue_is_open(config, existing.issue_key):
                 # Adopt it. Deliberately no comment on the ticket: the
                 # findings are all readable in-app, and appending to
                 # somebody's ticket on every re-run is noise.
-                key = group.existing_key
-                url = _existing_url(session, sprint, target, group.existing_key)
+                key = existing.issue_key
+                url = existing.issue_url
             else:
                 # Closed is a decision somebody made. Reopening it
                 # silently would undo that, so a new ticket back-refers.
-                superseded_key = group.existing_key
+                superseded_key = existing.issue_key
 
         if key is None:
             context = FindingContext(
@@ -463,7 +566,7 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
                 source_label=representative.source_label,
                 source_kind=spec.source_kind,
                 secret_values=secrets,
-                also_observed=_also_observed(spec.rows, group.duplicates, spec.run_label),
+                also_observed=_also_observed(duplicates, spec.run_label),
                 superseded_key=superseded_key,
             )
             try:
@@ -471,7 +574,10 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
             except TrackerError as exc:
                 # Every member, not just the representative: a retry has
                 # to re-elect and re-file the whole group, which it can
-                # only do if none of them carries a key.
+                # only do if none of them carries a key. The group's own
+                # ticket row is left untouched too, so a supersede that
+                # failed re-files rather than adopting a ticket that was
+                # never created.
                 for entry in members:
                     _write_failure(entry, str(exc))
                     session.add(entry.row)
@@ -481,15 +587,14 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
                 continue
             key, url = ref.key, ref.url
             filed += 1
+            _record_group_ticket(session, defect_group_id, target, key, url or "", existing)
             _attach_screenshot(config, key, representative)
         else:
             linked += 1
 
         _write_success(representative, key, url or "", target, duplicate=False)
         session.add(representative.row)
-        for entry in members:
-            if entry is representative:
-                continue
+        for entry in duplicates:
             _write_success(entry, key, url or "", target, duplicate=True)
             session.add(entry.row)
             linked += 1
@@ -499,47 +604,3 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
         "Export for %s: %d filed, %d linked, %d failed", spec.run_label, filed, linked, failed
     )
     return ExportOutcome(filed=filed, linked=linked, failed=failed)
-
-
-def _existing_url(session: Session, sprint: Sprint, target: str, key: str) -> str:
-    """The URL a previous filing already recorded for *key*.
-
-    Read back rather than reconstructed: the URL shape differs per
-    provider and per Jira site, and this module has no business knowing
-    either.  An empty string is the honest answer when nothing recorded
-    it — the key is still what a human quotes.
-    """
-    for finding in _filed_rows_with_key(session, sprint, target, key):
-        if finding.tracker_issue_url:
-            return finding.tracker_issue_url
-    return ""
-
-
-def _filed_rows_with_key(session: Session, sprint: Sprint, target: str, key: str):
-    """Every persisted finding in *sprint* already carrying *key* for this tracker.
-
-    Scoped through the run to the sprint, the same joins ``_already_filed``
-    uses — the key came out of that sprint's de-duplication window, so
-    that is the window it should be read back through.
-    """
-    cases = session.exec(
-        select(TestCaseExecution)
-        .join(TestExecution, TestCaseExecution.test_execution_id == TestExecution.id)
-        .join(TestRun, TestExecution.test_run_id == TestRun.id)
-        .where(TestRun.sprint_id == sprint.id)
-        .where(TestCaseExecution.tracker_issue_key == key)
-        .where(TestCaseExecution.tracker_target == target)
-    ).all()
-    findings = session.exec(
-        select(ExploratoryFinding)
-        .join(
-            ExploratorySession,
-            ExploratoryFinding.exploratory_session_id == ExploratorySession.id,
-        )
-        .join(ExploratoryRun, ExploratorySession.exploratory_run_id == ExploratoryRun.id)
-        .where(ExploratoryRun.sprint_id == sprint.id)
-        .where(ExploratoryFinding.tracker_issue_key == key)
-        .where(ExploratoryFinding.tracker_target == target)
-    ).all()
-    yield from cases
-    yield from findings

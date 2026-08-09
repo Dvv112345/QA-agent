@@ -14,6 +14,7 @@ from backend.models.database import (
     SPRINT_FINISHED_ERROR,
     ExploratoryRun,
     ExploratoryRunStatus,
+    ExploratorySession,
     Repo,
     Requirement,
     RequirementStatus,
@@ -25,6 +26,7 @@ from backend.models.database import (
     TestRun,
 )
 from backend.models.types import (
+    SprintMetricsResponse,
     SprintResponse,
     SprintUpdateRequest,
 )
@@ -33,6 +35,7 @@ from backend.services.finalization import (
     TEST_CASE_SPEC,
     abandon_unreached_children,
 )
+from backend.services.qa_metrics import compute_sprint_metrics
 from backend.services.storage import StorageService
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token
@@ -219,6 +222,40 @@ async def get_sprint(
     if sprint is None:
         raise HTTPException(status_code=404, detail="Sprint not found.")
     return sprint
+
+
+@router.get("/sprints/{sprint_id}/qa-metrics", response_model=SprintMetricsResponse)
+async def get_sprint_qa_metrics(
+    sprint_id: int,
+    session: Session = Depends(get_session),
+) -> SprintMetricsResponse:
+    """How QA went for this sprint — a pure read, safe to poll.
+
+    No LLM call and no write, which is what lets the test-runs page fetch
+    it on the same 2.5 s interval as the run lists.  The aggregator itself
+    never raises, so a metrics panel cannot take the page down with it.
+    """
+    sprint = session.exec(
+        select(Sprint)
+        .where(Sprint.id == sprint_id)
+        # Both chains are walked in full for every counted run, so without
+        # these the endpoint issues a query per execution and per session —
+        # on an endpoint that is polled. Same treatment `list_sprints` gives
+        # the computed sprint flags.
+        .options(
+            selectinload(Sprint.all_requirements),
+            selectinload(Sprint.test_runs)
+            .selectinload(TestRun.executions)
+            .selectinload(TestExecution.cases),
+            selectinload(Sprint.exploratory_runs)
+            .selectinload(ExploratoryRun.sessions)
+            .selectinload(ExploratorySession.findings),
+        )
+    ).first()
+    if sprint is None:
+        raise HTTPException(status_code=404, detail="Sprint not found.")
+
+    return SprintMetricsResponse(**compute_sprint_metrics(sprint))
 
 
 @router.patch("/sprints/{sprint_id}", response_model=SprintResponse)

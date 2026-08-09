@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import TestRunsPage from './TestRunsPage'
-import type { SprintResponse, TestPlanResponse, TestRunResponse } from '../types'
+import type { SprintMetrics, SprintResponse, TestPlanResponse, TestRunResponse } from '../types'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -14,6 +14,7 @@ vi.mock('../services/api', async (importOriginal) => {
     createTestRun: vi.fn(),
     fetchExploratoryRuns: vi.fn(),
     fetchIssueTracker: vi.fn(),
+    fetchSprintMetrics: vi.fn(),
     saveIssueTracker: vi.fn(),
     deleteIssueTracker: vi.fn(),
   }
@@ -24,6 +25,7 @@ import {
   fetchExploratoryRuns,
   fetchIssueTracker,
   fetchSprint,
+  fetchSprintMetrics,
   fetchTestPlans,
   fetchTestRuns,
 } from '../services/api'
@@ -34,6 +36,31 @@ const mockFetchTestPlans = fetchTestPlans as ReturnType<typeof vi.fn>
 const mockCreateTestRun = createTestRun as ReturnType<typeof vi.fn>
 const mockFetchExploratoryRuns = fetchExploratoryRuns as ReturnType<typeof vi.fn>
 const mockFetchIssueTracker = fetchIssueTracker as ReturnType<typeof vi.fn>
+const mockFetchSprintMetrics = fetchSprintMetrics as ReturnType<typeof vi.fn>
+
+function makeMetrics(overrides: Partial<SprintMetrics> = {}): SprintMetrics {
+  return {
+    sprint_id: 1,
+    distinct_test_cases_run: 0,
+    case_executions: 0,
+    executions_passed: 0,
+    executions_failed: 0,
+    executions_errored: 0,
+    exploratory_sessions: 0,
+    requirements_explored: 0,
+    bug_count: 0,
+    issue_count: 0,
+    high_severity_bug_count: 0,
+    requirements_covered: 0,
+    requirements_total: 0,
+    bugs_per_requirement: null,
+    bugs_per_test_case: null,
+    per_requirement: [],
+    excluded_runs_running: 0,
+    excluded_runs_failed: 0,
+    ...overrides,
+  }
+}
 
 function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
   return {
@@ -116,6 +143,7 @@ describe('TestRunsPage', () => {
     mockFetchTestPlans.mockResolvedValue([])
     mockFetchExploratoryRuns.mockResolvedValue([])
     mockFetchIssueTracker.mockResolvedValue(null)
+    mockFetchSprintMetrics.mockResolvedValue(makeMetrics())
   })
 
   it('shows guard notice when ungated', async () => {
@@ -146,6 +174,20 @@ describe('TestRunsPage', () => {
 
     expect(await screen.findByText('Login, Search')).toBeInTheDocument()
     expect(screen.getByText('3 passed / 1 failed')).toBeInTheDocument()
+  })
+
+  it('keeps the run lists when the metrics endpoint fails', async () => {
+    // The panel is decoration; the run lists are the page. A metrics
+    // failure must cost the panel and nothing else — the frontend half of
+    // the never-raise contract `services/qa_metrics.py` keeps server-side.
+    mockFetchSprint.mockResolvedValue(makeSprint())
+    mockFetchTestRuns.mockResolvedValue([makeRun({ requirement_names: ['Login', 'Search'] })])
+    mockFetchSprintMetrics.mockRejectedValue(new Error('metrics unavailable'))
+    renderPage()
+
+    expect(await screen.findByText('Login, Search')).toBeInTheDocument()
+    expect(screen.queryByText('metrics unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByText('QA Metrics')).not.toBeInTheDocument()
   })
 
   it('opens the modal on "Run new test"', async () => {
@@ -221,6 +263,7 @@ describe('TestRunsPage — exploratory list', () => {
     // clearAllMocks clears calls but keeps implementations, so a config
     // set by one test would otherwise leak into the next.
     mockFetchIssueTracker.mockResolvedValue(null)
+    mockFetchSprintMetrics.mockResolvedValue(makeMetrics())
   })
 
   function makeExploratoryRun(overrides = {}) {
@@ -391,5 +434,167 @@ describe('TestRunsPage — exploratory list', () => {
       expect(screen.getByRole('dialog')).toBeInTheDocument()
       expect(screen.getByText('Connect an issue tracker')).toBeInTheDocument()
     })
+  })
+})
+
+describe('TestRunsPage — QA metrics panel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockFetchSprint.mockResolvedValue(makeSprint())
+    mockFetchTestRuns.mockResolvedValue([])
+    mockFetchTestPlans.mockResolvedValue([])
+    mockFetchExploratoryRuns.mockResolvedValue([])
+    mockFetchIssueTracker.mockResolvedValue(null)
+    mockFetchSprintMetrics.mockResolvedValue(makeMetrics())
+  })
+
+  it('renders the panel from the metrics endpoint', async () => {
+    mockFetchTestRuns.mockResolvedValue([makeRun()])
+    mockFetchSprintMetrics.mockResolvedValue(
+      makeMetrics({
+        distinct_test_cases_run: 20,
+        case_executions: 60,
+        bug_count: 9,
+        requirements_covered: 5,
+        requirements_total: 7,
+        bugs_per_requirement: 1.8,
+        bugs_per_test_case: 0.45,
+      }),
+    )
+    renderPage()
+
+    expect(await screen.findByText('QA Metrics')).toBeInTheDocument()
+    expect(screen.getByText('60 executions')).toBeInTheDocument()
+    expect(screen.getByText('5 requirements covered')).toBeInTheDocument()
+    expect(screen.getByText('7 current requirements')).toBeInTheDocument()
+    expect(screen.getByText('0.45 bugs / case')).toBeInTheDocument()
+  })
+
+  it('refetches the metrics on every poll tick, alongside the run lists', async () => {
+    // Fake timers installed before render — an interval registered under
+    // real timers cannot be advanced later.
+    vi.useFakeTimers()
+    try {
+      mockFetchTestRuns.mockResolvedValue([makeRun({ status: 'running' })])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(mockFetchSprintMetrics).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+
+      expect(mockFetchSprintMetrics).toHaveBeenCalledTimes(2)
+      expect(mockFetchTestRuns).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps polling a completed run whose bugs are not yet filed, then stops', async () => {
+    // The gap this clause closes: export runs after the completion commit,
+    // so the run reads terminal with every bug still unfiled. A poll
+    // condition keyed purely on `running` would tear down inside that
+    // window and freeze the panel until a reload.
+    vi.useFakeTimers()
+    try {
+      const awaiting = makeRun({
+        status: 'completed',
+        export_findings: true,
+        unexported_finding_count: 3,
+        export_error_count: 0,
+      })
+      mockFetchTestRuns.mockResolvedValue([awaiting])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(mockFetchSprintMetrics).toHaveBeenCalledTimes(2)
+
+      // The export lands: nothing is outstanding, so polling ends.
+      mockFetchTestRuns.mockResolvedValue([
+        makeRun({
+          status: 'completed',
+          export_findings: true,
+          unexported_finding_count: 0,
+          exported_finding_count: 3,
+        }),
+      ])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      const settled = mockFetchSprintMetrics.mock.calls.length
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500 * 4)
+      })
+      expect(mockFetchSprintMetrics).toHaveBeenCalledTimes(settled)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops after the export grace budget rather than polling forever', async () => {
+    vi.useFakeTimers()
+    try {
+      // A run stuck reading "not yet filed" — a tracker that never answers
+      // must not leave this page polling for the rest of the session.
+      mockFetchTestRuns.mockResolvedValue([
+        makeRun({
+          status: 'completed',
+          export_findings: true,
+          unexported_finding_count: 3,
+          export_error_count: 0,
+        }),
+      ])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500 * 60)
+      })
+
+      // 1 mount fetch + 48 graced ticks, and nothing after.
+      expect(mockFetchSprintMetrics).toHaveBeenCalledTimes(49)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not poll a completed run whose filing failed', async () => {
+    // A standing state, not a pending one: the export already ran and
+    // wrote an error, so waiting changes nothing.
+    vi.useFakeTimers()
+    try {
+      mockFetchTestRuns.mockResolvedValue([
+        makeRun({
+          status: 'completed',
+          export_findings: true,
+          unexported_finding_count: 3,
+          export_error_count: 3,
+        }),
+      ])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500 * 5)
+      })
+
+      expect(mockFetchSprintMetrics).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

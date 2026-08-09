@@ -8,7 +8,7 @@ import pytest
 
 from backend.services import finding_dedup, llm
 from backend.services.llm import FindingGroupingResult, FindingGroupItem
-from backend.services.llm_prompts import FiledFinding, FindingCandidate
+from backend.services.llm_prompts import FindingCandidate, KnownDefect
 
 
 def _candidate(title: str, *, severity: str = "medium", actual: str = "500", **overrides):
@@ -23,9 +23,9 @@ def _candidate(title: str, *, severity: str = "medium", actual: str = "500", **o
     return FindingCandidate(**defaults)
 
 
-def _filed(issue_key: str, title: str, *, actual: str = "500"):
-    return FiledFinding(
-        issue_key=issue_key,
+def _known(key: str, title: str, *, actual: str = "500"):
+    return KnownDefect(
+        key=key,
         title=title,
         expected="The order is created",
         actual=actual,
@@ -40,8 +40,8 @@ class _GroupStub:
         self.error = error
         self.calls: list = []
 
-    def __call__(self, candidates, already_filed):
-        self.calls.append((candidates, already_filed))
+    def __call__(self, candidates, known):
+        self.calls.append((candidates, known))
         if self.error is not None:
             raise self.error
         return FindingGroupingResult(groups=[FindingGroupItem(**group) for group in self.groups])
@@ -106,7 +106,7 @@ def test_a_single_bucket_still_asks_when_tickets_exist(group_stub):
     """There is a real question left — whether this defect already has a
     ticket — even with nothing to merge."""
     finding_dedup.group_findings(
-        [_candidate("Checkout returns 500")], [_filed("QA-1", "Orders fail")]
+        [_candidate("Checkout returns 500")], [_known("QA-1", "Orders fail")]
     )
     assert len(group_stub.calls) == 1
 
@@ -249,7 +249,7 @@ def test_unknown_severity_ranks_last(monkeypatch):
 
 def test_exact_match_against_a_filed_ticket_yields_its_key(group_stub):
     candidates = [_candidate("Checkout returns 500")]
-    filed = [_filed("QA-142", "Checkout returns 500")]
+    filed = [_known("QA-142", "Checkout returns 500")]
 
     groups = finding_dedup.group_findings(candidates, filed)
 
@@ -260,8 +260,8 @@ def test_several_matches_take_the_most_recent(group_stub):
     """`already_filed` arrives newest-first, so the first match wins."""
     candidates = [_candidate("Checkout returns 500")]
     filed = [
-        _filed("QA-300", "Checkout returns 500"),
-        _filed("QA-142", "Checkout returns 500"),
+        _known("QA-300", "Checkout returns 500"),
+        _known("QA-142", "Checkout returns 500"),
     ]
 
     groups = finding_dedup.group_findings(candidates, filed)
@@ -277,7 +277,7 @@ def test_llm_may_match_a_ticket_the_prefilter_missed(monkeypatch):
     )
     candidates = [_candidate("The order endpoint errors on submit")]
 
-    groups = finding_dedup.group_findings(candidates, [_filed("QA-142", "Checkout 500")])
+    groups = finding_dedup.group_findings(candidates, [_known("QA-142", "Checkout 500")])
 
     assert groups[0].existing_key == "QA-142"
 
@@ -292,7 +292,7 @@ def test_a_key_the_model_invented_is_ignored(monkeypatch):
     )
 
     groups = finding_dedup.group_findings(
-        [_candidate("Checkout returns 500")], [_filed("QA-142", "Something else")]
+        [_candidate("Checkout returns 500")], [_known("QA-142", "Something else")]
     )
 
     assert groups[0].existing_key is None
@@ -305,7 +305,7 @@ def test_an_exact_match_outranks_the_models_answer(monkeypatch):
         "group_findings",
         _GroupStub(groups=[{"indices": [0], "existing_key": "QA-9"}]),
     )
-    filed = [_filed("QA-9", "Unrelated"), _filed("QA-142", "Checkout returns 500")]
+    filed = [_known("QA-9", "Unrelated"), _known("QA-142", "Checkout returns 500")]
 
     groups = finding_dedup.group_findings([_candidate("Checkout returns 500")], filed)
 
@@ -326,7 +326,7 @@ def test_merging_two_matched_buckets_adopts_one_key_and_says_so(monkeypatch, cap
         "group_findings",
         _GroupStub(groups=[{"indices": [0, 1], "existing_key": None}]),
     )
-    filed = [_filed("QA-1", "Checkout returns 500"), _filed("QA-9", "Order endpoint errors")]
+    filed = [_known("QA-1", "Checkout returns 500"), _known("QA-9", "Order endpoint errors")]
     candidates = [_candidate("Checkout returns 500"), _candidate("Order endpoint errors")]
 
     with caplog.at_level("INFO", logger="backend.services.finding_dedup"):
@@ -349,3 +349,64 @@ def test_every_candidate_lands_in_exactly_one_group(group_stub):
 
     placed = sorted(i for group in groups for i in group.members)
     assert placed == list(range(5))
+
+
+# ── The shared text key ───────────────────────────────────────────────
+#
+# `dedup_key` is public so callers with no ticket to group by (the QA
+# metrics aggregator) get the same answer this module's prefilter gives.
+# These tests pin the normalization *and* the agreement between the two.
+
+
+def test_identical_text_shares_a_key():
+    assert finding_dedup.dedup_key(
+        "Checkout returns 500", "Order created", "500 error"
+    ) == finding_dedup.dedup_key("Checkout returns 500", "Order created", "500 error")
+
+
+def test_digits_are_ignored():
+    """A generated id differs per run while the defect does not."""
+    assert finding_dedup.dedup_key(
+        "Order 8814 was not created", "An order exists", "No row"
+    ) == finding_dedup.dedup_key("Order 9021 was not created", "An order exists", "No row")
+
+
+def test_case_accents_and_punctuation_are_ignored():
+    assert finding_dedup.dedup_key(
+        "Checkout RETURNS 500!!", "Order créated", "err"
+    ) == finding_dedup.dedup_key("checkout returns 500", "order created", "err")
+
+
+def test_genuinely_different_text_does_not_share_a_key():
+    assert finding_dedup.dedup_key(
+        "Checkout returns 500", "Order created", "500"
+    ) != finding_dedup.dedup_key("Login rejects valid password", "Signed in", "401")
+
+
+def test_all_three_fields_participate_in_the_key():
+    """Keying on the title alone would merge distinct defects — the exact
+    divergence sharing this function exists to prevent."""
+    base = finding_dedup.dedup_key("Checkout fails", "Order created", "500")
+    assert base != finding_dedup.dedup_key("Checkout fails", "Order created", "timeout")
+    assert base != finding_dedup.dedup_key("Checkout fails", "Order rejected", "500")
+
+
+def test_prefilter_groups_exactly_as_dedup_key_predicts(group_stub):
+    """The invariant behind sharing the function: a caller keying with
+    `dedup_key` reaches the same grouping the prefilter does."""
+    candidates = [
+        _candidate("Order 1 missing", actual="no row"),
+        _candidate("Order 2 missing", actual="no row"),  # same once digits drop
+        _candidate("Login rejects valid password", actual="401"),
+    ]
+
+    groups = finding_dedup.group_findings(candidates, [])
+
+    by_key: dict[str, set[int]] = {}
+    for index, candidate in enumerate(candidates):
+        key = finding_dedup.dedup_key(candidate.title, candidate.expected, candidate.actual)
+        by_key.setdefault(key, set()).add(index)
+
+    assert {frozenset(group.members) for group in groups} == {
+        frozenset(members) for members in by_key.values()
+    }
