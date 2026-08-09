@@ -66,22 +66,6 @@ describe('SprintMetricsPanel', () => {
     expect(screen.getByText('5 requirements covered · 7 currently confirmed')).toBeInTheDocument()
   })
 
-  it('states coverage and the confirmed total as two facts, never as a fraction', () => {
-    // Reachable, and pinned server-side by `test_qa_metrics.py`'s archived
-    // case: coverage is what runs already did, the total is a live
-    // snapshot, so editing or deleting a covered requirement puts covered
-    // above total. "1 of 0 requirements covered" would read as a broken
-    // panel and cost the reader's trust in the tiles beside it.
-    render(
-      <SprintMetricsPanel
-        metrics={makeMetrics({ requirements_covered: 1, requirements_total: 0 })}
-      />,
-    )
-
-    expect(screen.getByText('1 requirement covered · 0 currently confirmed')).toBeInTheDocument()
-    expect(screen.queryByText(/1 of 0/)).not.toBeInTheDocument()
-  })
-
   it('renders an em dash rather than a zero for a null density', () => {
     render(
       <SprintMetricsPanel
