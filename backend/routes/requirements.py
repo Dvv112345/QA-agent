@@ -7,33 +7,31 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlmodel import Session, select, update
 
-from backend.config import MAX_PRD_REQUIREMENTS, MAX_UPLOAD_SIZE_MB, PRD_MAX_CHARS
+from backend.config import MAX_PRD_REQUIREMENTS, PRD_MAX_CHARS
 from backend.database import get_session
-from backend.models.database import Requirement, RequirementStatus, Sprint
+from backend.models.database import Requirement, RequirementStatus
 from backend.models.types import (
     RequirementAnswerRequest,
     RequirementCreateRequest,
     RequirementEditRequest,
     RequirementResponse,
 )
+from backend.routes._common import ensure_sprint_active, get_sprint_or_404
 from backend.services import invalidation, llm
 from backend.services.llm import LLMError
-from backend.services.queue import get_queue_service
+from backend.services.queue import enqueue_rows, get_queue_service
 from backend.services.storage import StorageService
 from backend.utils.auth import verify_auth
 from backend.utils.prd_utils import PrdExtractionError, extract_prd_text
 from backend.utils.readme_utils import resolve_readme
+from backend.utils.upload_utils import read_upload_capped
 
 logger = logging.getLogger(__name__)
 
+# Completes "Sprint is finished — {}." for every gate in this module.
+_GATE_SUBJECT = "requirements can no longer be modified"
+
 router = APIRouter(dependencies=[Depends(verify_auth)])
-
-
-def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
 
 
 def _get_requirement_or_404(session: Session, requirement_id: int) -> Requirement:
@@ -50,35 +48,8 @@ def _get_requirement_or_404(session: Session, requirement_id: int) -> Requiremen
     return requirement
 
 
-def _ensure_sprint_active(sprint: Sprint) -> None:
-    if not sprint.active:
-        raise HTTPException(
-            status_code=422,
-            detail="Sprint is finished — requirements can no longer be modified.",
-        )
-
-
 def _touch(requirement: Requirement) -> None:
     requirement.updated_at = datetime.now(timezone.utc)
-
-
-def _enqueue_analysis(session: Session, rows: list[Requirement]) -> None:
-    """Best-effort enqueue after commit — failure is the reconciler's job.
-
-    Successful enqueues persist the job id for the reconciler's dedup check.
-    """
-    queue_service = get_queue_service()
-    enqueued = False
-    for row in rows:
-        job = queue_service.enqueue_analysis(row.id)
-        if job is not None:
-            row.job_id = job.id
-            session.add(row)
-            enqueued = True
-    if enqueued:
-        session.commit()
-        for row in rows:
-            session.refresh(row)
 
 
 @router.post(
@@ -92,8 +63,8 @@ async def create_requirements(
     session: Session = Depends(get_session),
 ) -> list[Requirement]:
     """Create a batch of requirements for a sprint (all start ``pending``)."""
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
 
     if not body:
         raise HTTPException(status_code=422, detail="At least one requirement is required.")
@@ -125,7 +96,7 @@ async def create_requirements(
     for row in rows:
         session.refresh(row)
 
-    _enqueue_analysis(session, rows)
+    enqueue_rows(session, rows, get_queue_service().enqueue_analysis)
 
     logger.info("Created %d requirements for sprint id=%d", len(rows), sprint_id)
     return rows
@@ -148,19 +119,11 @@ async def create_requirements_from_prd(
     upload never touches the existing requirements.  Manually entered rows
     are never touched either way.
     """
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
 
     filename = prd_file.filename or ""
-    # Read one byte past the cap so an oversized body is rejected without
-    # ever materialising more than the cap in memory.
-    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    content = prd_file.file.read(max_bytes + 1)
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=422,
-            detail=f"PRD file exceeds the {MAX_UPLOAD_SIZE_MB} MB upload limit.",
-        )
+    content = read_upload_capped(prd_file, label="PRD file")
 
     try:
         # PDF/DOCX parsing can take seconds — keep it off the event loop.
@@ -232,7 +195,7 @@ async def create_requirements_from_prd(
     for row in rows:
         session.refresh(row)
 
-    _enqueue_analysis(session, rows)
+    enqueue_rows(session, rows, get_queue_service().enqueue_analysis)
 
     try:
         StorageService().store_prd(content, sprint.directory, filename)
@@ -252,7 +215,7 @@ async def list_requirements(
     session: Session = Depends(get_session),
 ) -> list[Requirement]:
     """List a sprint's requirements — this is the polling endpoint (plain DB read)."""
-    _get_sprint_or_404(session, sprint_id)
+    get_sprint_or_404(session, sprint_id)
     return list(
         session.exec(
             select(Requirement)
@@ -278,8 +241,8 @@ async def confirm_all_requirements(
     Ineligible rows (still analyzing, already confirmed, failed, …) are left
     untouched — same idempotent-skip semantics as ``generate_test_plans``.
     """
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
 
     session.exec(
         update(Requirement)
@@ -314,7 +277,7 @@ async def answer_requirement(
 ) -> Requirement:
     """Store the user's answer to a clarifying question and queue a revision."""
     requirement = _get_requirement_or_404(session, requirement_id)
-    _ensure_sprint_active(requirement.sprint)
+    ensure_sprint_active(requirement.sprint, _GATE_SUBJECT)
 
     if requirement.status != RequirementStatus.NEEDS_CLARIFICATION:
         raise HTTPException(
@@ -336,7 +299,7 @@ async def answer_requirement(
     session.add(requirement)
     session.commit()
     session.refresh(requirement)
-    _enqueue_analysis(session, [requirement])
+    enqueue_rows(session, [requirement], get_queue_service().enqueue_analysis)
     return requirement
 
 
@@ -347,7 +310,7 @@ async def confirm_requirement(
 ) -> Requirement:
     """Confirm a requirement as final (terminal for content)."""
     requirement = _get_requirement_or_404(session, requirement_id)
-    _ensure_sprint_active(requirement.sprint)
+    ensure_sprint_active(requirement.sprint, _GATE_SUBJECT)
 
     if requirement.status not in (
         RequirementStatus.NEEDS_CLARIFICATION,
@@ -374,7 +337,7 @@ async def edit_requirement(
 ) -> Requirement:
     """Manually edit a requirement's description and queue re-analysis."""
     requirement = _get_requirement_or_404(session, requirement_id)
-    _ensure_sprint_active(requirement.sprint)
+    ensure_sprint_active(requirement.sprint, _GATE_SUBJECT)
 
     if requirement.status not in (
         RequirementStatus.NEEDS_CLARIFICATION,
@@ -404,7 +367,7 @@ async def edit_requirement(
     session.add(requirement)
     session.commit()
     session.refresh(requirement)
-    _enqueue_analysis(session, [requirement])
+    enqueue_rows(session, [requirement], get_queue_service().enqueue_analysis)
     return requirement
 
 
@@ -415,7 +378,7 @@ async def restart_requirement(
 ) -> Requirement:
     """Restart analysis of a failed requirement (uncapped, user-initiated)."""
     requirement = _get_requirement_or_404(session, requirement_id)
-    _ensure_sprint_active(requirement.sprint)
+    ensure_sprint_active(requirement.sprint, _GATE_SUBJECT)
 
     if requirement.status != RequirementStatus.FAILED:
         raise HTTPException(
@@ -430,7 +393,7 @@ async def restart_requirement(
     session.add(requirement)
     session.commit()
     session.refresh(requirement)
-    _enqueue_analysis(session, [requirement])
+    enqueue_rows(session, [requirement], get_queue_service().enqueue_analysis)
     return requirement
 
 
@@ -441,7 +404,7 @@ async def delete_requirement(
 ) -> None:
     """Remove a requirement from its sprint (allowed in every status)."""
     requirement = _get_requirement_or_404(session, requirement_id)
-    _ensure_sprint_active(requirement.sprint)
+    ensure_sprint_active(requirement.sprint, _GATE_SUBJECT)
     # Removes its plan; the environment stays confirmed (removal can only
     # shrink what needs access). Archived rather than deleted when runs
     # reference it — see services/invalidation.py.

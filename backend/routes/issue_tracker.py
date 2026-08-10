@@ -19,6 +19,7 @@ from sqlmodel import Session
 from backend.database import get_session
 from backend.models.database import IssueTrackerConfig, IssueTrackerProvider, Sprint
 from backend.models.types import IssueTrackerConfigRequest, IssueTrackerConfigResponse
+from backend.routes._common import get_sprint_or_404
 from backend.services import issue_tracker
 from backend.services.issue_tracker import TrackerConfig, TrackerError, TrackerUnavailableError
 from backend.utils.auth import verify_auth
@@ -37,17 +38,30 @@ _TOKEN_REQUIRED_ON_SWITCH = (
 _UNREADABLE_TOKEN = "The stored API token could not be read. Enter it again."
 
 
-def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
-
-
 def _clean(value: str | None) -> str | None:
     """Downgrade a blank string to ``None`` (browsers send empty fields)."""
     stripped = (value or "").strip()
     return stripped or None
+
+
+def _decrypt_or_http_error(ciphertext: str, subject: str) -> str:
+    """Decrypt a stored token, mapping both failure modes to responses.
+
+    The two are genuinely different: a missing or malformed
+    ``ENCRYPTION_KEY`` is a server misconfiguration nobody can fix from
+    the form (500), while ciphertext that will not decrypt under a valid
+    key is a dead credential the user must simply re-enter (422).
+
+    ``subject`` identifies the row in the log line; the token itself is
+    never logged.
+    """
+    try:
+        return decrypt_token(ciphertext)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:  # corrupted ciphertext — unusable, not fatal to the app
+        logger.warning("%s could not be decrypted", subject)
+        raise HTTPException(status_code=422, detail=_UNREADABLE_TOKEN) from exc
 
 
 def _sprint_repo_target(sprint: Sprint) -> str:
@@ -80,13 +94,7 @@ def _repo_token(sprint: Sprint) -> str | None:
     repo = sprint.repo
     if repo is None or not repo.github_token:
         return None
-    try:
-        return decrypt_token(repo.github_token)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:  # corrupted ciphertext — unusable, not fatal to the app
-        logger.warning("Repo id=%s: stored access token could not be decrypted", repo.id)
-        raise HTTPException(status_code=422, detail=_UNREADABLE_TOKEN) from exc
+    return _decrypt_or_http_error(repo.github_token, f"Repo id={repo.id}: stored access token")
 
 
 def _resolve_token(
@@ -122,15 +130,9 @@ def _resolve_token(
         raise HTTPException(status_code=422, detail="An API token is required.")
     if existing.provider != payload.provider:
         raise HTTPException(status_code=422, detail=_TOKEN_REQUIRED_ON_SWITCH)
-    try:
-        return decrypt_token(existing.api_token)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:  # corrupted ciphertext — unusable, not fatal to the app
-        logger.warning(
-            "Sprint id=%s: stored tracker token could not be decrypted", existing.sprint_id
-        )
-        raise HTTPException(status_code=422, detail=_UNREADABLE_TOKEN) from exc
+    return _decrypt_or_http_error(
+        existing.api_token, f"Sprint id={existing.sprint_id}: stored tracker token"
+    )
 
 
 def _resolve_target(payload: IssueTrackerConfigRequest, sprint: Sprint) -> str | None:
@@ -209,7 +211,7 @@ def _validate_provider_fields(
 @router.get("/sprints/{sprint_id}/issue-tracker", response_model=IssueTrackerConfigResponse | None)
 async def get_issue_tracker(sprint_id: int, session: Session = Depends(get_session)):
     """The sprint's tracker connection, or ``null`` when there is none."""
-    sprint = _get_sprint_or_404(session, sprint_id)
+    sprint = get_sprint_or_404(session, sprint_id)
     return sprint.issue_tracker
 
 
@@ -239,7 +241,7 @@ async def save_issue_tracker(
     and their ``tracker_target`` keeps them out of the new tracker's
     de-duplication window.
     """
-    sprint = _get_sprint_or_404(session, sprint_id)
+    sprint = get_sprint_or_404(session, sprint_id)
     existing = sprint.issue_tracker
 
     config = _validate_provider_fields(payload, _resolve_target(payload, sprint))
@@ -307,7 +309,7 @@ async def delete_issue_tracker(sprint_id: int, session: Session = Depends(get_se
     fails into ``tracker_error`` and its findings stay on the run page
     with a button to file them once a tracker is connected again.
     """
-    sprint = _get_sprint_or_404(session, sprint_id)
+    sprint = get_sprint_or_404(session, sprint_id)
     if sprint.issue_tracker is None:
         raise HTTPException(status_code=404, detail="No issue tracker is connected.")
     session.delete(sprint.issue_tracker)

@@ -56,6 +56,7 @@ from backend.services import (
     llm,
 )
 from backend.services.storage import StorageService
+from backend.utils.environment_utils import redactable_values
 from backend.utils.exploratory_utils import session_sheets
 from backend.utils.readme_utils import resolve_readme
 
@@ -409,11 +410,10 @@ def _run_one_session(
                 sfdipot_areas=exploratory_session.sfdipot_areas,
                 base_urls=base_urls,
                 env_var_names=env_var_names,
-                # Backstop only — fill_secret already keeps values out of the
-                # conversation. The base URLs are env values too, and are
-                # excluded because redacting them would gut the log while
-                # protecting nothing.
-                secret_values=set(env_vars.values()) - set(base_urls),
+                # Backstop only — fill_secret already keeps values out of
+                # the conversation. This run's own base URLs are kept: see
+                # `redactable_values` for why the two exits differ on that.
+                secret_values=redactable_values(env_vars, keep=base_urls),
                 readme=readme,
                 file_tree=file_tree,
                 tools=browser.tool_registry(),

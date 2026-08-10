@@ -304,9 +304,9 @@ class TestPrdUploadValidation:
 
     @pytest.mark.asyncio
     async def test_over_raw_size_cap(self, async_client, db_session, split_stub, monkeypatch):
-        import backend.routes.requirements as requirements_module
+        from backend.utils import upload_utils
 
-        monkeypatch.setattr(requirements_module, "MAX_UPLOAD_SIZE_MB", 0)
+        monkeypatch.setattr(upload_utils, "MAX_UPLOAD_SIZE_MB", 0)
         sprint = _seed_sprint(db_session)
 
         resp = await _upload(async_client, sprint.id, _md_upload())

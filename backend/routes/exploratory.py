@@ -53,27 +53,24 @@ from backend.models.types import (
     ExploratorySessionResponse,
     ExploratorySessionSummaryResponse,
 )
+from backend.routes._common import ensure_sprint_active, get_sprint_or_404
 from backend.services import finding_export, llm
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.llm_prompts import TestCaseLike
-from backend.services.queue import get_queue_service
+from backend.services.queue import enqueue_rows, get_queue_service
 from backend.utils.auth import verify_auth
 from backend.utils.exploratory_utils import session_sheets
-from backend.utils.readme_utils import refresh_file_tree, resolve_readme
+from backend.utils.readme_utils import refresh_project_context, resolve_readme
 
 logger = logging.getLogger(__name__)
+
+# Completes "Sprint is finished — {}." for every gate in this module.
+_GATE_SUBJECT = "exploratory runs can no longer be created"
 
 router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
 # ── lookups and guards ────────────────────────────────────────────────
-
-
-def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
 
 
 def _get_run_or_404(session: Session, run_id: int) -> ExploratoryRun:
@@ -92,14 +89,6 @@ def _get_run_or_404(session: Session, run_id: int) -> ExploratoryRun:
     if run is None:
         raise HTTPException(status_code=404, detail="Exploratory run not found.")
     return run
-
-
-def _ensure_sprint_active(sprint: Sprint | None) -> None:
-    if sprint is None or not sprint.active:
-        raise HTTPException(
-            status_code=422,
-            detail="Sprint is finished — exploratory runs can no longer be created.",
-        )
 
 
 def _resolve_requirement(sprint: Sprint, requirement_id: int) -> Requirement:
@@ -279,16 +268,6 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
     )
 
 
-def _enqueue_run(session: Session, run: ExploratoryRun) -> None:
-    """Best-effort enqueue after commit — failure is the reconciler's job."""
-    job = get_queue_service().enqueue_exploration(run.id)
-    if job is not None:
-        run.job_id = job.id
-        session.add(run)
-        session.commit()
-        session.refresh(run)
-
-
 # ── charter drafting ──────────────────────────────────────────────────
 
 
@@ -302,8 +281,8 @@ async def generate_charters(
     session: Session = Depends(get_session),
 ) -> ExploratoryCharterDraftResponse:
     """Draft SBTM charters for one requirement. Persists nothing."""
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
     requirement = _resolve_requirement(sprint, body.requirement_id)
     env_vars = _resolve_env_vars(sprint)
 
@@ -385,8 +364,8 @@ async def create_exploratory_run(
     session: Session = Depends(get_session),
 ) -> ExploratoryRunDetailResponse:
     """Start an exploratory run over the approved charters for one requirement."""
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
     requirement = _resolve_requirement(sprint, body.requirement_id)
     env_vars = _resolve_env_vars(sprint)
 
@@ -407,17 +386,8 @@ async def create_exploratory_run(
             detail=f"Requirement '{requirement.name}' already has an exploratory run in progress.",
         )
 
-    # Refresh project context once for the whole run, best-effort — a user
-    # -uploaded README is authoritative and is never overwritten.
-    try:
-        if not sprint.readme_user_provided:
-            await resolve_readme(sprint, force_refresh=True)
-        await refresh_file_tree(sprint)
-        if sprint.repo is not None:
-            session.add(sprint.repo)
-            session.commit()
-    except Exception as exc:
-        logger.warning("Sprint id=%d: README/file tree refresh failed: %s", sprint_id, exc)
+    # Refresh project context once for the whole run.
+    await refresh_project_context(session, sprint)
 
     run = ExploratoryRun(
         sprint_id=sprint_id,
@@ -440,7 +410,7 @@ async def create_exploratory_run(
     session.add(run)
     session.commit()
     session.refresh(run)
-    _enqueue_run(session, run)
+    enqueue_rows(session, [run], get_queue_service().enqueue_exploration)
 
     logger.info(
         "Sprint id=%d: exploratory run %d created with %d charter(s)",
@@ -457,7 +427,7 @@ async def list_exploratory_runs(
     session: Session = Depends(get_session),
 ) -> list[ExploratoryRunResponse]:
     """List a sprint's exploratory runs, newest first."""
-    _get_sprint_or_404(session, sprint_id)
+    get_sprint_or_404(session, sprint_id)
     runs = session.exec(
         select(ExploratoryRun)
         .where(ExploratoryRun.sprint_id == sprint_id)
@@ -539,7 +509,7 @@ async def restart_exploratory_run(
     status by the task — this route never touches the child rows.
     """
     run = _get_run_or_404(session, run_id)
-    _ensure_sprint_active(run.sprint)
+    ensure_sprint_active(run.sprint, _GATE_SUBJECT)
 
     if run.status != ExploratoryRunStatus.FAILED:
         raise HTTPException(
@@ -563,7 +533,7 @@ async def restart_exploratory_run(
     session.add(run)
     session.commit()
     session.refresh(run)
-    _enqueue_run(session, run)
+    enqueue_rows(session, [run], get_queue_service().enqueue_exploration)
     return _run_detail(_get_run_or_404(session, run_id))
 
 

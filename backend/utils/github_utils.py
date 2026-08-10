@@ -3,16 +3,13 @@
 import base64
 import logging
 import re
-import ssl
 import urllib.parse
 from typing import Any
 
-import certifi
 import httpx
 
 from backend.config import FILE_TREE_MAX_CHARS, GITHUB_API_TIMEOUT
-
-_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+from backend.utils.http_utils import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +129,7 @@ async def fetch_repo_metadata(owner: str, repo: str, token: str | None = None) -
     ``clone_url``, ``default_branch``.
     """
     url = f"https://api.github.com/repos/{owner}/{repo}"
-    async with httpx.AsyncClient(verify=_SSL_CONTEXT) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
         data = await _get(client, url, token)
 
     return {
@@ -152,7 +149,7 @@ async def check_readme_exists(owner: str, repo: str, token: str | None = None) -
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/readme"
     headers = _build_headers(token)
-    async with httpx.AsyncClient(verify=_SSL_CONTEXT) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
         try:
             response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
         except httpx.TimeoutException:
@@ -179,7 +176,7 @@ async def download_readme(owner: str, repo: str, token: str | None = None) -> st
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/readme"
     headers = _build_headers(token)
-    async with httpx.AsyncClient(verify=_SSL_CONTEXT) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
         try:
             response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
         except httpx.TimeoutException:
@@ -285,7 +282,7 @@ async def fetch_file_tree(
     Raises the appropriate ``GitHubError`` subclass on other failures.
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1"
-    async with httpx.AsyncClient(verify=_SSL_CONTEXT) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
         try:
             data = await _get(client, url, token)
         except RepoNotFoundError:
@@ -334,7 +331,7 @@ async def fetch_file(
         url += f"?ref={urllib.parse.quote(ref)}"
 
     headers = _build_headers(token)
-    async with httpx.AsyncClient(verify=_SSL_CONTEXT) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
         try:
             response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
         except httpx.TimeoutException:

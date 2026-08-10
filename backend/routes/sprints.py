@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from backend.config import MAX_UPLOAD_SIZE_MB, STORAGE_LOCATION
+from backend.config import STORAGE_LOCATION
 from backend.database import get_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
@@ -30,6 +30,7 @@ from backend.models.types import (
     SprintResponse,
     SprintUpdateRequest,
 )
+from backend.routes._common import get_sprint_or_404
 from backend.services.finalization import (
     EXPLORATORY_SESSION_SPEC,
     TEST_CASE_SPEC,
@@ -47,6 +48,7 @@ from backend.utils.github_utils import (
     parse_github_url,
 )
 from backend.utils.sprint_utils import generate_sprint_directory
+from backend.utils.upload_utils import read_upload_capped
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +68,7 @@ def _validate_readme_file(readme_file: UploadFile) -> bytes:
             detail=f"README file must be a .md or .markdown file, got {ext or 'none'}.",
         )
 
-    # Read one byte past the cap so an oversized body is rejected without
-    # ever materialising more than the cap in memory.
-    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    content = readme_file.file.read(max_bytes + 1)
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=422,
-            detail=f"README file exceeds the {MAX_UPLOAD_SIZE_MB} MB upload limit.",
-        )
+    content = read_upload_capped(readme_file, label="README file")
 
     # UTF-8 validation
     try:
@@ -218,10 +212,7 @@ async def get_sprint(
     session: Session = Depends(get_session),
 ) -> Sprint:
     """Get a single sprint with its associated repo info."""
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
+    return get_sprint_or_404(session, sprint_id)
 
 
 @router.get("/sprints/{sprint_id}/qa-metrics", response_model=SprintMetricsResponse)
@@ -268,9 +259,7 @@ async def finish_sprint(
 
     Only valid when transitioning from active to finished.
     """
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
+    sprint = get_sprint_or_404(session, sprint_id)
 
     if body.active is not False:
         raise HTTPException(

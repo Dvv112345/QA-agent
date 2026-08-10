@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import redis
 import rq
+from sqlmodel import Session
 
 from backend.config import (
     EXPLORATORY_JOB_TIMEOUT,
@@ -56,6 +59,30 @@ EXPLORE_REQUIREMENT_TASK = "backend.tasks.explore_requirement.explore_requiremen
 
 # ── Module-level singleton ────────────────────────────────────────────────
 _queue_service: QueueService | None = None
+
+
+def enqueue_rows(session: Session, rows: Sequence[Any], enqueue: Callable[[int], Any]) -> None:
+    """Best-effort enqueue after commit — failure is the reconciler's job.
+
+    Successful enqueues persist the job id for the reconciler's dedup
+    check.  ``enqueue`` is the ``QueueService`` method for this row type,
+    e.g. ``get_queue_service().enqueue_analysis``; every stage differs
+    only in which one it passes.
+
+    Nothing here raises: with Redis down every call answers ``None``, the
+    rows stay ``pending``, and the reconciler picks them up on recovery.
+    """
+    enqueued = False
+    for row in rows:
+        job = enqueue(row.id)
+        if job is not None:
+            row.job_id = job.id
+            session.add(row)
+            enqueued = True
+    if enqueued:
+        session.commit()
+        for row in rows:
+            session.refresh(row)
 
 
 def get_queue_service() -> QueueService:

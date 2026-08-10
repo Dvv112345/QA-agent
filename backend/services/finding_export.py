@@ -64,6 +64,7 @@ from backend.services.issue_tracker import (
 )
 from backend.services.llm_prompts import FindingCandidate
 from backend.utils.crypto import decrypt_token
+from backend.utils.environment_utils import redactable_values, url_values
 
 logger = logging.getLogger(__name__)
 
@@ -233,22 +234,15 @@ def _tracker_config(config: IssueTrackerConfig) -> TrackerConfig | None:
 
 
 def _secret_values(sprint: Sprint) -> frozenset[str]:
-    """Environment values to blank out of ticket text, minus the base URLs.
+    """Environment values to blank out of ticket text.
 
-    Same rule the exploratory action log uses: a URL is something a bug
-    report has to be allowed to name, and redacting it would gut the
-    report while protecting nothing.
+    Every http(s) value is kept: unlike the exploratory task there is no
+    run here to say which variable was the application's own URL, so the
+    URL shape is the only signal available.
     """
     test_env = sprint.test_environment
     env_vars = test_env.env_vars if test_env is not None else None
-    if not env_vars:
-        return frozenset()
-    base_urls = {
-        value
-        for value in env_vars.values()
-        if isinstance(value, str) and value.startswith(("http://", "https://"))
-    }
-    return frozenset(set(env_vars.values()) - base_urls)
+    return redactable_values(env_vars, keep=url_values(env_vars))
 
 
 # ── Grouping, and the ticket a group already holds ────────────────────

@@ -23,16 +23,13 @@ Two properties are load-bearing:
 import base64
 import json
 import logging
-import ssl
 from dataclasses import dataclass, field
 
-import certifi
 import httpx
 
 from backend.config import ISSUE_TRACKER_TIMEOUT
 from backend.models.database import IssueTrackerProvider
-
-_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+from backend.utils.http_utils import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +367,7 @@ def _request(
     that produced *no* response raise from here.
     """
     try:
-        with httpx.Client(verify=_SSL_CONTEXT, timeout=ISSUE_TRACKER_TIMEOUT) as client:
+        with httpx.Client(verify=SSL_CONTEXT, timeout=ISSUE_TRACKER_TIMEOUT) as client:
             return client.request(method, url, headers=headers, json=json_body, files=files)
     except httpx.TimeoutException:
         raise TrackerUnavailableError(

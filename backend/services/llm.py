@@ -15,12 +15,10 @@ from __future__ import annotations
 
 import json
 import logging
-import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
-import certifi
 import httpx
 import openai
 from sqlmodel import SQLModel
@@ -69,10 +67,7 @@ from backend.services.llm_prompts import (
     test_plan_context,
     test_script_context,
 )
-
-# On Windows, SSL_CERT_FILE may point to a non-existent file which breaks
-# httpx's default SSL context; use certifi like github_utils does.
-_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+from backend.utils.http_utils import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +108,7 @@ def _get_client() -> openai.OpenAI:
             api_key=OPENAI_API_KEY,
             base_url=OPENAI_BASE_URL,
             timeout=OPENAI_TIMEOUT,
-            http_client=httpx.Client(verify=_SSL_CONTEXT, timeout=OPENAI_TIMEOUT),
+            http_client=httpx.Client(verify=SSL_CONTEXT, timeout=OPENAI_TIMEOUT),
         )
     return _client
 

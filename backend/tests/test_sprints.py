@@ -77,9 +77,9 @@ class TestCreateSprint:
 
     @pytest.mark.asyncio
     async def test_rejects_readme_over_upload_size_cap(self, async_client, httpx_mock, monkeypatch):
-        import backend.routes.sprints as sprints_module
+        from backend.utils import upload_utils
 
-        monkeypatch.setattr(sprints_module, "MAX_UPLOAD_SIZE_MB", 0)
+        monkeypatch.setattr(upload_utils, "MAX_UPLOAD_SIZE_MB", 0)
         repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
 
         # Metadata refresh during sprint creation

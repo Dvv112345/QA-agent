@@ -140,6 +140,7 @@ def _isolate_refresh(monkeypatch):
     refresh block is best-effort and the seeded sprints have nothing to fetch.
     """
     from backend.routes import exploratory as routes
+    from backend.utils import readme_utils
 
     async def _noop_resolve_readme(*args, **kwargs):
         return None
@@ -147,8 +148,12 @@ def _isolate_refresh(monkeypatch):
     async def _noop_refresh_file_tree(*args, **kwargs):
         return None
 
+    # Both targets are needed: the run route reaches these through
+    # `refresh_project_context` (a readme_utils global), while charter
+    # generation still calls `resolve_readme` in this module's namespace.
+    monkeypatch.setattr(readme_utils, "resolve_readme", _noop_resolve_readme)
+    monkeypatch.setattr(readme_utils, "refresh_file_tree", _noop_refresh_file_tree)
     monkeypatch.setattr(routes, "resolve_readme", _noop_resolve_readme)
-    monkeypatch.setattr(routes, "refresh_file_tree", _noop_refresh_file_tree)
 
 
 @pytest.fixture
@@ -159,10 +164,12 @@ def refresh_stub(monkeypatch):
     rather than duplicated; only the monkeypatch target differs.
     """
     from backend.routes import exploratory as routes
+    from backend.utils import readme_utils
 
     stub = _RefreshStub()
+    monkeypatch.setattr(readme_utils, "resolve_readme", stub.resolve_readme)
+    monkeypatch.setattr(readme_utils, "refresh_file_tree", stub.refresh_file_tree)
     monkeypatch.setattr(routes, "resolve_readme", stub.resolve_readme)
-    monkeypatch.setattr(routes, "refresh_file_tree", stub.refresh_file_tree)
     return stub
 
 
