@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ExportRollup } from '../types'
+import { plural } from '../format'
 import './ExportSummary.css'
 
 interface Props {
@@ -11,10 +12,6 @@ interface Props {
   rollup: ExportRollup
   /** Files the run's unfiled findings and returns the refreshed run. */
   onExport: () => Promise<void>
-}
-
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? '' : 's'}`
 }
 
 export default function ExportSummary({ rollup, onExport }: Props) {

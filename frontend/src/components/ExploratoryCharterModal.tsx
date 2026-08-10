@@ -9,6 +9,7 @@ import type {
   TestPlanResponse,
 } from '../types'
 import { SFDIPOT_AREAS } from '../types'
+import { plural } from '../format'
 import './ExploratoryCharterModal.css'
 
 interface Props {
@@ -246,7 +247,7 @@ export default function ExploratoryCharterModal({ sprintId, tracker, onClose }: 
             <button className="btn btn-primary" onClick={handleStart} disabled={busy || !canStart}>
               {busy
                 ? 'Starting…'
-                : `Start ${charters.length} session${charters.length === 1 ? '' : 's'} (~${projectedMinutes} min)`}
+                : `Start ${plural(charters.length, 'session')} (~${projectedMinutes} min)`}
             </button>
           )}
           <button className="btn btn-secondary" onClick={onClose} disabled={busy}>

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
-import { isOutdated } from '../outdated'
+import RestartControl from '../components/RestartControl'
 import {
   exportExploratoryRunFindings,
   fetchExploratoryRun,
@@ -10,117 +10,38 @@ import {
   summarizeExploratoryRun,
 } from '../services/api'
 import type { ExploratoryRunDetailResponse } from '../types'
+import { awaitingExport } from '../exportState'
+import { plural } from '../format'
+import { useAction } from '../hooks/useAction'
+import { useAsyncData } from '../hooks/useAsyncData'
+import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
+import { EXPLORATORY_RUN_STATUS_LABELS, SESSION_STATUS_LABELS } from '../statusLabels'
 import './ExploratoryRunDetailPage.css'
-
-const POLL_INTERVAL_MS = 2500
-
-/**
- * How long to keep polling a run that has finished but whose findings have
- * not reached the tracker yet (~2 minutes).
- *
- * The worker commits `COMPLETED` *before* it files findings — deliberately,
- * so a slow tracker can never turn a finished run into a retry. Polling that
- * stops the instant the status reads terminal therefore tears itself down
- * inside that window, and the page sits on "not yet filed" until someone
- * reloads. Bounded rather than open-ended because every *known* way for the
- * export to end badly writes `tracker_error` (a disconnected tracker
- * included), so this condition resolves on its own in every case but a bug.
- */
-const EXPORT_GRACE_TICKS = 48
-
-const RUN_STATUS_LABELS: Record<string, string> = {
-  pending: 'Queued',
-  running: 'Exploring',
-  completed: 'Completed',
-  failed: 'Failed',
-}
-
-const SESSION_STATUS_LABELS: Record<string, string> = {
-  pending: 'Queued',
-  running: 'Exploring',
-  completed: 'Completed',
-  error: 'Error',
-  skipped: 'Not explored',
-}
 
 export default function ExploratoryRunDetailPage() {
   const { id, runId } = useParams<{ id: string; runId: string }>()
   const sprintId = Number(id)
   const exploratoryRunId = Number(runId)
 
-  const [run, setRun] = useState<ExploratoryRunDetailResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const {
+    data: run,
+    loading,
+    error: loadError,
+    setData: setRun,
+  } = useAsyncData(() => fetchExploratoryRun(exploratoryRunId), [exploratoryRunId])
 
-  const fetchingRef = useRef(false)
-
-  useEffect(() => {
-    let cancelled = false
-    fetchExploratoryRun(exploratoryRunId)
-      .then((data) => {
-        if (cancelled) return
-        setRun(data)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (cancelled) return
-        setLoadError(err.message)
-        setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [exploratoryRunId])
+  const onLoaded = useCallback((fresh: ExploratoryRunDetailResponse) => setRun(fresh), [setRun])
+  const { busy, error: actionError, run: runAction } = useAction(onLoaded)
 
   const inProgress = run?.status === 'pending' || run?.status === 'running'
-  // A finished run whose bugs are unfiled with nothing having failed: the
-  // export runs after the completion commit, so it is almost certainly
-  // still in flight. See EXPORT_GRACE_TICKS.
-  const exportPending =
-    run?.status === 'completed' &&
-    run.export_findings &&
-    run.unexported_finding_count > 0 &&
-    run.export_error_count === 0
-  const shouldPoll = inProgress || exportPending
+  const exportPending = run !== null && awaitingExport(run)
 
-  useEffect(() => {
-    if (!shouldPoll) return
+  usePolling(() => fetchExploratoryRun(exploratoryRunId).then(setRun), {
+    enabled: inProgress || exportPending,
     // Unbounded while the run itself is working — it is the run that says
     // when that ends. Bounded once only the export is outstanding.
-    let ticksLeft = inProgress ? Number.POSITIVE_INFINITY : EXPORT_GRACE_TICKS
-    const pollId = setInterval(() => {
-      if (fetchingRef.current) return
-      if (ticksLeft <= 0) {
-        clearInterval(pollId)
-        return
-      }
-      ticksLeft -= 1
-      fetchingRef.current = true
-      fetchExploratoryRun(exploratoryRunId)
-        .then(setRun)
-        .catch(() => {
-          /* transient poll failure — retry on next tick */
-        })
-        .finally(() => {
-          fetchingRef.current = false
-        })
-    }, POLL_INTERVAL_MS)
-    return () => clearInterval(pollId)
-  }, [shouldPoll, inProgress, exploratoryRunId])
-
-  const runAction = useCallback(
-    (action: (runId: number) => Promise<ExploratoryRunDetailResponse>) => {
-      setBusy(true)
-      setActionError(null)
-      action(exploratoryRunId)
-        .then(setRun)
-        .catch((err: Error) => setActionError(err.message))
-        .finally(() => setBusy(false))
-    },
-    [exploratoryRunId],
-  )
+    maxTicks: inProgress ? undefined : EXPORT_GRACE_TICKS,
+  })
 
   if (loading) return <p className="exp-run-message">Loading exploratory run&hellip;</p>
   if (loadError) return <p className="exp-run-message exp-run-error">{loadError}</p>
@@ -141,16 +62,14 @@ export default function ExploratoryRunDetailPage() {
             than per-sprint, hence `#10` — an identifier, not a count. */}
         <span className="exp-run-id">Run #{run.id}</span>
         <span className={`run-badge run-badge-${run.status}`}>
-          {RUN_STATUS_LABELS[run.status] ?? run.status}
+          {EXPLORATORY_RUN_STATUS_LABELS[run.status]}
         </span>
         <OutdatedBadge run={run} />
       </header>
 
       <p className="exp-run-counts">
-        {run.sessions.length} session
-        {run.sessions.length === 1 ? '' : 's'} &middot; {run.bug_count} bug
-        {run.bug_count === 1 ? '' : 's'} &middot; {run.issue_count} issue
-        {run.issue_count === 1 ? '' : 's'}
+        {plural(run.sessions.length, 'session')} &middot; {plural(run.bug_count, 'bug')} &middot;{' '}
+        {plural(run.issue_count, 'issue')}
         {run.high_severity_count > 0 && ` · ${run.high_severity_count} high severity`}
       </p>
 
@@ -176,7 +95,7 @@ export default function ExploratoryRunDetailPage() {
             </p>
             <button
               className="btn btn-secondary"
-              onClick={() => runAction(summarizeExploratoryRun)}
+              onClick={() => runAction(summarizeExploratoryRun(exploratoryRunId))}
               disabled={busy}
             >
               {busy ? 'Generating…' : 'Generate summary'}
@@ -187,22 +106,15 @@ export default function ExploratoryRunDetailPage() {
         )}
       </section>
 
-      {/* An outdated run cannot be restarted — it would re-explore against
-          content it was never chartered for. The backend refuses it too. */}
-      {run.status === 'failed' && !isOutdated(run) && (
-        <button
-          className="btn btn-primary"
-          onClick={() => runAction(restartExploratoryRun)}
-          disabled={busy}
-        >
-          {busy ? 'Restarting…' : 'Restart run'}
-        </button>
-      )}
-      {run.status === 'failed' && isOutdated(run) && (
-        <p className="exp-run-muted">
-          Start a new exploratory run to retest — this one used earlier content.
-        </p>
-      )}
+      <RestartControl
+        run={run}
+        enabled={run.status === 'failed'}
+        busy={busy}
+        label="Restart run"
+        outdatedNote="Start a new exploratory run to retest — this one used earlier content."
+        noteClassName="exp-run-muted"
+        onRestart={() => runAction(restartExploratoryRun(exploratoryRunId))}
+      />
 
       {actionError && <p className="exp-run-error">{actionError}</p>}
 
@@ -218,15 +130,13 @@ export default function ExploratoryRunDetailPage() {
                 <div className="exp-session-main">
                   <span className="exp-session-charter">{session.charter}</span>
                   <span className={`session-badge session-badge-${session.status}`}>
-                    {SESSION_STATUS_LABELS[session.status] ?? session.status}
+                    {SESSION_STATUS_LABELS[session.status]}
                   </span>
                 </div>
                 <div className="exp-session-meta">
                   <span>{session.sfdipot_areas.join(', ') || 'No areas tagged'}</span>
                   <span>{session.actions_used} actions</span>
-                  <span>
-                    {session.finding_count} finding{session.finding_count === 1 ? '' : 's'}
-                  </span>
+                  <span>{plural(session.finding_count, 'finding')}</span>
                 </div>
               </Link>
             </li>

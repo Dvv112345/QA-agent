@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { approveTestPlan, restartTestPlan, submitTestPlanFeedback } from '../services/api'
 import type { TestPlanResponse, TestPlanStatus } from '../types'
 import TestPlanEditForm from './TestPlanEditForm'
+import { useAction } from '../hooks/useAction'
 import './TestPlanCard.css'
 
 const STATUS_LABELS: Record<TestPlanStatus, string> = {
@@ -22,26 +23,11 @@ export default function TestPlanCard({ plan, sprintActive, onUpdated }: Props) {
   const [feedback, setFeedback] = useState('')
   const [editing, setEditing] = useState(false)
   const [showDescription, setShowDescription] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const { status } = plan
   const inProgress = status === 'pending' || status === 'generating'
 
-  const runAction = (
-    promise: Promise<TestPlanResponse>,
-    onSuccess?: (updated: TestPlanResponse) => void,
-  ) => {
-    setBusy(true)
-    setError(null)
-    promise
-      .then((updated) => {
-        onSuccess?.(updated)
-        onUpdated(updated)
-      })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setBusy(false))
-  }
+  const { busy, error, run: runAction } = useAction<TestPlanResponse>(onUpdated)
 
   const handleFeedback = () => {
     const trimmed = feedback.trim()

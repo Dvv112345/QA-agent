@@ -7,6 +7,7 @@ import {
   updateRequirement,
 } from '../services/api'
 import type { RequirementResponse, RequirementStatus } from '../types'
+import { useAction } from '../hooks/useAction'
 import './RequirementCard.css'
 
 const STATUS_LABELS: Record<RequirementStatus, string> = {
@@ -40,28 +41,19 @@ export default function RequirementCard({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [showOriginal, setShowOriginal] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const { status } = requirement
   const inProgress = status === 'pending' || status === 'analyzing'
   const wasRewritten = requirement.description !== requirement.original_description
   const capReached = requirement.clarification_cap_reached
 
-  const runAction = (
-    promise: Promise<RequirementResponse>,
-    onSuccess?: (updated: RequirementResponse) => void,
-  ) => {
-    setBusy(true)
-    setError(null)
-    promise
-      .then((updated) => {
-        onSuccess?.(updated)
-        onUpdated(updated)
-      })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setBusy(false))
-  }
+  const {
+    busy,
+    error,
+    run: runAction,
+    setBusy,
+    setError,
+  } = useAction<RequirementResponse>(onUpdated)
 
   const handleAnswer = () => {
     const trimmed = answer.trim()
