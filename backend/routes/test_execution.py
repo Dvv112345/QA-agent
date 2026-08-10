@@ -3,7 +3,6 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from functools import partial
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -31,22 +30,19 @@ from backend.models.types import (
     TestRunDetailResponse,
     TestRunResponse,
 )
+from backend.routes._common import ensure_sprint_active, get_sprint_or_404
 from backend.services import finding_export
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
-from backend.services.queue import get_queue_service
+from backend.services.queue import enqueue_rows, get_queue_service
 from backend.utils.auth import verify_auth
-from backend.utils.readme_utils import refresh_file_tree, resolve_readme
+from backend.utils.readme_utils import refresh_project_context
 
 logger = logging.getLogger(__name__)
 
+# Completes "Sprint is finished — {}." for every gate in this module.
+_GATE_SUBJECT = "test runs can no longer be created or restarted"
+
 router = APIRouter(dependencies=[Depends(verify_auth)])
-
-
-def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
 
 
 def _get_run_or_404(session: Session, run_id: int) -> TestRun:
@@ -73,33 +69,6 @@ def _get_execution_or_404(session: Session, execution_id: int) -> TestExecution:
     if execution is None:
         raise HTTPException(status_code=404, detail="Test execution not found.")
     return execution
-
-
-def _ensure_sprint_active(sprint: Sprint | None) -> None:
-    if sprint is None or not sprint.active:
-        raise HTTPException(
-            status_code=422,
-            detail="Sprint is finished — test runs can no longer be created or restarted.",
-        )
-
-
-def _enqueue_executions(session: Session, rows: list[TestExecution]) -> None:
-    """Best-effort enqueue after commit — failure is the reconciler's job.
-
-    Successful enqueues persist the job id for the reconciler's dedup check.
-    """
-    queue_service = get_queue_service()
-    enqueued = False
-    for row in rows:
-        job = queue_service.enqueue_test_execution(row.id)
-        if job is not None:
-            row.job_id = job.id
-            session.add(row)
-            enqueued = True
-    if enqueued:
-        session.commit()
-        for row in rows:
-            session.refresh(row)
 
 
 def _run_response(run: TestRun) -> TestRunResponse:
@@ -161,8 +130,8 @@ async def create_test_run(
 ) -> TestRunDetailResponse:
     """Create a run covering the selected requirements — one TestExecution
     (+ TestCaseExecution per approved-plan case) each, enqueued best-effort."""
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
 
     if not body.requirement_ids:
         raise HTTPException(status_code=422, detail="At least one requirement must be selected.")
@@ -234,17 +203,8 @@ async def create_test_run(
     # ── Refresh README/file tree once for the whole run (best-effort) ──
     # Every TestExecution below is a separate RQ job/process, so this is
     # the one synchronous choke point they all share — refresh here rather
-    # than per execution or per case. A user-uploaded README is
-    # authoritative and is never overwritten by a GitHub download.
-    try:
-        if not sprint.readme_user_provided:
-            await resolve_readme(sprint, force_refresh=True)
-        await refresh_file_tree(sprint)
-        if sprint.repo is not None:
-            session.add(sprint.repo)
-            session.commit()
-    except Exception as exc:
-        logger.warning("Sprint id=%d: README/file tree refresh failed: %s", sprint_id, exc)
+    # than per execution or per case.
+    await refresh_project_context(session, sprint)
 
     # Each execution records the content revisions it is about to run
     # against; a later edit upstream is what makes it read as outdated.
@@ -268,7 +228,7 @@ async def create_test_run(
     for execution in executions:
         session.refresh(execution)
 
-    _enqueue_executions(session, executions)
+    enqueue_rows(session, executions, get_queue_service().enqueue_test_execution)
 
     logger.info(
         "Sprint id=%d: test run %d created covering %d requirement(s)",
@@ -285,7 +245,7 @@ async def list_test_runs(
     session: Session = Depends(get_session),
 ) -> list[TestRunResponse]:
     """List a sprint's test runs, newest first (Decision 11)."""
-    _get_sprint_or_404(session, sprint_id)
+    get_sprint_or_404(session, sprint_id)
     runs = session.exec(
         select(TestRun)
         .where(TestRun.sprint_id == sprint_id)
@@ -343,7 +303,9 @@ async def restart_test_execution(
     touches the child rows.
     """
     execution = _get_execution_or_404(session, execution_id)
-    _ensure_sprint_active(execution.requirement.sprint if execution.requirement else None)
+    ensure_sprint_active(
+        execution.requirement.sprint if execution.requirement else None, _GATE_SUBJECT
+    )
 
     if execution.status != TestExecutionStatus.FAILED:
         raise HTTPException(status_code=422, detail="Only failed test executions can be restarted.")
@@ -362,7 +324,7 @@ async def restart_test_execution(
     session.add(execution)
     session.commit()
     session.refresh(execution)
-    _enqueue_executions(session, [execution])
+    enqueue_rows(session, [execution], get_queue_service().enqueue_test_execution)
     return execution
 
 
@@ -390,10 +352,16 @@ async def export_test_run_findings(
 
     # `requested=True`: the click is the consent the run's toggle stands in
     # for, so this files even for a run started before a tracker existed.
-    for execution in run.executions:
-        await asyncio.to_thread(
-            partial(finding_export.export_findings, session, execution, requested=True)
-        )
+    #
+    # One thread hop for the whole loop, not one per execution: the
+    # executions share a session and are filed in order regardless, so
+    # hopping per row buys nothing and costs an event-loop suspension each
+    # time. The exploratory twin already does a single hop.
+    def _export_all() -> None:
+        for execution in run.executions:
+            finding_export.export_findings(session, execution, requested=True)
+
+    await asyncio.to_thread(_export_all)
 
     session.expire_all()
     return _run_detail(_get_run_or_404(session, run_id))

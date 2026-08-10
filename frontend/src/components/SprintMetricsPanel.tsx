@@ -1,4 +1,5 @@
 import type { SprintMetrics } from '../types'
+import { plural } from '../format'
 import './SprintMetricsPanel.css'
 
 interface Props {
@@ -7,10 +8,6 @@ interface Props {
    * Nothing here recomputes one from the others — see `SprintMetrics`.
    */
   metrics: SprintMetrics
-}
-
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? '' : 's'}`
 }
 
 /**

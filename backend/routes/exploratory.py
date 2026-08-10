@@ -46,34 +46,29 @@ from backend.models.types import (
     CharterDraft,
     ExploratoryCharterDraftResponse,
     ExploratoryCharterGenerateRequest,
-    ExploratoryFindingResponse,
     ExploratoryRunCreateRequest,
     ExploratoryRunDetailResponse,
     ExploratoryRunResponse,
     ExploratorySessionResponse,
-    ExploratorySessionSummaryResponse,
 )
+from backend.routes._common import ensure_sprint_active, get_sprint_or_404
 from backend.services import finding_export, llm
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.llm_prompts import TestCaseLike
-from backend.services.queue import get_queue_service
+from backend.services.queue import enqueue_rows, get_queue_service
 from backend.utils.auth import verify_auth
 from backend.utils.exploratory_utils import session_sheets
-from backend.utils.readme_utils import refresh_file_tree, resolve_readme
+from backend.utils.readme_utils import refresh_project_context, resolve_readme
 
 logger = logging.getLogger(__name__)
+
+# Completes "Sprint is finished — {}." for every gate in this module.
+_GATE_SUBJECT = "exploratory runs can no longer be created"
 
 router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
 # ── lookups and guards ────────────────────────────────────────────────
-
-
-def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
 
 
 def _get_run_or_404(session: Session, run_id: int) -> ExploratoryRun:
@@ -92,14 +87,6 @@ def _get_run_or_404(session: Session, run_id: int) -> ExploratoryRun:
     if run is None:
         raise HTTPException(status_code=404, detail="Exploratory run not found.")
     return run
-
-
-def _ensure_sprint_active(sprint: Sprint | None) -> None:
-    if sprint is None or not sprint.active:
-        raise HTTPException(
-            status_code=422,
-            detail="Sprint is finished — exploratory runs can no longer be created.",
-        )
 
 
 def _resolve_requirement(sprint: Sprint, requirement_id: int) -> Requirement:
@@ -180,47 +167,6 @@ def _validate_charters(charters: list[CharterDraft]) -> None:
 # ── response builders (aggregates computed here, never stored) ────────
 
 
-def _finding_response(finding: ExploratoryFinding) -> ExploratoryFindingResponse:
-    return ExploratoryFindingResponse(
-        id=finding.id,
-        position=finding.position,
-        finding_type=finding.finding_type,
-        severity=finding.severity,
-        title=finding.title,
-        steps_to_reproduce=finding.steps_to_reproduce,
-        expected=finding.expected,
-        actual=finding.actual,
-        environment=finding.environment,
-        # Passed explicitly because this response is composed field by
-        # field rather than read off the row: inheriting them from
-        # `FindingBase` only supplies the defaults, so an omission here
-        # serializes a filed finding as never filed. `tracker_target` is
-        # deliberately absent — it scopes de-duplication in the database
-        # and the URL is already absolute.
-        tracker_issue_key=finding.tracker_issue_key,
-        tracker_issue_url=finding.tracker_issue_url,
-        tracker_error=finding.tracker_error,
-        tracker_is_duplicate=finding.tracker_is_duplicate,
-        has_screenshot=finding.screenshot_path is not None,
-        created_at=finding.created_at,
-    )
-
-
-def _session_summary(session_row: ExploratorySession) -> ExploratorySessionSummaryResponse:
-    return ExploratorySessionSummaryResponse(
-        id=session_row.id,
-        position=session_row.position,
-        charter=session_row.charter,
-        sfdipot_areas=session_row.sfdipot_areas,
-        status=session_row.status,
-        actions_used=session_row.actions_used,
-        stop_reason=session_row.stop_reason,
-        error=session_row.error,
-        finding_count=len(session_row.findings),
-        updated_at=session_row.updated_at,
-    )
-
-
 def _finding_counts(run: ExploratoryRun) -> tuple[int, int, int]:
     bugs = issues = high = 0
     for session_row in run.sessions:
@@ -268,8 +214,9 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
         error=run.error,
         outdated_reasons=run.outdated_reasons,
         requirement_deleted=run.requirement_deleted,
+        session_count=len(run.sessions),
         base_url_env_vars=run.base_url_env_vars,
-        sessions=[_session_summary(s) for s in run.sessions],
+        sessions=run.sessions,
         bug_count=bugs,
         issue_count=issues,
         high_severity_count=high,
@@ -277,16 +224,6 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
         created_at=run.created_at,
         updated_at=run.updated_at,
     )
-
-
-def _enqueue_run(session: Session, run: ExploratoryRun) -> None:
-    """Best-effort enqueue after commit — failure is the reconciler's job."""
-    job = get_queue_service().enqueue_exploration(run.id)
-    if job is not None:
-        run.job_id = job.id
-        session.add(run)
-        session.commit()
-        session.refresh(run)
 
 
 # ── charter drafting ──────────────────────────────────────────────────
@@ -302,8 +239,8 @@ async def generate_charters(
     session: Session = Depends(get_session),
 ) -> ExploratoryCharterDraftResponse:
     """Draft SBTM charters for one requirement. Persists nothing."""
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
     requirement = _resolve_requirement(sprint, body.requirement_id)
     env_vars = _resolve_env_vars(sprint)
 
@@ -385,8 +322,8 @@ async def create_exploratory_run(
     session: Session = Depends(get_session),
 ) -> ExploratoryRunDetailResponse:
     """Start an exploratory run over the approved charters for one requirement."""
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
     requirement = _resolve_requirement(sprint, body.requirement_id)
     env_vars = _resolve_env_vars(sprint)
 
@@ -407,17 +344,8 @@ async def create_exploratory_run(
             detail=f"Requirement '{requirement.name}' already has an exploratory run in progress.",
         )
 
-    # Refresh project context once for the whole run, best-effort — a user
-    # -uploaded README is authoritative and is never overwritten.
-    try:
-        if not sprint.readme_user_provided:
-            await resolve_readme(sprint, force_refresh=True)
-        await refresh_file_tree(sprint)
-        if sprint.repo is not None:
-            session.add(sprint.repo)
-            session.commit()
-    except Exception as exc:
-        logger.warning("Sprint id=%d: README/file tree refresh failed: %s", sprint_id, exc)
+    # Refresh project context once for the whole run.
+    await refresh_project_context(session, sprint)
 
     run = ExploratoryRun(
         sprint_id=sprint_id,
@@ -440,7 +368,7 @@ async def create_exploratory_run(
     session.add(run)
     session.commit()
     session.refresh(run)
-    _enqueue_run(session, run)
+    enqueue_rows(session, [run], get_queue_service().enqueue_exploration)
 
     logger.info(
         "Sprint id=%d: exploratory run %d created with %d charter(s)",
@@ -457,7 +385,7 @@ async def list_exploratory_runs(
     session: Session = Depends(get_session),
 ) -> list[ExploratoryRunResponse]:
     """List a sprint's exploratory runs, newest first."""
-    _get_sprint_or_404(session, sprint_id)
+    get_sprint_or_404(session, sprint_id)
     runs = session.exec(
         select(ExploratoryRun)
         .where(ExploratoryRun.sprint_id == sprint_id)
@@ -492,21 +420,7 @@ async def get_exploratory_session(
     row = session.get(ExploratorySession, session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Exploratory session not found.")
-    return ExploratorySessionResponse(
-        id=row.id,
-        exploratory_run_id=row.exploratory_run_id,
-        position=row.position,
-        charter=row.charter,
-        sfdipot_areas=row.sfdipot_areas,
-        status=row.status,
-        actions_used=row.actions_used,
-        session_notes=row.session_notes,
-        action_log=row.action_log,
-        stop_reason=row.stop_reason,
-        error=row.error,
-        findings=[_finding_response(f) for f in row.findings],
-        updated_at=row.updated_at,
-    )
+    return row
 
 
 @router.get("/exploratory-findings/{finding_id}/screenshot")
@@ -539,7 +453,7 @@ async def restart_exploratory_run(
     status by the task — this route never touches the child rows.
     """
     run = _get_run_or_404(session, run_id)
-    _ensure_sprint_active(run.sprint)
+    ensure_sprint_active(run.sprint, _GATE_SUBJECT)
 
     if run.status != ExploratoryRunStatus.FAILED:
         raise HTTPException(
@@ -562,8 +476,9 @@ async def restart_exploratory_run(
     run.updated_at = datetime.now(timezone.utc)
     session.add(run)
     session.commit()
-    session.refresh(run)
-    _enqueue_run(session, run)
+    # No refresh here: `enqueue_rows` commits and refreshes the row itself,
+    # and the reload below re-reads it with its relationships eager-loaded.
+    enqueue_rows(session, [run], get_queue_service().enqueue_exploration)
     return _run_detail(_get_run_or_404(session, run_id))
 
 

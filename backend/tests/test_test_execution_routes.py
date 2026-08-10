@@ -84,7 +84,7 @@ class _RefreshStub:
 def _isolate_refresh(monkeypatch):
     """Keep README/file-tree refresh deterministic: no network calls unless
     a test opts in via the ``refresh_stub`` fixture."""
-    import backend.routes.test_execution as test_execution_module
+    from backend.utils import readme_utils
 
     async def _noop_resolve_readme(*args, **kwargs):
         return None
@@ -92,17 +92,24 @@ def _isolate_refresh(monkeypatch):
     async def _noop_refresh_file_tree(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(test_execution_module, "resolve_readme", _noop_resolve_readme)
-    monkeypatch.setattr(test_execution_module, "refresh_file_tree", _noop_refresh_file_tree)
+    monkeypatch.setattr(readme_utils, "resolve_readme", _noop_resolve_readme)
+    monkeypatch.setattr(readme_utils, "refresh_file_tree", _noop_refresh_file_tree)
 
 
 @pytest.fixture
 def refresh_stub(monkeypatch):
-    stub = _RefreshStub()
-    import backend.routes.test_execution as test_execution_module
+    """Recording refresh stub.
 
-    monkeypatch.setattr(test_execution_module, "resolve_readme", stub.resolve_readme)
-    monkeypatch.setattr(test_execution_module, "refresh_file_tree", stub.refresh_file_tree)
+    Patched on ``readme_utils`` rather than the route module: the route
+    calls ``refresh_project_context``, which reaches these two as module
+    globals — so this stubs the network while still exercising the real
+    composition (including the user-provided-README rule).
+    """
+    from backend.utils import readme_utils
+
+    stub = _RefreshStub()
+    monkeypatch.setattr(readme_utils, "resolve_readme", stub.resolve_readme)
+    monkeypatch.setattr(readme_utils, "refresh_file_tree", stub.refresh_file_tree)
     return stub
 
 

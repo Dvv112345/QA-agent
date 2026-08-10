@@ -26,14 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
 from backend.config import (
     EXPLORATORY_MAX_ACTIONS,
     EXPLORATORY_SNAPSHOT_WINDOW,
-    MAX_AUTO_RETRIES,
 )
 from backend.database import new_session
 from backend.models.database import (
@@ -56,13 +55,11 @@ from backend.services import (
     llm,
 )
 from backend.services.storage import StorageService
+from backend.utils.environment_utils import redactable_values
 from backend.utils.exploratory_utils import session_sheets
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
-
-# Cap for the user-facing error summary stored on a failed row.
-_ERROR_SUMMARY_MAX_CHARS = 300
 
 # Cap for the stored per-session action log — mirrors execute_test.py's
 # _OUTPUT_MAX_CHARS precedent. 25 actions is a few KB, so this only bites
@@ -79,119 +76,67 @@ _NO_BASE_URL_ERROR = "No application URL is available for this run."
 # "already covered" context. Nothing mid-run depends on the plan's status.
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _record_failure(session: Session, run_id: int, exc: Exception) -> None:
-    """Count the failure and either re-queue the run or mark it failed.
-
-    Sessions already finalized before the exception stay finalized — the next
-    attempt resumes from the first non-finalized charter.
-    """
-    session.rollback()
-    run = session.get(ExploratoryRun, run_id)
-    if run is None:
-        return
-
-    run.retry_count += 1
-    if run.retry_count >= MAX_AUTO_RETRIES:
-        run.status = ExploratoryRunStatus.FAILED
-        run.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
-        # Terminal, so the charters this attempt never explored never will.
-        # Only on this branch — the retry below must leave a `running`
-        # session alone so the next attempt re-enters that charter.
-        finalization.abandon_unreached_children(
-            session, finalization.EXPLORATORY_SESSION_SPEC, run_id, run.error
-        )
-    else:
-        # Back to pending — the reconciler re-enqueues it.
-        run.status = ExploratoryRunStatus.PENDING
-    run.last_heartbeat = None
-    run.updated_at = _now()
-    session.add(run)
-    session.commit()
-
-
-def _fail_run(session: Session, run: ExploratoryRun, error: str) -> None:
-    """Fail the run and settle every charter it never explored.
-
-    The single chokepoint for the three job-start guards *and* the mid-run
-    supersede exit — see ``execute_test._fail_execution``, which this
-    mirrors. Findings already persisted by ``record_finding`` are
-    untouched: they were real observations regardless of what stopped the
-    run.
-    """
-    run.status = ExploratoryRunStatus.FAILED
-    run.error = error
-    run.last_heartbeat = None
-    run.updated_at = _now()
-    session.add(run)
-    finalization.abandon_unreached_children(
-        session, finalization.EXPLORATORY_SESSION_SPEC, run.id, error
-    )
-    session.commit()
-
-
 def _heartbeat(session: Session, run: ExploratoryRun) -> None:
     """Mark the run alive so a live session is never swept as a crashed worker."""
-    run.last_heartbeat = _now()
+    run.last_heartbeat = finalization.now()
     session.add(run)
     session.commit()
 
 
-def _build_on_round(
-    session: Session,
-    run: ExploratoryRun,
-    exploratory_session: ExploratorySession,
-):
-    """Heartbeat the run and publish the session's action count as it climbs.
+@dataclass
+class _SessionWriter:
+    """The two callbacks one charter hands the browser, and their state.
 
-    The loop's own counter is otherwise only readable once the session ends,
-    which left the UI showing 0 for the whole session and then the final
-    number.  Both writes share the one commit the heartbeat already made.
+    A class rather than two closure factories because the callbacks are
+    not independent: they share the session, the run and the charter row,
+    and ``position`` is per-session state that a closure could only carry
+    in a mutable box.  ``on_finding`` is also the longest-lived object
+    here — the browser holds it for the whole charter — and a closure
+    would pin its entire enclosing frame for that long.
     """
 
-    def on_round(actions_used: int) -> None:
-        run.last_heartbeat = _now()
-        session.add(run)
-        exploratory_session.actions_used = actions_used
-        exploratory_session.updated_at = _now()
-        session.add(exploratory_session)
-        session.commit()
+    session: Session
+    run: ExploratoryRun
+    exploratory_session: ExploratorySession
+    directory: str
+    storage: StorageService
+    position: int = 0
 
-    return on_round
+    def on_round(self, actions_used: int) -> None:
+        """Heartbeat the run and publish the action count as it climbs.
 
+        The loop's own counter is otherwise only readable once the session
+        ends, which left the UI showing 0 for the whole session and then
+        the final number.  Both writes share the one commit the heartbeat
+        already made.
+        """
+        self.run.last_heartbeat = finalization.now()
+        self.session.add(self.run)
+        self.exploratory_session.actions_used = actions_used
+        self.exploratory_session.updated_at = finalization.now()
+        self.session.add(self.exploratory_session)
+        self.session.commit()
 
-def _build_on_finding(
-    session: Session,
-    exploratory_session: ExploratorySession,
-    directory: str,
-    storage: StorageService,
-    counter: dict[str, int],
-):
-    """Persist a finding as the model records it, with its live screenshot.
+    def on_finding(self, record: browser_session.FindingRecord, png: bytes | None) -> None:
+        """Persist a finding as the model records it, with its screenshot.
 
-    Owns the per-session ``position`` counter.  A screenshot is optional by
-    design: ``store_screenshot`` returns ``None`` whenever ``STORE_OFFLINE``
-    is disabled, and the finding is persisted regardless.
-    """
-
-    def on_finding(record: browser_session.FindingRecord, png: bytes | None) -> None:
-        position = counter["n"]
+        A screenshot is optional by design: ``store_screenshot`` returns
+        ``None`` whenever ``STORE_OFFLINE`` is disabled, and the finding is
+        persisted regardless.
+        """
         screenshot_path: str | None = None
         if png is not None:
             try:
-                screenshot_path = storage.store_screenshot(
-                    png, directory, exploratory_session.id, position
+                screenshot_path = self.storage.store_screenshot(
+                    png, self.directory, self.exploratory_session.id, self.position
                 )
             except OSError as exc:
                 # An unwritable disk must not cost us the finding itself.
                 logger.warning("Could not store finding screenshot: %s", exc)
 
         finding = ExploratoryFinding(
-            exploratory_session_id=exploratory_session.id,
-            position=position,
+            exploratory_session_id=self.exploratory_session.id,
+            position=self.position,
             # The tool schema constrains both of these to an enum, but the
             # model is not bound by it. An unrecognised type counts toward
             # neither bug_count nor issue_count while still counting toward
@@ -208,11 +153,9 @@ def _build_on_finding(
             screenshot_path=screenshot_path,
             environment=record.environment,
         )
-        session.add(finding)
-        session.commit()
-        counter["n"] = position + 1
-
-    return on_finding
+        self.session.add(finding)
+        self.session.commit()
+        self.position += 1
 
 
 def explore_requirement_task(exploratory_run_id: int) -> None:
@@ -234,7 +177,12 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
         # not a cause — name the right one.
         deleted = requirement is not None and requirement.archived
         if deleted or sprint is None or not sprint.active:
-            _fail_run(session, run, REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR)
+            finalization.fail_row(
+                session,
+                finalization.EXPLORATORY_RUN_SPEC,
+                run,
+                REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR,
+            )
             logger.info(
                 "Exploratory run %d: %s — marked failed",
                 exploratory_run_id,
@@ -245,19 +193,23 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
         test_env = sprint.test_environment
         env_vars = test_env.env_vars if test_env else None
         if not env_vars:
-            _fail_run(session, run, _ENV_VARS_MISSING_ERROR)
+            finalization.fail_row(
+                session, finalization.EXPLORATORY_RUN_SPEC, run, _ENV_VARS_MISSING_ERROR
+            )
             logger.warning("Exploratory run %d: env vars missing — failed", exploratory_run_id)
             return
 
         base_urls = [env_vars[name] for name in run.base_url_env_vars if name in env_vars]
         if not base_urls:
-            _fail_run(session, run, _NO_BASE_URL_ERROR)
+            finalization.fail_row(
+                session, finalization.EXPLORATORY_RUN_SPEC, run, _NO_BASE_URL_ERROR
+            )
             logger.warning("Exploratory run %d: no usable base URL — failed", exploratory_run_id)
             return
 
         run.status = ExploratoryRunStatus.RUNNING
-        run.last_heartbeat = _now()
-        run.updated_at = _now()
+        run.last_heartbeat = finalization.now()
+        run.updated_at = finalization.now()
         session.add(run)
         session.commit()
 
@@ -314,7 +266,9 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
                 # this only decides whether to keep going.
                 superseding = [r for r in run.outdated_reasons if r != "test_plan"]
                 if superseding:
-                    _fail_run(session, run, SUPERSEDED_ERROR)
+                    finalization.fail_row(
+                        session, finalization.EXPLORATORY_RUN_SPEC, run, SUPERSEDED_ERROR
+                    )
                     logger.info(
                         "Exploratory run %d superseded mid-run (%s) — stopping",
                         exploratory_run_id,
@@ -326,7 +280,7 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
                 # A retried charter restarts from scratch, so any count left
                 # behind by the attempt that died describes nothing.
                 exploratory_session.actions_used = 0
-                exploratory_session.updated_at = _now()
+                exploratory_session.updated_at = finalization.now()
                 session.add(exploratory_session)
                 session.commit()
 
@@ -342,7 +296,7 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
                     file_tree=file_tree,
                     directory=sprint.directory,
                     storage=storage,
-                    on_round=_build_on_round(session, run, exploratory_session),
+                    run=run,
                 )
 
             _write_summary(session, run, requirement)
@@ -350,7 +304,7 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
             run.status = ExploratoryRunStatus.COMPLETED
             run.last_heartbeat = None
             run.retry_count = 0
-            run.updated_at = _now()
+            run.updated_at = finalization.now()
             session.add(run)
             session.commit()
             logger.info("Exploratory run %d completed", exploratory_run_id)
@@ -358,7 +312,9 @@ def explore_requirement_task(exploratory_run_id: int) -> None:
             # Never re-raise: the DB retry counter, not RQ's failed registry,
             # is the recovery mechanism.
             logger.exception("Exploratory run %d failed", exploratory_run_id)
-            _record_failure(session, exploratory_run_id, exc)
+            finalization.record_failure(
+                session, finalization.EXPLORATORY_RUN_SPEC, exploratory_run_id, exc
+            )
             return
 
         # Both calls sit after the COMPLETED commit and outside the try
@@ -392,15 +348,21 @@ def _run_one_session(
     file_tree: str | None,
     directory: str,
     storage: StorageService,
-    on_round,
+    run: ExploratoryRun,
 ) -> None:
     """Explore one charter. Never raises — a bad charter must not abandon the run."""
-    counter = {"n": 0}
+    writer = _SessionWriter(
+        session=session,
+        run=run,
+        exploratory_session=exploratory_session,
+        directory=directory,
+        storage=storage,
+    )
     try:
         with browser_session.BrowserSession(
             base_urls=base_urls,
             env_vars=env_vars,
-            on_finding=_build_on_finding(session, exploratory_session, directory, storage, counter),
+            on_finding=writer.on_finding,
         ) as browser:
             result = llm.run_exploration_loop(
                 name=requirement_name,
@@ -409,17 +371,16 @@ def _run_one_session(
                 sfdipot_areas=exploratory_session.sfdipot_areas,
                 base_urls=base_urls,
                 env_var_names=env_var_names,
-                # Backstop only — fill_secret already keeps values out of the
-                # conversation. The base URLs are env values too, and are
-                # excluded because redacting them would gut the log while
-                # protecting nothing.
-                secret_values=set(env_vars.values()) - set(base_urls),
+                # Backstop only — fill_secret already keeps values out of
+                # the conversation. This run's own base URLs are kept: see
+                # `redactable_values` for why the two exits differ on that.
+                secret_values=redactable_values(env_vars, keep=base_urls),
                 readme=readme,
                 file_tree=file_tree,
                 tools=browser.tool_registry(),
                 max_actions=EXPLORATORY_MAX_ACTIONS,
                 snapshot_window=EXPLORATORY_SNAPSHOT_WINDOW,
-                on_round=on_round,
+                on_round=writer.on_round,
             )
     except Exception as exc:
         logger.exception("Exploratory session %d failed", exploratory_session.id)
@@ -428,9 +389,9 @@ def _run_one_session(
         # reports how far it actually got rather than 0.
         session.rollback()
         exploratory_session.status = ExploratorySessionStatus.ERROR
-        exploratory_session.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
+        exploratory_session.error = str(exc)[: finalization.ERROR_SUMMARY_MAX_CHARS]
         exploratory_session.stop_reason = "error"
-        exploratory_session.updated_at = _now()
+        exploratory_session.updated_at = finalization.now()
         session.add(exploratory_session)
         session.commit()
         return
@@ -440,7 +401,7 @@ def _run_one_session(
     exploratory_session.actions_used = result.actions_used
     exploratory_session.action_log = "\n".join(result.action_log)[:_ACTION_LOG_MAX_CHARS]
     exploratory_session.stop_reason = result.stop_reason
-    exploratory_session.updated_at = _now()
+    exploratory_session.updated_at = finalization.now()
     session.add(exploratory_session)
     session.commit()
 
@@ -457,22 +418,17 @@ def _write_summary(session: Session, run: ExploratoryRun, requirement) -> None:
     The run is still ``running`` here, so each of the summary call's attempts
     heartbeats — otherwise a retried summary could out-wait
     ``HEARTBEAT_STALE_SECONDS`` and have the reconciler re-enqueue the whole
-    run as a crashed worker.  Not ``_build_on_round``: that one also publishes
+    run as a crashed worker.  Not ``_SessionWriter.on_round``: that also publishes
     a session's action count, and no session is in scope any more.
     """
     session.refresh(run)
-
-    def heartbeat() -> None:
-        run.last_heartbeat = _now()
-        session.add(run)
-        session.commit()
 
     try:
         result = llm.summarize_exploration(
             name=requirement.name,
             description=requirement.description,
             sessions=session_sheets(run),
-            on_attempt=heartbeat,
+            on_attempt=lambda: _heartbeat(session, run),
         )
     except llm.LLMError as exc:
         logger.warning("Exploratory run %d: summary unavailable: %s", run.id, exc)

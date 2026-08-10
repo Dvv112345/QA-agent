@@ -68,6 +68,30 @@ async def resolve_readme(sprint: Sprint, *, force_refresh: bool = False) -> str 
     return await _download(sprint)
 
 
+async def refresh_project_context(session, sprint: Sprint) -> None:
+    """Refresh the sprint's README and file tree from GitHub, once.
+
+    Called at the one synchronous choke point a run fans out from, so
+    every job the run spawns shares a single refresh rather than
+    repeating it per execution or per charter.
+
+    Two rules are folded in here so no caller has to remember them: a
+    **user-uploaded README is authoritative** and is never overwritten by
+    a GitHub download, and the whole thing is **best-effort** — GitHub
+    being unreachable degrades the LLM's context, and refusing to start
+    the run over it would be the worse failure.
+    """
+    try:
+        if not sprint.readme_user_provided:
+            await resolve_readme(sprint, force_refresh=True)
+        await refresh_file_tree(sprint)
+        if sprint.repo is not None:
+            session.add(sprint.repo)
+            session.commit()
+    except Exception as exc:
+        logger.warning("Sprint id=%d: README/file tree refresh failed: %s", sprint.id, exc)
+
+
 async def refresh_file_tree(sprint: Sprint) -> str | None:
     """Best-effort refresh of the repo's file tree from GitHub.
 

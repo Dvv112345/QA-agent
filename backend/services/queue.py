@@ -7,8 +7,9 @@ reconciler can enqueue them.
 
 All consumers should obtain the shared instance via ``get_queue_service()``
 rather than constructing ``QueueService`` directly.  The singleton is
-created lazily on first access and supports ``reset()`` for reconnection
-when Redis recovers after a transient outage.
+created lazily on first access; ``reset_queue_service()`` discards it so
+the next access reconnects, which is how a transient Redis outage is
+recovered from.
 
 PostgreSQL is the sole status of record — Redis is transport only, so this
 module deliberately has no job-status or job-meta helpers beyond the
@@ -17,11 +18,13 @@ module deliberately has no job-status or job-meta helpers beyond the
 
 from __future__ import annotations
 
-import contextlib
 import logging
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import redis
 import rq
+from sqlmodel import Session
 
 from backend.config import (
     EXPLORATORY_JOB_TIMEOUT,
@@ -56,6 +59,30 @@ EXPLORE_REQUIREMENT_TASK = "backend.tasks.explore_requirement.explore_requiremen
 
 # ── Module-level singleton ────────────────────────────────────────────────
 _queue_service: QueueService | None = None
+
+
+def enqueue_rows(session: Session, rows: Sequence[Any], enqueue: Callable[[int], Any]) -> None:
+    """Best-effort enqueue after commit — failure is the reconciler's job.
+
+    Successful enqueues persist the job id for the reconciler's dedup
+    check.  ``enqueue`` is the ``QueueService`` method for this row type,
+    e.g. ``get_queue_service().enqueue_analysis``; every stage differs
+    only in which one it passes.
+
+    Nothing here raises: with Redis down every call answers ``None``, the
+    rows stay ``pending``, and the reconciler picks them up on recovery.
+    """
+    enqueued = False
+    for row in rows:
+        job = enqueue(row.id)
+        if job is not None:
+            row.job_id = job.id
+            session.add(row)
+            enqueued = True
+    if enqueued:
+        session.commit()
+        for row in rows:
+            session.refresh(row)
 
 
 def get_queue_service() -> QueueService:
@@ -111,19 +138,6 @@ class QueueService:
     def available(self) -> bool:
         """``True`` when Redis is connected and ready."""
         return self._redis is not None and self._queue is not None
-
-    def reset(self) -> None:
-        """Close the current connection (if any) and reconnect.
-
-        Call this after detecting that Redis has become available following
-        a transient outage.
-        """
-        if self._redis:
-            with contextlib.suppress(Exception):
-                self._redis.close()
-        self._redis = None
-        self._queue = None
-        self._connect()
 
     def get_connection(self) -> redis.Redis | None:
         """Return the raw Redis connection (used by the worker CLI)."""

@@ -2,16 +2,9 @@ import { useState } from 'react'
 import { scriptDownloadUrl } from '../services/api'
 import type { TestCaseExecutionResponse } from '../types'
 import FindingCard from './FindingCard'
+import { plural } from '../format'
+import { CASE_STATUS_LABELS } from '../statusLabels'
 import './TestCaseExecutionRow.css'
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'Queued',
-  running: 'Running',
-  passed: 'Passed',
-  failed: 'Application bug found',
-  error: 'Could not determine — script may still be broken',
-  skipped: 'Not run',
-}
 
 interface Props {
   caseExecution: TestCaseExecutionResponse
@@ -36,16 +29,12 @@ export default function TestCaseExecutionRow({ caseExecution }: Props) {
         <span className="case-execution-title">{caseExecution.test_case.title}</span>
         <div className="case-execution-badges">
           {status === 'running' && <span className="case-execution-spinner" aria-hidden="true" />}
-          <span className={`case-badge case-badge-${status}`}>
-            {STATUS_LABELS[status] ?? status}
-          </span>
+          <span className={`case-badge case-badge-${status}`}>{CASE_STATUS_LABELS[status]}</span>
         </div>
       </div>
 
       {caseExecution.attempts > 0 && (
-        <p className="case-execution-attempts">
-          {caseExecution.attempts} attempt{caseExecution.attempts === 1 ? '' : 's'}
-        </p>
+        <p className="case-execution-attempts">{plural(caseExecution.attempts, 'attempt')}</p>
       )}
 
       {/* The same card the exploratory pages use — a bug found by a script

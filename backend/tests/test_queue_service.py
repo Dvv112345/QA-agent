@@ -58,10 +58,20 @@ class TestDegradedService:
         service = QueueService()
         assert service.get_job("some-job-id") is None
 
-    def test_reset_reconnects_without_error(self):
-        service = QueueService()
-        service.reset()
-        assert service.available is False
+    def test_reset_queue_service_rebuilds_the_singleton(self):
+        """The production reconnection path, exercised while Redis is down.
+
+        ``reset_queue_service`` discards the cached instance rather than
+        reconnecting one in place — the reconciler's recovery branch calls
+        this, and it is the only reconnection path there is.
+        """
+        from backend.services.queue import get_queue_service, reset_queue_service
+
+        first = get_queue_service()
+        reset_queue_service()
+        second = get_queue_service()
+        assert second is not first
+        assert second.available is False
 
 
 class TestConnect:

@@ -656,9 +656,12 @@ class TestUnreachedSessionsAreSettled:
 
 class TestRetryDisposition:
     def test_repends_below_the_retry_cap(self, db_session, patched, monkeypatch):
+        from backend.services import finalization
         from backend.tasks import explore_requirement as task_module
 
-        monkeypatch.setattr(task_module, "MAX_AUTO_RETRIES", 3)
+        # The retry protocol lives in `finalization.record_failure` now, so
+        # the cap is read there rather than in the task module.
+        monkeypatch.setattr(finalization, "MAX_AUTO_RETRIES", 3)
         _, _, run = _seed_run_with_sessions(db_session)
 
         # Blow up outside the per-session guard so _record_failure runs.
@@ -675,9 +678,10 @@ class TestRetryDisposition:
         assert refreshed.last_heartbeat is None
 
     def test_fails_at_the_retry_cap(self, db_session, patched, monkeypatch):
+        from backend.services import finalization
         from backend.tasks import explore_requirement as task_module
 
-        monkeypatch.setattr(task_module, "MAX_AUTO_RETRIES", 1)
+        monkeypatch.setattr(finalization, "MAX_AUTO_RETRIES", 1)
         _, _, run = _seed_run_with_sessions(db_session)
         monkeypatch.setattr(
             task_module,

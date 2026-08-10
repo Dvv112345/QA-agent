@@ -26,12 +26,16 @@ from backend.models.types import (
     TestEnvironmentSubmitRequest,
     TestEnvironmentVarsEditRequest,
 )
+from backend.routes._common import ensure_sprint_active, get_sprint_or_404
 from backend.services import invalidation, llm
 from backend.services.llm import LLMError
 from backend.utils.auth import verify_auth
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
+
+# Completes "Sprint is finished — {}." for every gate in this module.
+_GATE_SUBJECT = "the test environment can no longer be modified"
 
 router = APIRouter(dependencies=[Depends(verify_auth)])
 
@@ -41,26 +45,11 @@ _REQUIREMENTS_INCOMPLETE_ERROR = (
 )
 
 
-def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
-
-
 def _get_test_env_or_404(session: Session, te_id: int) -> TestEnvironmentAccess:
     test_env = session.get(TestEnvironmentAccess, te_id)
     if test_env is None:
         raise HTTPException(status_code=404, detail="Test environment submission not found.")
     return test_env
-
-
-def _ensure_sprint_active(sprint: Sprint) -> None:
-    if not sprint.active:
-        raise HTTPException(
-            status_code=422,
-            detail="Sprint is finished — the test environment can no longer be modified.",
-        )
 
 
 def _ensure_requirements_complete(sprint: Sprint) -> None:
@@ -106,6 +95,20 @@ def _apply_check_result(
     test_env.env_vars_json = env_vars_json
     test_env.content_revision += 1
     invalidation.invalidate_for_environment_change(session, sprint)
+
+
+def _apply_verdict(test_env: TestEnvironmentAccess, result) -> None:
+    """Put the row into the state this check's verdict implies.
+
+    Sufficient means there is nothing left to ask, so a stale question is
+    cleared rather than left to reappear beside a `ready` badge.
+    """
+    if result.sufficient:
+        test_env.status = TestEnvironmentStatus.READY
+        test_env.clarifying_question = None
+    else:
+        test_env.status = TestEnvironmentStatus.NEEDS_INFO
+        test_env.clarifying_question = result.clarifying_question
 
 
 def _touch(test_env: TestEnvironmentAccess) -> None:
@@ -195,7 +198,7 @@ async def get_test_environment(
     session: Session = Depends(get_session),
 ) -> TestEnvironmentAccess:
     """Fetch a sprint's test environment submission (readable on finished sprints)."""
-    sprint = _get_sprint_or_404(session, sprint_id)
+    sprint = get_sprint_or_404(session, sprint_id)
     if sprint.test_environment is None:
         raise HTTPException(
             status_code=404, detail="No test environment submission for this sprint."
@@ -213,8 +216,8 @@ async def submit_test_environment(
     session: Session = Depends(get_session),
 ) -> TestEnvironmentAccess:
     """Create or update the access description and run a fresh sufficiency check."""
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
     _ensure_requirements_complete(sprint)
 
     test_env = sprint.test_environment
@@ -244,12 +247,7 @@ async def submit_test_environment(
     else:
         _apply_check_result(session, sprint, test_env, content, env_vars_json)
 
-    if result.sufficient:
-        test_env.status = TestEnvironmentStatus.READY
-        test_env.clarifying_question = None
-    else:
-        test_env.status = TestEnvironmentStatus.NEEDS_INFO
-        test_env.clarifying_question = result.clarifying_question
+    _apply_verdict(test_env, result)
 
     _touch(test_env)
     session.add(test_env)
@@ -268,7 +266,7 @@ async def answer_test_environment(
     """Answer the clarifying question — the LLM rewrites the text and re-judges."""
     test_env = _get_test_env_or_404(session, te_id)
     sprint = test_env.sprint
-    _ensure_sprint_active(sprint)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
     _ensure_requirements_complete(sprint)
 
     if test_env.status != TestEnvironmentStatus.NEEDS_INFO:
@@ -310,12 +308,7 @@ async def answer_test_environment(
     # from there is what changes the text.
     _apply_check_result(session, sprint, test_env, result.rewritten_content, env_vars_json)
     test_env.revision_count += 1
-    if result.sufficient:
-        test_env.status = TestEnvironmentStatus.READY
-        test_env.clarifying_question = None
-    else:
-        test_env.status = TestEnvironmentStatus.NEEDS_INFO
-        test_env.clarifying_question = result.clarifying_question
+    _apply_verdict(test_env, result)
 
     _touch(test_env)
     session.add(test_env)
@@ -334,7 +327,7 @@ async def edit_test_environment_vars(
     """Directly correct the LLM-extracted variables (uncapped, no LLM call)."""
     test_env = _get_test_env_or_404(session, te_id)
     sprint = test_env.sprint
-    _ensure_sprint_active(sprint)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
 
     if not body.variables:
         raise HTTPException(status_code=422, detail="At least one variable is required.")
@@ -375,7 +368,7 @@ async def confirm_test_environment(
     """Finalize the access description (terminal) — locks the requirement set."""
     test_env = _get_test_env_or_404(session, te_id)
     sprint = test_env.sprint
-    _ensure_sprint_active(sprint)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
 
     if test_env.status != TestEnvironmentStatus.READY:
         raise HTTPException(

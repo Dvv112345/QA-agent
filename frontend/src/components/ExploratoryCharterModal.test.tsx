@@ -18,9 +18,8 @@ vi.mock('../services/api', async (importOriginal) => {
   }
 })
 
-import { createExploratoryRun, fetchTestPlans, generateCharters } from '../services/api'
+import { createExploratoryRun, generateCharters } from '../services/api'
 
-const mockFetchTestPlans = fetchTestPlans as ReturnType<typeof vi.fn>
 const mockGenerateCharters = generateCharters as ReturnType<typeof vi.fn>
 const mockCreateRun = createExploratoryRun as ReturnType<typeof vi.fn>
 
@@ -81,12 +80,18 @@ function exportCheckbox() {
   return screen.getByRole('checkbox', { name: /File bug findings/ })
 }
 
-function renderModal(onClose = vi.fn(), tracker: IssueTrackerConfig | null = null) {
+function renderModal(
+  onClose = vi.fn(),
+  tracker: IssueTrackerConfig | null = null,
+  plans: TestPlanResponse[] = [makePlan()],
+) {
   const router = createMemoryRouter(
     [
       {
         path: '/',
-        element: <ExploratoryCharterModal sprintId={1} tracker={tracker} onClose={onClose} />,
+        element: (
+          <ExploratoryCharterModal sprintId={1} plans={plans} tracker={tracker} onClose={onClose} />
+        ),
       },
       { path: '*', element: <div>navigated</div> },
     ],
@@ -98,26 +103,21 @@ function renderModal(onClose = vi.fn(), tracker: IssueTrackerConfig | null = nul
 describe('ExploratoryCharterModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     mockGenerateCharters.mockResolvedValue(makeDraft())
   })
 
-  it('lists requirements with an approved plan as single-select radios', async () => {
-    mockFetchTestPlans.mockResolvedValue([
-      makePlan(),
-      makePlan({ id: 2, requirement_id: 12, requirement_name: 'Login', status: 'draft' }),
-    ])
+  it('lists the requirements it is given as single-select radios', async () => {
+    // The approved-plan filter now lives in `TestRunsPage`, which owns the
+    // fetch — see its own test.
     renderModal()
 
     const radios = await screen.findAllByRole('radio')
     expect(radios).toHaveLength(1)
     expect(screen.getByText('Export reports')).toBeInTheDocument()
-    expect(screen.queryByText('Login')).not.toBeInTheDocument()
   })
 
   it('shows an empty state when no plan is approved', async () => {
-    mockFetchTestPlans.mockResolvedValue([])
-    renderModal()
+    renderModal(vi.fn(), null, [])
 
     expect(
       await screen.findByText('No requirements have an approved test plan yet.'),

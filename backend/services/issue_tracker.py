@@ -23,16 +23,13 @@ Two properties are load-bearing:
 import base64
 import json
 import logging
-import ssl
 from dataclasses import dataclass, field
 
-import certifi
 import httpx
 
 from backend.config import ISSUE_TRACKER_TIMEOUT
 from backend.models.database import IssueTrackerProvider
-
-_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+from backend.utils.http_utils import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +266,35 @@ def _adf_bullet_list(items: list[str]) -> dict:
     }
 
 
+def _sections(report: FindingReport, context: FindingContext) -> list[tuple[str | None, object]]:
+    """What a ticket says, as (heading, body) pairs.
+
+    **What a ticket says is decided once, here**; the two renderers below
+    only decide how to draw it.  They used to encode this sequence and its
+    conditionals separately, so a change to the report's content was a
+    two-place edit whose failure mode was the Jira body and the GitHub body
+    quietly diverging.
+
+    A ``None`` heading is an unheaded paragraph; a ``list`` body is bullets
+    and a ``str`` body is a paragraph.  That is the whole grammar, and it
+    is exactly the three ADF node types available.
+    """
+    steps = _steps(report)
+    sections: list[tuple[str | None, object]] = []
+    if steps:
+        sections.append(("Steps to reproduce", steps))
+    sections.append(("Expected", report.expected or "—"))
+    sections.append(("Actual", report.actual or "—"))
+    if report.environment:
+        sections.append(("Environment", report.environment))
+    if context.also_observed:
+        sections.append(("Also observed as", list(context.also_observed)))
+    superseded = _superseded_line(context)
+    if superseded:
+        sections.append((None, superseded))
+    return sections
+
+
 def _render_adf(report: FindingReport, context: FindingContext) -> dict:
     """Atlassian Document Format body for the Jira v3 create API.
 
@@ -279,23 +305,13 @@ def _render_adf(report: FindingReport, context: FindingContext) -> dict:
     keep working.
     """
     content: list[dict] = []
-    steps = _steps(report)
-    if steps:
-        content.append(_adf_heading("Steps to reproduce"))
-        content.append(_adf_bullet_list(steps))
-    content.append(_adf_heading("Expected"))
-    content.append(_adf_paragraph(report.expected or "—"))
-    content.append(_adf_heading("Actual"))
-    content.append(_adf_paragraph(report.actual or "—"))
-    if report.environment:
-        content.append(_adf_heading("Environment"))
-        content.append(_adf_paragraph(report.environment))
-    if context.also_observed:
-        content.append(_adf_heading("Also observed as"))
-        content.append(_adf_bullet_list(list(context.also_observed)))
-    superseded = _superseded_line(context)
-    if superseded:
-        content.append(_adf_paragraph(superseded))
+    for heading, body in _sections(report, context):
+        if heading is not None:
+            content.append(_adf_heading(heading))
+        if isinstance(body, list):
+            content.append(_adf_bullet_list(body))
+        else:
+            content.append(_adf_paragraph(body))
     content.append(_adf_paragraph(_trailer(context)))
     return {"type": "doc", "version": 1, "content": content}
 
@@ -303,20 +319,9 @@ def _render_adf(report: FindingReport, context: FindingContext) -> dict:
 def _render_markdown(report: FindingReport, context: FindingContext) -> str:
     """GitHub issue body — the same sections as the ADF renderer."""
     parts: list[str] = []
-    steps = _steps(report)
-    if steps:
-        parts.append("### Steps to reproduce\n" + "\n".join(f"- {step}" for step in steps))
-    parts.append(f"### Expected\n{report.expected or '—'}")
-    parts.append(f"### Actual\n{report.actual or '—'}")
-    if report.environment:
-        parts.append(f"### Environment\n{report.environment}")
-    if context.also_observed:
-        parts.append(
-            "### Also observed as\n" + "\n".join(f"- {entry}" for entry in context.also_observed)
-        )
-    superseded = _superseded_line(context)
-    if superseded:
-        parts.append(superseded)
+    for heading, body in _sections(report, context):
+        text = "\n".join(f"- {item}" for item in body) if isinstance(body, list) else body
+        parts.append(f"### {heading}\n{text}" if heading is not None else text)
     parts.append(f"---\n{_trailer(context)}")
     return "\n\n".join(parts)
 
@@ -370,7 +375,7 @@ def _request(
     that produced *no* response raise from here.
     """
     try:
-        with httpx.Client(verify=_SSL_CONTEXT, timeout=ISSUE_TRACKER_TIMEOUT) as client:
+        with httpx.Client(verify=SSL_CONTEXT, timeout=ISSUE_TRACKER_TIMEOUT) as client:
             return client.request(method, url, headers=headers, json=json_body, files=files)
     except httpx.TimeoutException:
         raise TrackerUnavailableError(

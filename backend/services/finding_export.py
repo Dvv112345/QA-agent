@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -56,6 +57,7 @@ from backend.models.database import (
     TestExecution,
 )
 from backend.services import finding_dedup, finding_grouping, issue_tracker
+from backend.services.findings import Finding, iter_findings
 from backend.services.issue_tracker import (
     FindingContext,
     FindingReport,
@@ -64,6 +66,7 @@ from backend.services.issue_tracker import (
 )
 from backend.services.llm_prompts import FindingCandidate
 from backend.utils.crypto import decrypt_token
+from backend.utils.environment_utils import redactable_values, url_values
 
 logger = logging.getLogger(__name__)
 
@@ -87,81 +90,6 @@ class ExportOutcome:
     failed: int = 0  # findings left carrying a tracker_error
 
 
-@dataclass(frozen=True)
-class _Row:
-    """One finding awaiting a ticket, with the row it must be written back to.
-
-    The two carriers store the same seven fields under different names
-    (``TestCaseExecution`` prefixes them ``finding_``), so they are read
-    into this shape once and everything below is carrier-agnostic.
-    """
-
-    row: object  # TestCaseExecution | ExploratoryFinding
-    report: FindingReport
-    source_label: str  # test-case title | charter text
-    screenshot_path: str | None = None
-
-
-# ── Reading findings off either carrier ───────────────────────────────
-
-
-def _scripted_rows(execution: TestExecution) -> list[_Row]:
-    """This execution's unfiled bug findings, in case order."""
-    rows: list[_Row] = []
-    for case in execution.cases:
-        # `finding_type` is derived from `status` alone, so the title check
-        # is not redundant with it — and it is the last guard before an
-        # outbound write: a case marked `failed` with no report would file
-        # an empty ticket into Jira or GitHub, which this application
-        # cannot take back.
-        if case.finding_type != FindingType.BUG or not case.finding_title:
-            continue
-        if case.tracker_issue_key:
-            continue  # already filed — idempotency across retries
-        rows.append(
-            _Row(
-                row=case,
-                report=FindingReport(
-                    finding_type=FindingType.BUG.value,
-                    severity=case.finding_severity or "",
-                    title=case.finding_title,
-                    steps_to_reproduce=case.finding_steps_to_reproduce or "",
-                    expected=case.finding_expected or "",
-                    actual=case.finding_actual or "",
-                    environment=case.environment,
-                ),
-                source_label=case.test_case.title if case.test_case else "",
-            )
-        )
-    return rows
-
-
-def _exploratory_rows(run: ExploratoryRun) -> list[_Row]:
-    """This run's unfiled bug findings, in session then position order."""
-    rows: list[_Row] = []
-    for exploratory_session in run.sessions:
-        for finding in exploratory_session.findings:
-            if finding.finding_type != FindingType.BUG or finding.tracker_issue_key:
-                continue
-            rows.append(
-                _Row(
-                    row=finding,
-                    report=FindingReport(
-                        finding_type=FindingType.BUG.value,
-                        severity=finding.severity,
-                        title=finding.title,
-                        steps_to_reproduce=finding.steps_to_reproduce,
-                        expected=finding.expected,
-                        actual=finding.actual,
-                        environment=finding.environment,
-                    ),
-                    source_label=exploratory_session.charter,
-                    screenshot_path=finding.screenshot_path,
-                )
-            )
-    return rows
-
-
 # ── Resolving the parent ──────────────────────────────────────────────
 
 
@@ -177,7 +105,10 @@ class _ParentSpec:
 
     sprint: object
     export_findings: bool
-    rows: list[_Row]
+    # A factory, not a list: `_export` tests the toggle before calling it,
+    # and the toggle defaults off, so the common completion path must not
+    # pay for a traversal whose result it discards.
+    rows: Callable[[], list[Finding]]
     run_label: str
     source_kind: str
     requirement_name: str
@@ -193,7 +124,7 @@ def _spec_for(parent: object) -> _ParentSpec | None:
         return _ParentSpec(
             sprint=run.sprint if run is not None else None,
             export_findings=bool(run is not None and run.export_findings),
-            rows=_scripted_rows(parent),
+            rows=lambda: list(iter_findings(parent, bugs_only=True, unfiled_only=True)),
             run_label=f"Scripted run {run.id}" if run is not None else "Scripted run",
             source_kind="scripted",
             requirement_name=parent.requirement_name,
@@ -202,7 +133,7 @@ def _spec_for(parent: object) -> _ParentSpec | None:
         return _ParentSpec(
             sprint=parent.sprint,
             export_findings=bool(parent.export_findings),
-            rows=_exploratory_rows(parent),
+            rows=lambda: list(iter_findings(parent, bugs_only=True, unfiled_only=True)),
             run_label=f"Exploratory run {parent.id}",
             source_kind="exploratory",
             requirement_name=parent.requirement_name,
@@ -233,32 +164,42 @@ def _tracker_config(config: IssueTrackerConfig) -> TrackerConfig | None:
 
 
 def _secret_values(sprint: Sprint) -> frozenset[str]:
-    """Environment values to blank out of ticket text, minus the base URLs.
+    """Environment values to blank out of ticket text.
 
-    Same rule the exploratory action log uses: a URL is something a bug
-    report has to be allowed to name, and redacting it would gut the
-    report while protecting nothing.
+    Every http(s) value is kept: unlike the exploratory task there is no
+    run here to say which variable was the application's own URL, so the
+    URL shape is the only signal available.
     """
     test_env = sprint.test_environment
     env_vars = test_env.env_vars if test_env is not None else None
-    if not env_vars:
-        return frozenset()
-    base_urls = {
-        value
-        for value in env_vars.values()
-        if isinstance(value, str) and value.startswith(("http://", "https://"))
-    }
-    return frozenset(set(env_vars.values()) - base_urls)
+    return redactable_values(env_vars, keep=url_values(env_vars))
 
 
 # ── Grouping, and the ticket a group already holds ────────────────────
 
 
-def _bucket_key(entry: _Row) -> tuple:
+def _report(entry: Finding) -> FindingReport:
+    """The finding as the transport wants it.
+
+    ``finding_type`` is pinned to ``bug`` rather than copied: only bugs
+    reach this module, and the transport's field is a plain string.
+    """
+    return FindingReport(
+        finding_type=FindingType.BUG.value,
+        severity=entry.severity,
+        title=entry.title,
+        steps_to_reproduce=entry.steps_to_reproduce,
+        expected=entry.expected,
+        actual=entry.actual,
+        environment=entry.environment,
+    )
+
+
+def _bucket_key(entry: Finding) -> tuple:
     """Which defect this finding is an occurrence of.
 
     Read off the row **after** ``assign_defect_groups`` has committed, not
-    snapshotted into ``_Row`` by ``_spec_for``, which runs before it.
+    snapshotted into ``Finding`` by the traversal, which runs before it.
 
     The same shape ``qa_metrics._defect_key`` uses, minus its ticket
     branch: a receipt cannot be a *grouping* key here, since every row
@@ -271,7 +212,7 @@ def _bucket_key(entry: _Row) -> tuple:
         return ("group", entry.row.defect_group_id)
     return (
         "text",
-        finding_dedup.dedup_key(entry.report.title, entry.report.expected, entry.report.actual),
+        finding_dedup.dedup_key(entry.title, entry.expected, entry.actual),
     )
 
 
@@ -363,7 +304,7 @@ def _record_group_ticket(
         )
 
 
-def _also_observed(duplicates: list[_Row], run_label: str) -> tuple[str, ...]:
+def _also_observed(duplicates: list[Finding], run_label: str) -> tuple[str, ...]:
     """The other findings this ticket stands for, one line each.
 
     Title, run, and timestamp rather than the title alone: nothing is
@@ -371,13 +312,13 @@ def _also_observed(duplicates: list[_Row], run_label: str) -> tuple[str, ...]:
     entire record of how often and when the defect was seen.
     """
     observed = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return tuple(f"{entry.report.title} — {run_label}, {observed}" for entry in duplicates)
+    return tuple(f"{entry.title} — {run_label}, {observed}" for entry in duplicates)
 
 
 # ── Persisting ────────────────────────────────────────────────────────
 
 
-def _write_success(entry: _Row, key: str, url: str, target: str, *, duplicate: bool) -> None:
+def _write_success(entry: Finding, key: str, url: str, target: str, *, duplicate: bool) -> None:
     entry.row.tracker_issue_key = key
     entry.row.tracker_issue_url = url
     entry.row.tracker_target = target
@@ -385,7 +326,7 @@ def _write_success(entry: _Row, key: str, url: str, target: str, *, duplicate: b
     entry.row.tracker_error = None
 
 
-def _write_failure(entry: _Row, message: str) -> None:
+def _write_failure(entry: Finding, message: str) -> None:
     """Leave the key unset so a retry re-elects and re-files the group."""
     entry.row.tracker_issue_key = None
     entry.row.tracker_issue_url = None
@@ -394,7 +335,7 @@ def _write_failure(entry: _Row, message: str) -> None:
     entry.row.tracker_error = message[:_TRACKER_ERROR_MAX_CHARS]
 
 
-def _attach_screenshot(config: TrackerConfig, key: str, entry: _Row) -> None:
+def _attach_screenshot(config: TrackerConfig, key: str, entry: Finding) -> None:
     """Best-effort image upload for the representative finding only.
 
     A duplicate files nothing, so it has no ticket of its own to
@@ -447,14 +388,19 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
     if spec is None:
         return ExportOutcome()
 
-    # Fast exit before any config load or network call. This is what makes
-    # calling export from every completion path free, and it is why every
-    # pre-existing run test is unaffected: export_findings defaults false.
-    #
-    # The `not spec.rows` half stays unconditional — a run with nothing to
-    # file is a no-op however it got here, which is what keeps the retry
-    # button from being a trap.
-    if (not requested and not spec.export_findings) or not spec.rows:
+    # Fast exit before the findings are even read, let alone any config
+    # load or network call — which is what makes calling export from every
+    # completion path free. `export_findings` defaults off, so this is the
+    # common path, and building the reports here would mean a traversal
+    # plus one lazy load per bug case, all discarded on the next line.
+    if not requested and not spec.export_findings:
+        return ExportOutcome()
+
+    # The empty check stays unconditional — a run with nothing to file is a
+    # no-op however it got here, which is what keeps the retry button from
+    # being a trap.
+    rows = spec.rows()
+    if not rows:
         return ExportOutcome()
 
     sprint = spec.sprint
@@ -481,26 +427,26 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
         # The tracker was disconnected between run start and completion.
         # Recorded on the findings so the run page can offer a retry once
         # something is connected again, rather than silently doing nothing.
-        for entry in spec.rows:
+        for entry in rows:
             _write_failure(entry, "No issue tracker is connected to this sprint.")
             session.add(entry.row)
         session.commit()
-        return ExportOutcome(failed=len(spec.rows))
+        return ExportOutcome(failed=len(rows))
 
     config = _tracker_config(tracker_row)
     if config is None:
-        for entry in spec.rows:
+        for entry in rows:
             _write_failure(entry, "The stored issue-tracker token could not be read.")
             session.add(entry.row)
         session.commit()
-        return ExportOutcome(failed=len(spec.rows))
+        return ExportOutcome(failed=len(rows))
 
     target = tracker_row.tracker_target
     secrets = _secret_values(sprint)
 
     # One bucket per distinct defect, in row order.
-    buckets: dict[tuple, list[_Row]] = {}
-    for entry in spec.rows:
+    buckets: dict[tuple, list[Finding]] = {}
+    for entry in rows:
         buckets.setdefault(_bucket_key(entry), []).append(entry)
 
     if any(bucket[0] == "text" for bucket in buckets):
@@ -529,11 +475,11 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
         # path, which only the row carries.
         candidates = [
             FindingCandidate(
-                severity=entry.report.severity,
-                title=entry.report.title,
-                steps_to_reproduce=entry.report.steps_to_reproduce,
-                expected=entry.report.expected,
-                actual=entry.report.actual,
+                severity=entry.severity,
+                title=entry.title,
+                steps_to_reproduce=entry.steps_to_reproduce,
+                expected=entry.expected,
+                actual=entry.actual,
             )
             for entry in members
         ]
@@ -570,7 +516,7 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
                 superseded_key=superseded_key,
             )
             try:
-                ref = issue_tracker.create_issue(config, representative.report, context)
+                ref = issue_tracker.create_issue(config, _report(representative), context)
             except TrackerError as exc:
                 # Every member, not just the representative: a retry has
                 # to re-elect and re-file the whole group, which it can

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { deactivateRepo, fetchRepos } from '../services/api'
 import type { RepoResponse } from '../types'
+import { formatDate } from '../format'
 import './RepoListPage.css'
 
 export default function RepoListPage() {
@@ -72,9 +73,7 @@ export default function RepoListPage() {
                 >
                   {repo.github_link}
                 </a>
-                <time className="repo-date">
-                  Added {new Date(repo.created_at).toLocaleDateString()}
-                </time>
+                <time className="repo-date">Added {formatDate(repo.created_at)}</time>
               </div>
               <div className="repo-card-footer">
                 <button

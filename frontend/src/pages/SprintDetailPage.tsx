@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import PrdUploadForm from '../components/PrdUploadForm'
 import RequirementCard from '../components/RequirementCard'
@@ -10,9 +10,9 @@ import {
   finishSprint,
 } from '../services/api'
 import type { RequirementResponse, SprintResponse } from '../types'
+import { usePolling } from '../hooks/usePolling'
+import { formatDate } from '../format'
 import './SprintDetailPage.css'
-
-const POLL_INTERVAL_MS = 2500
 
 // Statuses that still change without user input — worth polling for.
 function isInProgress(requirement: RequirementResponse): boolean {
@@ -34,8 +34,6 @@ export default function SprintDetailPage() {
   const [continueError, setContinueError] = useState<string | null>(null)
   const [confirmingAll, setConfirmingAll] = useState(false)
   const [confirmAllError, setConfirmAllError] = useState<string | null>(null)
-
-  const fetchingRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -70,24 +68,7 @@ export default function SprintDetailPage() {
     (req) => req.status === 'ready' || req.status === 'needs_clarification',
   ).length
 
-  useEffect(() => {
-    if (!shouldPoll) return
-
-    const pollId = setInterval(() => {
-      if (fetchingRef.current) return
-      fetchingRef.current = true
-      fetchRequirements(sprintId)
-        .then(setRequirements)
-        .catch(() => {
-          /* transient poll failure — retry on next tick */
-        })
-        .finally(() => {
-          fetchingRef.current = false
-        })
-    }, POLL_INTERVAL_MS)
-
-    return () => clearInterval(pollId)
-  }, [shouldPoll, sprintId])
+  usePolling(() => fetchRequirements(sprintId).then(setRequirements), { enabled: shouldPoll })
 
   const handleFinish = () => {
     setFinishing(true)
@@ -173,9 +154,7 @@ export default function SprintDetailPage() {
         </span>
       </header>
 
-      <time className="sprint-detail-date">
-        Created {new Date(sprint.created_at).toLocaleDateString()}
-      </time>
+      <time className="sprint-detail-date">Created {formatDate(sprint.created_at)}</time>
 
       {repo && (
         <section className="repo-info-card">

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import TestPlanCard from '../components/TestPlanCard'
 import {
@@ -9,9 +9,8 @@ import {
   generateTestPlans,
 } from '../services/api'
 import type { SprintResponse, TestPlanResponse } from '../types'
+import { usePolling } from '../hooks/usePolling'
 import './TestPlansPage.css'
-
-const POLL_INTERVAL_MS = 2500
 
 // Statuses that still change without user input — worth polling for.
 function isInProgress(plan: TestPlanResponse): boolean {
@@ -30,8 +29,6 @@ export default function TestPlansPage() {
   const [generating, setGenerating] = useState(false)
   const [finishing, setFinishing] = useState(false)
   const [approvingAll, setApprovingAll] = useState(false)
-
-  const fetchingRef = useRef(false)
 
   // The sprint carries the flags that decide what this page offers
   // (`test_plans_missing`, `test_plans_complete`), and both move when the
@@ -66,24 +63,7 @@ export default function TestPlansPage() {
   const shouldPoll = plans.some(isInProgress)
   const approvableCount = plans.filter((plan) => plan.status === 'draft').length
 
-  useEffect(() => {
-    if (!shouldPoll) return
-
-    const pollId = setInterval(() => {
-      if (fetchingRef.current) return
-      fetchingRef.current = true
-      fetchTestPlans(sprintId)
-        .then(setPlans)
-        .catch(() => {
-          /* transient poll failure — retry on next tick */
-        })
-        .finally(() => {
-          fetchingRef.current = false
-        })
-    }, POLL_INTERVAL_MS)
-
-    return () => clearInterval(pollId)
-  }, [shouldPoll, sprintId])
+  usePolling(() => fetchTestPlans(sprintId).then(setPlans), { enabled: shouldPoll })
 
   const handleGenerate = () => {
     setGenerating(true)

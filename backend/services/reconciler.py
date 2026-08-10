@@ -2,7 +2,7 @@
 
 Runs as an asyncio background task started by the FastAPI lifespan.  Each
 tick (``reconcile_once``) does four things, for every job-backed row type
-(requirements and test plans — see ``_SWEEP_SPECS``):
+(requirements and test plans — see ``SWEEP_SPECS``):
 
 1. If Redis was down, rebuild the queue-service singleton (reconnect).
 2. Fail pending/running rows whose sprint is inactive — races around
@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _SweepSpec:
+class SweepSpec:
     """One job-backed row type the reconciler sweeps.
 
     The machinery columns (``status``/``retry_count``/``job_id``/
@@ -114,8 +114,8 @@ class _SweepSpec:
     scope_query: Callable[[SelectOfScalar], SelectOfScalar]
 
 
-_SWEEP_SPECS: tuple[_SweepSpec, ...] = (
-    _SweepSpec(
+SWEEP_SPECS: tuple[SweepSpec, ...] = (
+    SweepSpec(
         model=Requirement,
         label="Requirement",
         pending_status=RequirementStatus.PENDING,
@@ -130,7 +130,7 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
         child_spec=None,
         scope_query=lambda stmt: stmt.join(Sprint),
     ),
-    _SweepSpec(
+    SweepSpec(
         model=TestPlan,
         label="Test plan",
         pending_status=TestPlanStatus.PENDING,
@@ -147,7 +147,7 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             Requirement, TestPlan.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
     ),
-    _SweepSpec(
+    SweepSpec(
         model=TestExecution,
         label="Test execution",
         pending_status=TestExecutionStatus.PENDING,
@@ -164,7 +164,7 @@ _SWEEP_SPECS: tuple[_SweepSpec, ...] = (
             Requirement, TestExecution.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
     ),
-    _SweepSpec(
+    SweepSpec(
         model=ExploratoryRun,
         label="Exploratory run",
         pending_status=ExploratoryRunStatus.PENDING,
@@ -198,7 +198,7 @@ def _is_stale(timestamp: datetime | None, now: datetime, threshold_seconds: int)
     return (now - timestamp).total_seconds() > threshold_seconds
 
 
-def _settle_children(session, spec: _SweepSpec, parent_id: int, reason: str) -> None:
+def _settle_children(session, spec: SweepSpec, parent_id: int, reason: str) -> None:
     """Settle a just-failed row's child rows, if its type has any.
 
     A no-op for Requirement/TestPlan.  Called only from the branches that
@@ -210,7 +210,42 @@ def _settle_children(session, spec: _SweepSpec, parent_id: int, reason: str) -> 
     abandon_unreached_children(session, spec.child_spec, parent_id, reason)
 
 
-def _sweep_inactive_sprints(session, spec: _SweepSpec, now: datetime) -> None:
+def fail_in_progress_rows(session, spec: SweepSpec, scope, now: datetime) -> list:
+    """Fail every in-progress row of one type matching ``scope``.
+
+    The shared body of the two sweeps that retire work on a sprint nobody
+    can act on any more: the reconciler's convergence pass (``scope`` =
+    every inactive sprint) and ``routes/sprints.finish_sprint`` (``scope``
+    = this one sprint).  ``spec.scope_query`` supplies the join to
+    ``Sprint`` that lets both express their filter as a plain predicate.
+
+    Stages without committing, so the caller decides the transaction —
+    ``finish_sprint`` lands this in the same commit that deactivates the
+    sprint.  Returns the affected rows; each caller logs its own way, one
+    per row for the reconciler and one aggregate per type for the route.
+    """
+    rows = session.exec(
+        spec.scope_query(select(spec.model)).where(
+            spec.model.status.in_([spec.pending_status, spec.running_status]),
+            scope,
+        )
+    ).all()
+    for row in rows:
+        row.status = spec.failed_status
+        row.error = SPRINT_FINISHED_ERROR
+        row.last_heartbeat = None
+        if spec.clear_field is not None:
+            setattr(row, spec.clear_field, None)
+        row.updated_at = now
+        session.add(row)
+        # A terminal parent leaves no non-terminal children — otherwise the
+        # cases or charters this run never reached read as "Queued" forever
+        # on a sprint that can no longer run anything.
+        _settle_children(session, spec, row.id, SPRINT_FINISHED_ERROR)
+    return list(rows)
+
+
+def _sweep_inactive_sprints(session, spec: SweepSpec, now: datetime) -> None:
     """Fail in-progress rows on finished sprints.
 
     finish_sprint fails in-progress rows in its own commit, but races
@@ -220,25 +255,17 @@ def _sweep_inactive_sprints(session, spec: _SweepSpec, now: datetime) -> None:
     sprint.  Runs before the stale-heartbeat sweep so such rows are
     failed, not re-pended.
     """
-    orphaned = session.exec(
-        spec.scope_query(select(spec.model)).where(
-            spec.model.status.in_([spec.pending_status, spec.running_status]),
-            Sprint.active.is_(False),  # type: ignore[attr-defined]
-        )
-    ).all()
+    orphaned = fail_in_progress_rows(
+        session,
+        spec,
+        Sprint.active.is_(False),  # type: ignore[attr-defined]
+        now,
+    )
     for row in orphaned:
-        row.status = spec.failed_status
-        row.error = SPRINT_FINISHED_ERROR
-        row.last_heartbeat = None
-        if spec.clear_field is not None:
-            setattr(row, spec.clear_field, None)
-        row.updated_at = now
-        session.add(row)
-        _settle_children(session, spec, row.id, SPRINT_FINISHED_ERROR)
         logger.info("%s %d: sprint inactive — marked failed", spec.label, row.id)
 
 
-def _sweep_stale_heartbeats(session, spec: _SweepSpec, now: datetime) -> None:
+def _sweep_stale_heartbeats(session, spec: SweepSpec, now: datetime) -> None:
     """Return running rows with a stale worker heartbeat to pending (or fail)."""
     running = session.exec(select(spec.model).where(spec.model.status == spec.running_status)).all()
     for row in running:
@@ -269,7 +296,7 @@ def _sweep_stale_heartbeats(session, spec: _SweepSpec, now: datetime) -> None:
         session.add(row)
 
 
-def _sweep_pending(session, spec: _SweepSpec, queue_service: Any, now: datetime) -> None:
+def _sweep_pending(session, spec: SweepSpec, queue_service: Any, now: datetime) -> None:
     """Enqueue pending rows without a live RQ job (finished sprints excluded
     — their rows were failed by the inactive-sprint sweep)."""
     enqueue: Callable[[int], Any] = getattr(queue_service, spec.enqueue_name)
@@ -333,7 +360,7 @@ def reconcile_once() -> None:
 
     now = datetime.now(timezone.utc)
     with new_session() as session:
-        for spec in _SWEEP_SPECS:
+        for spec in SWEEP_SPECS:
             _sweep_inactive_sprints(session, spec, now)
             _sweep_stale_heartbeats(session, spec, now)
             if queue_service.available:

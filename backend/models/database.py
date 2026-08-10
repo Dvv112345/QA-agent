@@ -874,22 +874,19 @@ class TestRun(SQLModel, table=True):
     def bug_findings(self) -> list["TestCaseExecution"]:
         """Every case in this run that reported the product being wrong.
 
-        Gated on ``finding_title`` as well as type, and for a reason of its
-        own: this list is what ``export_rollup`` counts and what
+        Gated on a report as well as a type, which matters here rather than
+        being pedantry: this list is what ``export_rollup`` counts and what
         ``finding_export`` files.  An ungated case with no report would land
         in ``unexported_finding_count``, so the run page would offer to file
         a bug that does not exist — and pressing the button would hand that
-        row to the exporter.
-
-        ``finding_type`` is derived from ``status`` alone, which is what
-        makes the extra condition necessary rather than redundant.
+        row to the exporter.  ``services/findings.py`` owns that gate for
+        every reader of it.
         """
-        return [
-            case
-            for execution in self.executions
-            for case in execution.cases
-            if case.finding_type == FindingType.BUG and case.finding_title
-        ]
+        # Imported here rather than at module scope: `services/findings.py`
+        # reads these models, so a top-level import would be a cycle.
+        from backend.services.findings import iter_findings
+
+        return [finding.row for finding in iter_findings(self, bugs_only=True)]
 
     # The export roll-up is deliberately *not* exposed here as five
     # properties. Each would re-walk `executions x cases` on every access,
@@ -1257,12 +1254,10 @@ class ExploratoryRun(SQLModel, table=True):
     @property
     def bug_findings(self) -> list["ExploratoryFinding"]:
         """Every finding in this run reporting the product being wrong."""
-        return [
-            finding
-            for exploratory_session in self.sessions
-            for finding in exploratory_session.findings
-            if finding.finding_type == FindingType.BUG
-        ]
+        # See TestRun.bug_findings for why this import is deferred.
+        from backend.services.findings import iter_findings
+
+        return [finding.row for finding in iter_findings(self, bugs_only=True)]
 
 
 class ExploratorySession(SQLModel, table=True):
@@ -1306,6 +1301,16 @@ class ExploratorySession(SQLModel, table=True):
         """Decoded ``sfdipot_areas_csv`` — see ``ExploratoryRun.base_url_env_vars``."""
         return [area for area in self.sfdipot_areas_csv.split(",") if area]
 
+    @property
+    def finding_count(self) -> int:
+        """How many findings this session recorded.
+
+        A property so the summary response can be coerced straight off the
+        row (``Repo.has_access_token``'s precedent) rather than composed
+        field by field in the route.
+        """
+        return len(self.findings)
+
 
 class ExploratoryFinding(SQLModel, table=True):
     """One bug or issue recorded during a session.
@@ -1347,3 +1352,13 @@ class ExploratoryFinding(SQLModel, table=True):
     )
 
     session: Optional["ExploratorySession"] = Relationship(back_populates="findings")
+
+    @property
+    def has_screenshot(self) -> bool:
+        """Whether a screenshot was captured and stored for this finding.
+
+        The path itself is never serialized — it is a server-side location,
+        and the image is served by its own endpoint. Clients only need to
+        know whether to ask for it.
+        """
+        return self.screenshot_path is not None

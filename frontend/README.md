@@ -27,6 +27,23 @@ Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
 | `/sprints/:id/exploratory-sessions/:sessionId` | `ExploratorySessionPage`   | SBTM session sheet: charter, SFDIPOT areas, actions used, notes, findings with screenshots, action log; polls while the session is queued or exploring                                                                      |
 | `/repos`                                       | `RepoListPage`             | Registered repos; deactivate unused ones                                                                                                                                                                                    |
 
+## Shared modules
+
+Behaviour every page needs lives in one place rather than per page. Reach for these before writing a new copy:
+
+| Module                  | What it owns                                                                                                                                                      |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hooks/usePolling.ts`   | The 2.5 s refresh interval, the in-flight guard, and `EXPORT_GRACE_TICKS` — the bounded extra polling that covers findings being filed after a run reads terminal |
+| `hooks/useAsyncData.ts` | Load-on-mount with the cancellation guard; returns `{ data, loading, error, setData }`                                                                            |
+| `hooks/useAction.ts`    | One-shot mutations: `busy`, `error`, and a `run(promise, also?)` that clears the error when a new attempt starts                                                  |
+| `outdated.ts`           | `isOutdated(run)` — staleness derived client-side from `outdated_reasons`                                                                                         |
+| `exportState.ts`        | `awaitingExport(run)` — whether a completed run's findings are probably still being filed                                                                         |
+| `statusLabels.ts`       | How each status reads, keyed by its status union so a missing label is a type error                                                                               |
+| `format.ts`             | `plural`, `formatDate`, `formatDateTime`                                                                                                                          |
+| `styles/controls.css`   | `.btn*`, `.badge*`, `.run-badge*`, `.session-badge*`, `.back-link(s)` — imported once from `App.tsx`; colocated `.css` files stay page-local                      |
+
+`FindingCard`, `ExportSummary`, `OutdatedBadge` and `RestartControl` are source-agnostic: scripted and exploratory results render through the same components.
+
 ## QA metrics
 
 `SprintMetricsPanel` sits above both run lists on the test-runs page, fed by `GET /api/sprints/:id/qa-metrics` and refreshed on the same poll as the lists. Four tiles: test cases run, exploratory sessions, distinct bugs, and defect density — plus a per-requirement breakdown ordered worst-first, with archived requirements marked `(deleted)`. Only the bug figure is a distinct-defect count; the issue count beside it is raw, because an issue reports obstructed testing rather than a defect (see `backend/README.md`).

@@ -7,6 +7,7 @@ import {
   updateRequirement,
 } from '../services/api'
 import type { RequirementResponse, RequirementStatus } from '../types'
+import { useAction } from '../hooks/useAction'
 import './RequirementCard.css'
 
 const STATUS_LABELS: Record<RequirementStatus, string> = {
@@ -40,28 +41,19 @@ export default function RequirementCard({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [showOriginal, setShowOriginal] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const { status } = requirement
   const inProgress = status === 'pending' || status === 'analyzing'
   const wasRewritten = requirement.description !== requirement.original_description
   const capReached = requirement.clarification_cap_reached
 
-  const runAction = (
-    promise: Promise<RequirementResponse>,
-    onSuccess?: (updated: RequirementResponse) => void,
-  ) => {
-    setBusy(true)
-    setError(null)
-    promise
-      .then((updated) => {
-        onSuccess?.(updated)
-        onUpdated(updated)
-      })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setBusy(false))
-  }
+  const {
+    busy,
+    error,
+    run: runAction,
+    setBusy,
+    setError,
+  } = useAction<RequirementResponse>(onUpdated)
 
   const handleAnswer = () => {
     const trimmed = answer.trim()
@@ -201,41 +193,35 @@ export default function RequirementCard({
                 ))}
             </div>
           )}
-
-          {sprintActive && (
-            <div className="requirement-card-actions">
-              {status === 'needs_clarification' && (
-                <button className="btn btn-secondary" onClick={handleConfirm} disabled={busy}>
-                  Confirm as-is
-                </button>
-              )}
-              {status === 'ready' && (
-                <button className="btn btn-primary" onClick={handleConfirm} disabled={busy}>
-                  Confirm
-                </button>
-              )}
-              {(status === 'needs_clarification' ||
-                status === 'ready' ||
-                status === 'confirmed') && (
-                <button className="btn btn-secondary" onClick={startEditing} disabled={busy}>
-                  Edit
-                </button>
-              )}
-              {status === 'failed' && (
-                <button className="btn btn-primary" onClick={handleRestart} disabled={busy}>
-                  Restart
-                </button>
-              )}
-              <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
-                Remove
-              </button>
-            </div>
-          )}
         </>
       )}
 
-      {sprintActive && inProgress && (
+      {/* One actions block for every state. Each status-specific button is
+          already gated on `status`, and an in-progress card is `pending` or
+          `analyzing` — matching none of them — so an in-progress card gets
+          Remove and nothing else without a second copy of the block. */}
+      {sprintActive && (
         <div className="requirement-card-actions">
+          {status === 'needs_clarification' && (
+            <button className="btn btn-secondary" onClick={handleConfirm} disabled={busy}>
+              Confirm as-is
+            </button>
+          )}
+          {status === 'ready' && (
+            <button className="btn btn-primary" onClick={handleConfirm} disabled={busy}>
+              Confirm
+            </button>
+          )}
+          {(status === 'needs_clarification' || status === 'ready' || status === 'confirmed') && (
+            <button className="btn btn-secondary" onClick={startEditing} disabled={busy}>
+              Edit
+            </button>
+          )}
+          {status === 'failed' && (
+            <button className="btn btn-primary" onClick={handleRestart} disabled={busy}>
+              Restart
+            </button>
+          )}
           <button className="btn btn-danger" onClick={handleRemove} disabled={busy}>
             Remove
           </button>

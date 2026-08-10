@@ -115,16 +115,6 @@
   margin-top: 0.5rem;
 }
 
-.btn-link {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--color-primary, #2563eb);
-  cursor: pointer;
-  font-size: 0.85rem;
-  text-decoration: underline;
-}
-
 /* The embedded finding card already carries its own bottom margin; this
    only separates it from the attempt count above. */
 .case-execution-finding {

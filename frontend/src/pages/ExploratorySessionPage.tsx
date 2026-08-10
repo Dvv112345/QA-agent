@@ -1,75 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import FindingCard from '../components/FindingCard'
 import { fetchExploratorySession, findingScreenshotUrl } from '../services/api'
-import type { ExploratorySessionResponse } from '../types'
+import { useAsyncData } from '../hooks/useAsyncData'
+import { usePolling } from '../hooks/usePolling'
+import { SESSION_STATUS_LABELS, STOP_REASON_LABELS } from '../statusLabels'
 import './ExploratorySessionPage.css'
-
-const POLL_INTERVAL_MS = 2500
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'Queued',
-  running: 'Exploring',
-  completed: 'Completed',
-  error: 'Error',
-  skipped: 'Not explored',
-}
-
-const STOP_REASON_LABELS: Record<string, string> = {
-  charter_complete: 'Charter explored',
-  action_cap: 'Time box exhausted',
-  model_stopped: 'Ended without calling finish_session',
-  context_limit: 'Ran out of context room',
-  error: 'Stopped by an error',
-}
 
 export default function ExploratorySessionPage() {
   const { id, sessionId } = useParams<{ id: string; sessionId: string }>()
   const sprintId = Number(id)
   const exploratorySessionId = Number(sessionId)
 
-  const [session, setSession] = useState<ExploratorySessionResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
-
-  const fetchingRef = useRef(false)
-
-  useEffect(() => {
-    let cancelled = false
-    fetchExploratorySession(exploratorySessionId)
-      .then((data) => {
-        if (cancelled) return
-        setSession(data)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (cancelled) return
-        setLoadError(err.message)
-        setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [exploratorySessionId])
+  const {
+    data: session,
+    loading,
+    error: loadError,
+    setData: setSession,
+  } = useAsyncData(() => fetchExploratorySession(exploratorySessionId), [exploratorySessionId])
 
   const inProgress = session?.status === 'pending' || session?.status === 'running'
 
-  useEffect(() => {
-    if (!inProgress) return
-    const pollId = setInterval(() => {
-      if (fetchingRef.current) return
-      fetchingRef.current = true
-      fetchExploratorySession(exploratorySessionId)
-        .then(setSession)
-        .catch(() => {
-          /* transient poll failure — retry on next tick */
-        })
-        .finally(() => {
-          fetchingRef.current = false
-        })
-    }, POLL_INTERVAL_MS)
-    return () => clearInterval(pollId)
-  }, [inProgress, exploratorySessionId])
+  usePolling(() => fetchExploratorySession(exploratorySessionId).then(setSession), {
+    enabled: !!inProgress,
+  })
 
   if (loading) return <p className="exp-session-message">Loading session sheet&hellip;</p>
   if (loadError) return <p className="exp-session-message exp-session-error">{loadError}</p>
@@ -89,7 +42,7 @@ export default function ExploratorySessionPage() {
       <header className="exp-session-header">
         <h1>Session Sheet</h1>
         <span className={`session-badge session-badge-${session.status}`}>
-          {STATUS_LABELS[session.status] ?? session.status}
+          {SESSION_STATUS_LABELS[session.status]}
         </span>
       </header>
 

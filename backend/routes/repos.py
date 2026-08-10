@@ -3,6 +3,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, Form, HTTPException
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from backend.database import get_session
@@ -110,14 +111,15 @@ async def deactivate_repo(
     if not repo.active:
         raise HTTPException(status_code=422, detail="Repo is already deactivated.")
 
-    active_sprint_count = session.exec(
-        select(Sprint).where(
+    count = session.exec(
+        select(func.count())
+        .select_from(Sprint)
+        .where(
             Sprint.repo_id == repo_id,
             Sprint.active == True,  # noqa: E712
         )
-    ).all()
-    if active_sprint_count:
-        count = len(active_sprint_count)
+    ).one()
+    if count:
         raise HTTPException(
             status_code=422,
             detail=(

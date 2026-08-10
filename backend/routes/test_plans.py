@@ -10,7 +10,6 @@ from sqlmodel import Session, select, update
 from backend.database import get_session
 from backend.models.database import (
     Requirement,
-    Sprint,
     TestCase,
     TestPlan,
     TestPlanStatus,
@@ -20,21 +19,18 @@ from backend.models.types import (
     TestPlanFeedbackRequest,
     TestPlanResponse,
 )
-from backend.services.queue import get_queue_service
+from backend.routes._common import ensure_sprint_active, get_sprint_or_404
+from backend.services.queue import enqueue_rows, get_queue_service
 from backend.utils.auth import verify_auth
 
 logger = logging.getLogger(__name__)
 
+# Completes "Sprint is finished — {}." for every gate in this module.
+_GATE_SUBJECT = "test plans can no longer be modified"
+
 router = APIRouter(dependencies=[Depends(verify_auth)])
 
 _VALID_COMPLEXITIES = {"low", "medium", "high"}
-
-
-def _get_sprint_or_404(session: Session, sprint_id: int) -> Sprint:
-    sprint = session.get(Sprint, sprint_id)
-    if sprint is None:
-        raise HTTPException(status_code=404, detail="Sprint not found.")
-    return sprint
 
 
 def _get_plan_or_404(session: Session, plan_id: int) -> TestPlan:
@@ -44,35 +40,8 @@ def _get_plan_or_404(session: Session, plan_id: int) -> TestPlan:
     return plan
 
 
-def _ensure_sprint_active(sprint: Sprint | None) -> None:
-    if sprint is None or not sprint.active:
-        raise HTTPException(
-            status_code=422,
-            detail="Sprint is finished — test plans can no longer be modified.",
-        )
-
-
 def _touch(plan: TestPlan) -> None:
     plan.updated_at = datetime.now(timezone.utc)
-
-
-def _enqueue_plans(session: Session, rows: list[TestPlan]) -> None:
-    """Best-effort enqueue after commit — failure is the reconciler's job.
-
-    Successful enqueues persist the job id for the reconciler's dedup check.
-    """
-    queue_service = get_queue_service()
-    enqueued = False
-    for row in rows:
-        job = queue_service.enqueue_test_plan(row.id)
-        if job is not None:
-            row.job_id = job.id
-            session.add(row)
-            enqueued = True
-    if enqueued:
-        session.commit()
-        for row in rows:
-            session.refresh(row)
 
 
 def _sprint_plans(session: Session, sprint_id: int) -> list[TestPlan]:
@@ -103,8 +72,8 @@ async def generate_test_plans(
     Idempotent: requirements that already have a plan in any non-failed
     status are skipped, and the full plan list is returned either way.
     """
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
     if not sprint.environment_confirmed:
         raise HTTPException(
             status_code=422,
@@ -133,7 +102,7 @@ async def generate_test_plans(
     for plan in to_enqueue:
         session.refresh(plan)
 
-    _enqueue_plans(session, to_enqueue)
+    enqueue_rows(session, to_enqueue, get_queue_service().enqueue_test_plan)
 
     if to_enqueue:
         logger.info(
@@ -148,7 +117,7 @@ async def list_test_plans(
     session: Session = Depends(get_session),
 ) -> list[TestPlan]:
     """List a sprint's test plans — this is the polling endpoint (plain DB read)."""
-    _get_sprint_or_404(session, sprint_id)
+    get_sprint_or_404(session, sprint_id)
     return _sprint_plans(session, sprint_id)
 
 
@@ -160,7 +129,7 @@ async def submit_feedback(
 ) -> TestPlan:
     """Store the user's feedback on a draft plan and queue an LLM revision."""
     plan = _get_plan_or_404(session, plan_id)
-    _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
+    ensure_sprint_active(plan.requirement.sprint if plan.requirement else None, _GATE_SUBJECT)
 
     if plan.status not in (TestPlanStatus.DRAFT, TestPlanStatus.APPROVED):
         raise HTTPException(
@@ -181,7 +150,7 @@ async def submit_feedback(
     session.add(plan)
     session.commit()
     session.refresh(plan)
-    _enqueue_plans(session, [plan])
+    enqueue_rows(session, [plan], get_queue_service().enqueue_test_plan)
     return plan
 
 
@@ -193,7 +162,7 @@ async def edit_test_plan(
 ) -> TestPlan:
     """Directly edit a draft plan (no LLM, uncapped, stays draft)."""
     plan = _get_plan_or_404(session, plan_id)
-    _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
+    ensure_sprint_active(plan.requirement.sprint if plan.requirement else None, _GATE_SUBJECT)
 
     if plan.status not in (TestPlanStatus.DRAFT, TestPlanStatus.APPROVED):
         raise HTTPException(status_code=422, detail="Only draft or approved plans can be edited.")
@@ -260,7 +229,7 @@ async def approve_test_plan(
 ) -> TestPlan:
     """Approve a draft plan (terminal — no unapprove, no regenerate)."""
     plan = _get_plan_or_404(session, plan_id)
-    _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
+    ensure_sprint_active(plan.requirement.sprint if plan.requirement else None, _GATE_SUBJECT)
 
     if plan.status != TestPlanStatus.DRAFT:
         raise HTTPException(status_code=422, detail="Only draft plans can be approved.")
@@ -286,8 +255,8 @@ async def approve_all_test_plans(
     Ineligible plans (still pending/generating, already approved, failed, …)
     are left untouched — same idempotent-skip semantics as ``generate_test_plans``.
     """
-    sprint = _get_sprint_or_404(session, sprint_id)
-    _ensure_sprint_active(sprint)
+    sprint = get_sprint_or_404(session, sprint_id)
+    ensure_sprint_active(sprint, _GATE_SUBJECT)
 
     session.exec(
         update(TestPlan)
@@ -317,7 +286,7 @@ async def restart_test_plan(
     ``pending_feedback`` is kept so an interrupted feedback revision resumes.
     """
     plan = _get_plan_or_404(session, plan_id)
-    _ensure_sprint_active(plan.requirement.sprint if plan.requirement else None)
+    ensure_sprint_active(plan.requirement.sprint if plan.requirement else None, _GATE_SUBJECT)
 
     if plan.status != TestPlanStatus.FAILED:
         raise HTTPException(status_code=422, detail="Only failed plans can be restarted.")
@@ -329,5 +298,5 @@ async def restart_test_plan(
     session.add(plan)
     session.commit()
     session.refresh(plan)
-    _enqueue_plans(session, [plan])
+    enqueue_rows(session, [plan], get_queue_service().enqueue_test_plan)
     return plan

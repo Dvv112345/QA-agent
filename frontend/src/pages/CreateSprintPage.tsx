@@ -207,7 +207,7 @@ export default function CreateSprintPage() {
           <button
             type="submit"
             className="btn btn-primary"
-            disabled={loading || hasReadme === false ? !readmeFile : false}
+            disabled={loading || (hasReadme === false && !readmeFile)}
           >
             {loading ? 'Creating…' : 'Create Sprint'}
           </button>

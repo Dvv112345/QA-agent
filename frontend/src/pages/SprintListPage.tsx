@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchSprints, finishSprint } from '../services/api'
 import type { SprintResponse } from '../types'
+import { formatDate } from '../format'
 import './SprintListPage.css'
 
 export default function SprintListPage() {
@@ -33,8 +34,10 @@ export default function SprintListPage() {
   const handleFinish = (sprintId: number) => {
     setFinishing(sprintId)
     finishSprint(sprintId)
-      .then(() => fetchSprints())
-      .then((data) => setSprints(data))
+      // The response is the updated sprint — every other caller uses it.
+      // Refetching the list instead re-downloaded every sprint to learn
+      // what this one call already returned.
+      .then((updated) => setSprints((prev) => prev.map((s) => (s.id === updated.id ? updated : s))))
       .catch((err: Error) => setError(err.message))
       .finally(() => setFinishing(null))
   }
@@ -80,9 +83,7 @@ export default function SprintListPage() {
               >
                 <h2 className="sprint-card-name">{sprint.name}</h2>
                 <p className="sprint-card-repo">{sprint.repo?.name ?? 'Unknown repo'}</p>
-                <time className="sprint-card-date">
-                  {new Date(sprint.created_at).toLocaleDateString()}
-                </time>
+                <time className="sprint-card-date">{formatDate(sprint.created_at)}</time>
               </Link>
               <div className="sprint-card-footer">
                 <span className={`badge ${sprint.active ? 'badge-active' : 'badge-finished'}`}>

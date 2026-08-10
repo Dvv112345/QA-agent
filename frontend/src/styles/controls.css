@@ -1,0 +1,165 @@
+/*
+ * The app's shared control layer: buttons, badges, and the back-link row.
+ *
+ * These are global class names, and they were previously defined inside
+ * page-scoped stylesheets — `.btn` in `SprintListPage.css`, `.run-badge` in
+ * two different run pages, `.btn-link` in three files. Nothing was
+ * code-split, so every one of them was always loaded and which definition
+ * won came down to import order rather than intent. Two had actually
+ * diverged (see the notes below).
+ *
+ * Imported once from `App.tsx`. Colocated `.css` files should now hold only
+ * selectors genuinely local to their page or component.
+ */
+
+/* ── Buttons ─────────────────────────────────────────────────────── */
+
+.btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.btn-primary {
+  background: var(--color-primary, #2563eb);
+  color: #fff;
+}
+
+.btn-secondary {
+  background: var(--color-secondary, #6b7280);
+  color: #fff;
+}
+
+.btn-danger {
+  background: var(--color-danger, #dc3545);
+  color: #fff;
+}
+
+.btn-small {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* A button that reads as a link — "Show original", "View script". */
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-primary, #2563eb);
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
+/* ── Navigation ──────────────────────────────────────────────────── */
+
+.back-link {
+  display: inline-block;
+  color: var(--color-primary, #2563eb);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+/*
+ * The row wrapper. It carries the bottom margin rather than `.back-link`
+ * doing so: the two definitions of `.back-link` disagreed on exactly that,
+ * and the one that happened to win by import order applied a 1.5rem margin
+ * to links inside this flex row, where it was never intended. Pages with a
+ * standalone link keep their own spacing rule, scoped to their container.
+ */
+.back-links {
+  display: flex;
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+/* ── Sprint status ───────────────────────────────────────────────── */
+
+.badge {
+  font-size: 0.8rem;
+  padding: 0.2em 0.6em;
+  border-radius: 12px;
+}
+
+.badge-active {
+  background: #d4edda;
+  color: #155724;
+}
+
+.badge-finished {
+  background: #e2e3e5;
+  color: #383d41;
+}
+
+/* ── Run and execution status ────────────────────────────────────── */
+
+.run-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/*
+ * `pending` shares `running`'s amber. The two copies of this file disagreed
+ * — the run list painted it inert grey, the detail page amber — so the
+ * colour of a queued run was decided by CSS import order. Amber is the
+ * resolution: a queued run is work that is going to happen, which is what
+ * the reader needs to know, and grey read as "nothing here".
+ */
+.run-badge-pending,
+.run-badge-running {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.run-badge-completed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.run-badge-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* ── Charter session status ──────────────────────────────────────── */
+
+/*
+ * Defined here rather than in `ExploratoryRunDetailPage.css`, which is not
+ * imported by `ExploratorySessionPage` — the one other place that renders
+ * these. That worked only because nothing is code-split, and would have
+ * broken the day someone added `React.lazy`.
+ */
+.session-badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  background: #e0e4ea;
+  color: #333;
+  white-space: nowrap;
+}
+
+.session-badge-completed {
+  background: #d7ecd9;
+}
+
+.session-badge-running {
+  background: #d8e6f7;
+}
+
+.session-badge-error {
+  background: #f7d9d7;
+}

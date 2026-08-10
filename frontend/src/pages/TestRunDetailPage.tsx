@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
-import { isOutdated } from '../outdated'
+import RestartControl from '../components/RestartControl'
 import TestCaseExecutionRow from '../components/TestCaseExecutionRow'
 import {
   exportTestRunFindings,
@@ -11,114 +11,62 @@ import {
   restartTestExecution,
 } from '../services/api'
 import type { SprintResponse, TestExecutionResponse, TestRunDetailResponse } from '../types'
+import { awaitingExport } from '../exportState'
+import { formatDateTime } from '../format'
+import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
+import { useAsyncData } from '../hooks/useAsyncData'
+import { RUN_STATUS_LABELS } from '../statusLabels'
 import './TestRunDetailPage.css'
-
-const POLL_INTERVAL_MS = 2500
-
-/**
- * How long to keep polling a run that has finished but whose findings have
- * not reached the tracker yet (~2 minutes) — see the twin constant in
- * `ExploratoryRunDetailPage` for why the window exists at all. The race is
- * the same here: the last execution commits `COMPLETED`, which flips the
- * run's rolled-up status, and only then files its findings.
- */
-const EXPORT_GRACE_TICKS = 48
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'Queued',
-  running: 'Running',
-  completed: 'Completed',
-  failed: 'Failed',
-}
 
 export default function TestRunDetailPage() {
   const { id, runId } = useParams<{ id: string; runId: string }>()
   const sprintId = Number(id)
   const runIdNum = Number(runId)
 
-  const [sprint, setSprint] = useState<SprintResponse | null>(null)
-  const [run, setRun] = useState<TestRunDetailResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [restarting, setRestarting] = useState<number | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  const fetchingRef = useRef(false)
+  // Sprint and run load together and are held as one value, so polling and
+  // the restart action both write through the same setter — there is only
+  // ever one copy of the run on this page.
+  const {
+    data,
+    loading,
+    error: loadError,
+    setData,
+  } = useAsyncData(
+    () =>
+      Promise.all([fetchSprint(sprintId), fetchTestRun(runIdNum)]).then(([sprint, run]) => ({
+        sprint,
+        run,
+      })),
+    [sprintId, runIdNum],
+  )
+  const sprint: SprintResponse | null = data?.sprint ?? null
+  const run: TestRunDetailResponse | null = data?.run ?? null
 
-  useEffect(() => {
-    let cancelled = false
-    Promise.all([fetchSprint(sprintId), fetchTestRun(runIdNum)])
-      .then(([sprintData, runData]) => {
-        if (!cancelled) {
-          setSprint(sprintData)
-          setRun(runData)
-          setLoading(false)
-        }
-      })
-      .catch((err: Error) => {
-        if (!cancelled) {
-          setLoadError(err.message)
-          setLoading(false)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [sprintId, runIdNum])
+  const setRun = (updater: (prev: TestRunDetailResponse) => TestRunDetailResponse) =>
+    setData((prev) => (prev ? { ...prev, run: updater(prev.run) } : prev))
 
   const inProgress = run?.status === 'running'
-  // A finished run whose bugs are unfiled with nothing having failed: the
-  // export runs after the completion commit, so it is almost certainly
-  // still in flight. See EXPORT_GRACE_TICKS.
-  const exportPending =
-    run?.status === 'completed' &&
-    run.export_findings &&
-    run.unexported_finding_count > 0 &&
-    run.export_error_count === 0
-  const shouldPoll = inProgress || exportPending
+  const exportPending = run !== null && awaitingExport(run)
 
-  useEffect(() => {
-    if (!shouldPoll) return
-
+  usePolling(() => fetchTestRun(runIdNum).then((fresh) => setRun(() => fresh)), {
+    enabled: inProgress || exportPending,
     // Unbounded while the run itself is working — it is the run that says
     // when that ends. Bounded once only the export is outstanding.
-    let ticksLeft = inProgress ? Number.POSITIVE_INFINITY : EXPORT_GRACE_TICKS
-    const pollId = setInterval(() => {
-      if (fetchingRef.current) return
-      if (ticksLeft <= 0) {
-        clearInterval(pollId)
-        return
-      }
-      ticksLeft -= 1
-      fetchingRef.current = true
-      fetchTestRun(runIdNum)
-        .then(setRun)
-        .catch(() => {
-          /* transient poll failure — retry on next tick */
-        })
-        .finally(() => {
-          fetchingRef.current = false
-        })
-    }, POLL_INTERVAL_MS)
-
-    return () => clearInterval(pollId)
-  }, [shouldPoll, inProgress, runIdNum])
+    maxTicks: inProgress ? undefined : EXPORT_GRACE_TICKS,
+  })
 
   const handleRestart = (execution: TestExecutionResponse) => {
     setRestarting(execution.id)
     setActionError(null)
     restartTestExecution(execution.id)
       .then((updated) => {
-        setRun((prev) =>
-          prev
-            ? {
-                ...prev,
-                executions: prev.executions.map((e) =>
-                  e.id === updated.id ? { ...e, ...updated } : e,
-                ),
-              }
-            : prev,
-        )
+        setRun((prev) => ({
+          ...prev,
+          executions: prev.executions.map((e) => (e.id === updated.id ? { ...e, ...updated } : e)),
+        }))
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setRestarting(null))
@@ -144,15 +92,16 @@ export default function TestRunDetailPage() {
             14") and it otherwise lives only in the URL. Global rather than
             per-sprint, hence `#14` — an identifier, not a count. */}
         <h1>Test Run #{run.id}</h1>
-        <span className={`run-badge run-badge-${run.status}`}>
-          {STATUS_LABELS[run.status] ?? run.status}
-        </span>
+        <span className={`run-badge run-badge-${run.status}`}>{RUN_STATUS_LABELS[run.status]}</span>
         <OutdatedBadge run={run} />
       </header>
 
-      <p className="test-run-detail-meta">{new Date(run.created_at).toLocaleString()}</p>
+      <p className="test-run-detail-meta">{formatDateTime(run.created_at)}</p>
 
-      <ExportSummary rollup={run} onExport={() => exportTestRunFindings(runIdNum).then(setRun)} />
+      <ExportSummary
+        rollup={run}
+        onExport={() => exportTestRunFindings(runIdNum).then((fresh) => setRun(() => fresh))}
+      />
 
       {actionError && <p className="test-run-detail-error">{actionError}</p>}
 
@@ -162,26 +111,19 @@ export default function TestRunDetailPage() {
             <h2>{execution.requirement_name}</h2>
             <div className="test-execution-header-right">
               <span className={`run-badge run-badge-${execution.status}`}>
-                {STATUS_LABELS[execution.status] ?? execution.status}
+                {RUN_STATUS_LABELS[execution.status]}
               </span>
               <OutdatedBadge run={execution} />
-              {/* Restart re-runs against current content, so an outdated
-                  execution cannot be restarted — the backend refuses it too.
-                  Starting a new run is the way to retest. */}
-              {execution.status === 'failed' && sprint.active && !isOutdated(execution) && (
-                <button
-                  className="btn btn-secondary btn-small"
-                  onClick={() => handleRestart(execution)}
-                  disabled={restarting === execution.id}
-                >
-                  {restarting === execution.id ? 'Restarting…' : 'Restart'}
-                </button>
-              )}
-              {execution.status === 'failed' && sprint.active && isOutdated(execution) && (
-                <span className="test-execution-outdated-note">
-                  Start a new run to retest — this one used earlier content.
-                </span>
-              )}
+              <RestartControl
+                run={execution}
+                enabled={execution.status === 'failed' && sprint.active}
+                busy={restarting === execution.id}
+                label="Restart"
+                outdatedNote="Start a new run to retest — this one used earlier content."
+                noteClassName="test-execution-outdated-note"
+                buttonClassName="btn btn-secondary btn-small"
+                onRestart={() => handleRestart(execution)}
+              />
             </div>
           </header>
 

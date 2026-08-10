@@ -27,10 +27,7 @@ const API_BASE = import.meta.env.VITE_API_BASE
 
 export async function checkAuthStatus(): Promise<AuthCheckResponse> {
   const response = await fetch(`${API_BASE}/api/auth/check`)
-  if (!response.ok) {
-    throw new Error(`Auth check failed (${response.status})`)
-  }
-  return response.json() as Promise<AuthCheckResponse>
+  return handleResponse<AuthCheckResponse>(response, 'Auth check failed')
 }
 
 export async function verifyPassword(password: string): Promise<AuthCheckResponse> {
@@ -39,21 +36,7 @@ export async function verifyPassword(password: string): Promise<AuthCheckRespons
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password }),
   })
-  if (!response.ok) {
-    let message = `Verification failed (${response.status})`
-    try {
-      const body = await response.json()
-      if (body.detail) {
-        if (typeof body.detail === 'string') message = body.detail
-        else if (Array.isArray(body.detail))
-          message = body.detail.map((e: { msg: string }) => e.msg).join('; ')
-      }
-    } catch {
-      /* body wasn't JSON — keep default message */
-    }
-    throw new Error(message)
-  }
-  return response.json() as Promise<AuthCheckResponse>
+  return handleResponse<AuthCheckResponse>(response, 'Verification failed')
 }
 
 // ── Repos ────────────────────────────────────────────────────────────
@@ -362,9 +345,18 @@ export function scriptDownloadUrl(caseExecutionId: number): string {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-async function handleResponse<T>(response: Response): Promise<T> {
+/**
+ * Parse a FastAPI response, turning an error body into a thrown `Error`.
+ *
+ * `detail` can be a string or an array of `{ msg }` (pydantic validation),
+ * so both shapes are handled here rather than at each call site. Every
+ * fetch in this module routes through it — including the auth calls, which
+ * used to carry their own copy of this parser and were therefore the ones a
+ * reader would copy when adding the next endpoint.
+ */
+async function handleResponse<T>(response: Response, fallback = 'Request failed'): Promise<T> {
   if (!response.ok) {
-    let message = `Request failed (${response.status})`
+    let message = `${fallback} (${response.status})`
     try {
       const body = await response.json()
       if (body.detail) {

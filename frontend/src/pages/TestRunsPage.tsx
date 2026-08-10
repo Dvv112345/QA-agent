@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
 import IssueTrackerModal from '../components/IssueTrackerModal'
@@ -10,6 +10,7 @@ import {
   fetchIssueTracker,
   fetchSprint,
   fetchSprintMetrics,
+  fetchTestPlans,
   fetchTestRuns,
 } from '../services/api'
 import type {
@@ -17,51 +18,14 @@ import type {
   IssueTrackerConfig,
   SprintMetrics,
   SprintResponse,
+  TestPlanResponse,
   TestRunResponse,
 } from '../types'
+import { awaitingExport } from '../exportState'
+import { formatDateTime, plural } from '../format'
+import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
+import { EXPLORATORY_RUN_STATUS_LABELS, RUN_STATUS_LABELS } from '../statusLabels'
 import './TestRunsPage.css'
-
-const POLL_INTERVAL_MS = 2500
-
-/**
- * How long to keep polling once only the export is outstanding (~2 min) —
- * the same budget, for the same race, as the twin constant on
- * `TestRunDetailPage`. It matters on this page too because the metrics
- * panel's bug count depends on tracker keys, which arrive *after* the run
- * reads terminal: a poll condition keyed purely on `running` tears itself
- * down inside the export window and freezes the panel on a pre-export
- * count until someone reloads.
- */
-const EXPORT_GRACE_TICKS = 48
-
-/** A completed run whose bugs are unfiled with nothing having failed. */
-function awaitingExport(run: { status: string } & ExportPending): boolean {
-  return (
-    run.status === 'completed' &&
-    run.export_findings &&
-    run.unexported_finding_count > 0 &&
-    run.export_error_count === 0
-  )
-}
-
-interface ExportPending {
-  export_findings: boolean
-  unexported_finding_count: number
-  export_error_count: number
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  running: 'Running',
-  completed: 'Completed',
-  failed: 'Failed',
-}
-
-const EXPLORATORY_STATUS_LABELS: Record<string, string> = {
-  pending: 'Queued',
-  running: 'Exploring',
-  completed: 'Completed',
-  failed: 'Failed',
-}
 
 function resultSummary(run: TestRunResponse): string {
   const parts: string[] = []
@@ -73,10 +37,8 @@ function resultSummary(run: TestRunResponse): string {
 
 function findingSummary(run: ExploratoryRunResponse): string {
   const parts: string[] = []
-  if (run.bug_count > 0) parts.push(`${run.bug_count} bug${run.bug_count === 1 ? '' : 's'}`)
-  if (run.issue_count > 0) {
-    parts.push(`${run.issue_count} issue${run.issue_count === 1 ? '' : 's'}`)
-  }
+  if (run.bug_count > 0) parts.push(plural(run.bug_count, 'bug'))
+  if (run.issue_count > 0) parts.push(plural(run.issue_count, 'issue'))
   if (parts.length === 0 && run.status === 'completed') return 'No findings'
   return parts.join(' / ')
 }
@@ -94,9 +56,8 @@ export default function TestRunsPage() {
   const [showRunModal, setShowRunModal] = useState(false)
   const [showCharterModal, setShowCharterModal] = useState(false)
   const [tracker, setTracker] = useState<IssueTrackerConfig | null>(null)
+  const [approvedPlans, setApprovedPlans] = useState<TestPlanResponse[]>([])
   const [showTrackerModal, setShowTrackerModal] = useState(false)
-
-  const fetchingRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -104,9 +65,11 @@ export default function TestRunsPage() {
       fetchSprint(sprintId),
       fetchTestRuns(sprintId),
       fetchExploratoryRuns(sprintId),
-      // Fetched once here and passed down as a prop, so neither run modal
-      // needs a second round trip to decide its export toggle.
+      // Fetched once here and passed down as props, so neither run modal
+      // needs a second round trip — for its export toggle, or for the
+      // requirement list it offers to run.
       fetchIssueTracker(sprintId),
+      fetchTestPlans(sprintId),
       // Swallowed, unlike the four above: the panel is decoration and the
       // run lists are the page. `services/qa_metrics.py` already never
       // raises so a metrics failure cannot 500 this endpoint — but that
@@ -116,12 +79,13 @@ export default function TestRunsPage() {
       // already nullable and the panel renders behind it.
       fetchSprintMetrics(sprintId).catch(() => null),
     ])
-      .then(([sprintData, runData, exploratoryData, trackerData, metricsData]) => {
+      .then(([sprintData, runData, exploratoryData, trackerData, planData, metricsData]) => {
         if (!cancelled) {
           setSprint(sprintData)
           setRuns(runData)
           setExploratoryRuns(exploratoryData)
           setTracker(trackerData)
+          setApprovedPlans(planData.filter((plan) => plan.status === 'approved'))
           setMetrics(metricsData)
           setLoading(false)
         }
@@ -147,20 +111,8 @@ export default function TestRunsPage() {
   const exportPending = runs.some(awaitingExport) || exploratoryRuns.some(awaitingExport)
   const shouldPoll = inProgress || exportPending
 
-  useEffect(() => {
-    if (!shouldPoll) return
-
-    // Unbounded while a run is still working — it is the run that says
-    // when that ends. Bounded once only the export is outstanding.
-    let ticksLeft = inProgress ? Number.POSITIVE_INFINITY : EXPORT_GRACE_TICKS
-    const pollId = setInterval(() => {
-      if (fetchingRef.current) return
-      if (ticksLeft <= 0) {
-        clearInterval(pollId)
-        return
-      }
-      ticksLeft -= 1
-      fetchingRef.current = true
+  usePolling(
+    () =>
       // The metrics ride along with the run lists rather than on their own
       // interval: the panel summarizes exactly these rows, so refreshing
       // them apart would let the two disagree on screen.
@@ -168,22 +120,20 @@ export default function TestRunsPage() {
         fetchTestRuns(sprintId),
         fetchExploratoryRuns(sprintId),
         fetchSprintMetrics(sprintId),
-      ])
-        .then(([runData, exploratoryData, metricsData]) => {
-          setRuns(runData)
-          setExploratoryRuns(exploratoryData)
-          setMetrics(metricsData)
-        })
-        .catch(() => {
-          /* transient poll failure — retry on next tick */
-        })
-        .finally(() => {
-          fetchingRef.current = false
-        })
-    }, POLL_INTERVAL_MS)
-
-    return () => clearInterval(pollId)
-  }, [shouldPoll, inProgress, sprintId])
+      ]).then(([runData, exploratoryData, metricsData]) => {
+        setRuns(runData)
+        setExploratoryRuns(exploratoryData)
+        setMetrics(metricsData)
+      }),
+    {
+      enabled: shouldPoll,
+      // Unbounded while a run is still working — it is the run that says
+      // when that ends. Bounded once only the export is outstanding.
+      // The panel's bug count depends on tracker keys, which arrive after
+      // the run reads terminal, so this page needs the window too.
+      maxTicks: inProgress ? undefined : EXPORT_GRACE_TICKS,
+    },
+  )
 
   if (loading) return <p className="test-runs-message">Loading test runs&hellip;</p>
   if (loadError) return <p className="test-runs-message test-runs-error">{loadError}</p>
@@ -269,7 +219,7 @@ export default function TestRunsPage() {
                       <div className="test-run-row-main">
                         <span className="test-run-requirements">{run.requirement_name}</span>
                         <span className={`run-badge run-badge-${run.status}`}>
-                          {EXPLORATORY_STATUS_LABELS[run.status] ?? run.status}
+                          {EXPLORATORY_RUN_STATUS_LABELS[run.status]}
                         </span>
                         <OutdatedBadge run={run} />
                       </div>
@@ -278,7 +228,7 @@ export default function TestRunsPage() {
                             one requirement are otherwise told apart only by
                             their timestamps. */}
                         <span className="test-run-id">Run #{run.id}</span>
-                        <time>{new Date(run.created_at).toLocaleString()}</time>
+                        <time>{formatDateTime(run.created_at)}</time>
                         {findingSummary(run) && <span>{findingSummary(run)}</span>}
                       </div>
                     </Link>
@@ -310,13 +260,13 @@ export default function TestRunsPage() {
                           {run.requirement_names.join(', ')}
                         </span>
                         <span className={`run-badge run-badge-${run.status}`}>
-                          {STATUS_LABELS[run.status] ?? run.status}
+                          {RUN_STATUS_LABELS[run.status]}
                         </span>
                         <OutdatedBadge run={run} />
                       </div>
                       <div className="test-run-row-meta">
                         <span className="test-run-id">Run #{run.id}</span>
-                        <time>{new Date(run.created_at).toLocaleString()}</time>
+                        <time>{formatDateTime(run.created_at)}</time>
                         {resultSummary(run) && <span>{resultSummary(run)}</span>}
                       </div>
                     </Link>
@@ -331,6 +281,7 @@ export default function TestRunsPage() {
       {showRunModal && (
         <RunTestModal
           sprintId={sprintId}
+          plans={approvedPlans}
           tracker={tracker}
           onClose={() => setShowRunModal(false)}
         />
@@ -338,6 +289,7 @@ export default function TestRunsPage() {
       {showCharterModal && (
         <ExploratoryCharterModal
           sprintId={sprintId}
+          plans={approvedPlans}
           tracker={tracker}
           onClose={() => setShowCharterModal(false)}
         />

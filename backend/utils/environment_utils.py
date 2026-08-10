@@ -18,10 +18,55 @@ from __future__ import annotations
 import contextlib
 import platform
 import sys
+from collections.abc import Iterable, Mapping
 from importlib.metadata import version
 
 # Matches the separator used in the UI's single-line rendering.
 _SEPARATOR = " · "
+
+
+# ── What may leave the application ────────────────────────────────────
+
+
+def url_values(env_vars: Mapping[str, str] | None) -> set[str]:
+    """The environment values that are http(s) URLs."""
+    if not env_vars:
+        return set()
+    return {
+        value
+        for value in env_vars.values()
+        if isinstance(value, str) and value.startswith(("http://", "https://"))
+    }
+
+
+def redactable_values(
+    env_vars: Mapping[str, str] | None,
+    *,
+    keep: Iterable[str] = (),
+) -> frozenset[str]:
+    """Environment values to blank out of outbound text, minus ``keep``.
+
+    Both exits — the exploratory action log and an outbound ticket — hold
+    the same rule: *every* environment value is a candidate credential,
+    except the ones naming the application itself.  A URL is something a
+    bug report has to be allowed to name, and redacting it would gut the
+    report while protecting nothing.
+
+    The two callers differ, deliberately, on what "the application" means,
+    which is why ``keep`` is the caller's to compute rather than something
+    this function decides:
+
+    * the exploratory task keeps the run's **nominated base URLs** — it
+      knows exactly which variables the charters were pointed at;
+    * export keeps **every** http(s) value (:func:`url_values`) — it has
+      no run to ask, and a URL left unredacted is the safer error there.
+
+    Collapsing those into one rule would silently change what gets
+    redacted at one of the two exits.
+    """
+    if not env_vars:
+        return frozenset()
+    return frozenset(set(env_vars.values()) - set(keep))
 
 
 def os_environment() -> str:
