@@ -322,36 +322,39 @@ class TestCaseExecutionResponse(SQLModel):
     updated_at: datetime
 
 
-class TestExecutionResponse(SQLModel):
+class OutdatedFields(SQLModel):
+    """Why a run no longer describes the current sprint.
+
+    Mixed into every run-shaped response.  Same pattern as ``ExportRollup``
+    and ``FindingBase``: the pair travels together, so it is declared once
+    rather than restated per response model.
+    """
+
+    # Upstream artifacts that have changed since the run executed, from
+    # {"requirement", "test_plan", "test_environment"}. Empty means current;
+    # the frontend derives its boolean from this rather than a second field.
+    outdated_reasons: list[str] = []
+    # Selects the wording for the "requirement" reason ("deleted" rather
+    # than "changed"). Never a correctness branch on its own.
+    requirement_deleted: bool = False
+
+
+class TestExecutionResponse(OutdatedFields):
     id: int
     requirement_id: int
     requirement_name: str
     status: str
     error: str | None = None
-    # Upstream artifacts that have changed since the run executed, from
-    # {"requirement", "test_plan", "test_environment"}. Empty means current;
-    # the frontend derives its boolean from this rather than a second field.
-    outdated_reasons: list[str] = []
-    # Selects the wording for the "requirement" reason ("deleted" rather
-    # than "changed"). Never a correctness branch on its own.
-    requirement_deleted: bool = False
     cases: list[TestCaseExecutionResponse] = []
     created_at: datetime
     updated_at: datetime
 
 
-class TestRunResponse(ExportRollup):
+class TestRunResponse(ExportRollup, OutdatedFields):
     id: int
     sprint_id: int
     created_at: datetime
     status: str
-    # Upstream artifacts that have changed since the run executed, from
-    # {"requirement", "test_plan", "test_environment"}. Empty means current;
-    # the frontend derives its boolean from this rather than a second field.
-    outdated_reasons: list[str] = []
-    # Selects the wording for the "requirement" reason ("deleted" rather
-    # than "changed"). Never a correctness branch on its own.
-    requirement_deleted: bool = False
     requirement_names: list[str]
     total_cases: int
     passed_cases: int
@@ -359,18 +362,11 @@ class TestRunResponse(ExportRollup):
     error_cases: int
 
 
-class TestRunDetailResponse(ExportRollup):
+class TestRunDetailResponse(ExportRollup, OutdatedFields):
     id: int
     sprint_id: int
     created_at: datetime
     status: str
-    # Upstream artifacts that have changed since the run executed, from
-    # {"requirement", "test_plan", "test_environment"}. Empty means current;
-    # the frontend derives its boolean from this rather than a second field.
-    outdated_reasons: list[str] = []
-    # Selects the wording for the "requirement" reason ("deleted" rather
-    # than "changed"). Never a correctness branch on its own.
-    requirement_deleted: bool = False
     executions: list[TestExecutionResponse] = []
 
 
@@ -427,7 +423,7 @@ class ExploratorySessionResponse(SQLModel):
     updated_at: datetime
 
 
-class ExploratoryRunResponse(ExportRollup):
+class ExploratoryRunResponse(ExportRollup, OutdatedFields):
     """List-page shape — aggregates computed at response time, never stored."""
 
     id: int
@@ -437,13 +433,6 @@ class ExploratoryRunResponse(ExportRollup):
     status: str
     summary: str | None = None
     error: str | None = None
-    # Upstream artifacts that have changed since the run executed, from
-    # {"requirement", "test_plan", "test_environment"}. Empty means current;
-    # the frontend derives its boolean from this rather than a second field.
-    outdated_reasons: list[str] = []
-    # Selects the wording for the "requirement" reason ("deleted" rather
-    # than "changed"). Never a correctness branch on its own.
-    requirement_deleted: bool = False
     session_count: int = 0
     bug_count: int = 0
     issue_count: int = 0
@@ -452,28 +441,16 @@ class ExploratoryRunResponse(ExportRollup):
     updated_at: datetime
 
 
-class ExploratoryRunDetailResponse(ExportRollup):
-    id: int
-    sprint_id: int
-    requirement_id: int
-    requirement_name: str
-    status: str
-    summary: str | None = None
-    error: str | None = None
-    # Upstream artifacts that have changed since the run executed, from
-    # {"requirement", "test_plan", "test_environment"}. Empty means current;
-    # the frontend derives its boolean from this rather than a second field.
-    outdated_reasons: list[str] = []
-    # Selects the wording for the "requirement" reason ("deleted" rather
-    # than "changed"). Never a correctness branch on its own.
-    requirement_deleted: bool = False
+class ExploratoryRunDetailResponse(ExploratoryRunResponse):
+    """Detail-page shape — the list shape plus what only this page needs.
+
+    Inherits rather than restating fifteen fields: the detail page shows
+    everything the list row shows, so any divergence between the two was
+    a mistake waiting to happen rather than a design.
+    """
+
     base_url_env_vars: list[str] = []
     sessions: list[ExploratorySessionSummaryResponse] = []
-    bug_count: int = 0
-    issue_count: int = 0
-    high_severity_count: int = 0
-    created_at: datetime
-    updated_at: datetime
 
 
 class CharterDraft(SQLModel):

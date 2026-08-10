@@ -1301,6 +1301,16 @@ class ExploratorySession(SQLModel, table=True):
         """Decoded ``sfdipot_areas_csv`` — see ``ExploratoryRun.base_url_env_vars``."""
         return [area for area in self.sfdipot_areas_csv.split(",") if area]
 
+    @property
+    def finding_count(self) -> int:
+        """How many findings this session recorded.
+
+        A property so the summary response can be coerced straight off the
+        row (``Repo.has_access_token``'s precedent) rather than composed
+        field by field in the route.
+        """
+        return len(self.findings)
+
 
 class ExploratoryFinding(SQLModel, table=True):
     """One bug or issue recorded during a session.
@@ -1342,3 +1352,13 @@ class ExploratoryFinding(SQLModel, table=True):
     )
 
     session: Optional["ExploratorySession"] = Relationship(back_populates="findings")
+
+    @property
+    def has_screenshot(self) -> bool:
+        """Whether a screenshot was captured and stored for this finding.
+
+        The path itself is never serialized — it is a server-side location,
+        and the image is served by its own endpoint. Clients only need to
+        know whether to ask for it.
+        """
+        return self.screenshot_path is not None

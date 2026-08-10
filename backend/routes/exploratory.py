@@ -46,12 +46,10 @@ from backend.models.types import (
     CharterDraft,
     ExploratoryCharterDraftResponse,
     ExploratoryCharterGenerateRequest,
-    ExploratoryFindingResponse,
     ExploratoryRunCreateRequest,
     ExploratoryRunDetailResponse,
     ExploratoryRunResponse,
     ExploratorySessionResponse,
-    ExploratorySessionSummaryResponse,
 )
 from backend.routes._common import ensure_sprint_active, get_sprint_or_404
 from backend.services import finding_export, llm
@@ -169,47 +167,6 @@ def _validate_charters(charters: list[CharterDraft]) -> None:
 # ── response builders (aggregates computed here, never stored) ────────
 
 
-def _finding_response(finding: ExploratoryFinding) -> ExploratoryFindingResponse:
-    return ExploratoryFindingResponse(
-        id=finding.id,
-        position=finding.position,
-        finding_type=finding.finding_type,
-        severity=finding.severity,
-        title=finding.title,
-        steps_to_reproduce=finding.steps_to_reproduce,
-        expected=finding.expected,
-        actual=finding.actual,
-        environment=finding.environment,
-        # Passed explicitly because this response is composed field by
-        # field rather than read off the row: inheriting them from
-        # `FindingBase` only supplies the defaults, so an omission here
-        # serializes a filed finding as never filed. `tracker_target` is
-        # deliberately absent — it scopes de-duplication in the database
-        # and the URL is already absolute.
-        tracker_issue_key=finding.tracker_issue_key,
-        tracker_issue_url=finding.tracker_issue_url,
-        tracker_error=finding.tracker_error,
-        tracker_is_duplicate=finding.tracker_is_duplicate,
-        has_screenshot=finding.screenshot_path is not None,
-        created_at=finding.created_at,
-    )
-
-
-def _session_summary(session_row: ExploratorySession) -> ExploratorySessionSummaryResponse:
-    return ExploratorySessionSummaryResponse(
-        id=session_row.id,
-        position=session_row.position,
-        charter=session_row.charter,
-        sfdipot_areas=session_row.sfdipot_areas,
-        status=session_row.status,
-        actions_used=session_row.actions_used,
-        stop_reason=session_row.stop_reason,
-        error=session_row.error,
-        finding_count=len(session_row.findings),
-        updated_at=session_row.updated_at,
-    )
-
-
 def _finding_counts(run: ExploratoryRun) -> tuple[int, int, int]:
     bugs = issues = high = 0
     for session_row in run.sessions:
@@ -257,8 +214,9 @@ def _run_detail(run: ExploratoryRun) -> ExploratoryRunDetailResponse:
         error=run.error,
         outdated_reasons=run.outdated_reasons,
         requirement_deleted=run.requirement_deleted,
+        session_count=len(run.sessions),
         base_url_env_vars=run.base_url_env_vars,
-        sessions=[_session_summary(s) for s in run.sessions],
+        sessions=run.sessions,
         bug_count=bugs,
         issue_count=issues,
         high_severity_count=high,
@@ -462,21 +420,7 @@ async def get_exploratory_session(
     row = session.get(ExploratorySession, session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Exploratory session not found.")
-    return ExploratorySessionResponse(
-        id=row.id,
-        exploratory_run_id=row.exploratory_run_id,
-        position=row.position,
-        charter=row.charter,
-        sfdipot_areas=row.sfdipot_areas,
-        status=row.status,
-        actions_used=row.actions_used,
-        session_notes=row.session_notes,
-        action_log=row.action_log,
-        stop_reason=row.stop_reason,
-        error=row.error,
-        findings=[_finding_response(f) for f in row.findings],
-        updated_at=row.updated_at,
-    )
+    return row
 
 
 @router.get("/exploratory-findings/{finding_id}/screenshot")
