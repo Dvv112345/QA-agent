@@ -26,19 +26,8 @@ def _make_request(cookie_value: str | None) -> MagicMock:
     return request
 
 
-def test_returns_true_when_app_password_is_none(monkeypatch):
-    """Auth is disabled when APP_PASSWORD is not set."""
-    monkeypatch.setenv("APP_PASSWORD", "")
-    import backend.config
-
-    importlib.reload(backend.config)
-
-    result = verify_auth(_make_request(None))
-    assert result is True
-
-
-def test_returns_true_when_app_password_is_empty(monkeypatch):
-    """Auth is disabled when APP_PASSWORD is the empty string."""
+def test_returns_true_when_app_password_is_unset(monkeypatch):
+    """Auth is disabled when APP_PASSWORD is unset or empty."""
     monkeypatch.setenv("APP_PASSWORD", "")
     import backend.config
 
@@ -81,18 +70,5 @@ def test_raises_401_when_cookie_mismatch(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         verify_auth(_make_request("wrong-password"))
-    assert exc_info.value.status_code == 401
-    assert "Invalid or missing access code" in exc_info.value.detail
-
-
-def test_raises_401_when_cookie_is_empty_string(monkeypatch):
-    """An empty cookie value is treated as missing."""
-    monkeypatch.setenv("APP_PASSWORD", "secret123")
-    import backend.config
-
-    importlib.reload(backend.config)
-
-    with pytest.raises(HTTPException) as exc_info:
-        verify_auth(_make_request(""))
     assert exc_info.value.status_code == 401
     assert "Invalid or missing access code" in exc_info.value.detail

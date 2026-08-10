@@ -48,14 +48,14 @@ Generated test scripts may import Playwright, `requests`, `Faker`, `psycopg2` (P
 | `DATABASE_URL`                                              | `postgresql://postgres:postgres@localhost:5432/qa_agent` | PostgreSQL connection string.                                                                                                                                                                             |
 | `ENCRYPTION_KEY`                                            | _(unset)_                                                | Fernet key for encrypting GitHub tokens **and issue-tracker API tokens** at rest. Required to register repos with a token, and to connect an issue tracker.                                               |
 | `APP_PASSWORD`                                              | _(unset)_                                                | Shared password for accessing the QA Agent UI. When unset, authentication is disabled.                                                                                                                    |
-| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint README and uploaded PRD files to disk.                                                                                                                                  |
+| `STORE_OFFLINE`                                             | `false`                                                  | Set to `"true"` to persist sprint READMEs, uploaded PRDs and exploratory screenshots to disk. With it off, findings simply carry no screenshot.                                                           |
 | `STORAGE_LOCATION`                                          | `./uploads`                                              | Directory for sprint files when `STORE_OFFLINE=true`.                                                                                                                                                     |
 | `CORS_ORIGINS`                                              | `http://localhost:5173`                                  | Comma-separated list of allowed origins.                                                                                                                                                                  |
 | `GITHUB_API_TIMEOUT`                                        | `15`                                                     | Timeout in seconds for GitHub API requests.                                                                                                                                                               |
 | `FILE_TREE_MAX_CHARS`                                       | `20000`                                                  | Character cap for the repo file-tree listing captured at sprint creation.                                                                                                                                 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | `localhost` / `6379` / _(unset)_ / `0`                   | Redis connection for the analysis queue.                                                                                                                                                                  |
 | `JOB_TIMEOUT` / `JOB_RESULT_TTL` / `WORKER_TTL`             | `300` / `3600` / `30`                                    | RQ job timeout, result retention, and worker heartbeat TTL (bounds Windows shutdown lag).                                                                                                                 |
-| `OPENAI_API_KEY`                                            | _(unset)_                                                | LLM API key. Required for requirement analysis, the test-environment check, and test-plan generation; never logged or returned.                                                                           |
+| `OPENAI_API_KEY`                                            | _(unset)_                                                | LLM API key. Required for every LLM stage — requirement analysis, the test-environment check, test-plan generation, test execution and exploratory testing; never logged or returned.                     |
 | `OPENAI_BASE_URL`                                           | `https://api.deepseek.com`                               | Any OpenAI-compatible provider.                                                                                                                                                                           |
 | `OPENAI_MODEL`                                              | `deepseek-v4-flash`                                      | Model used for the LLM checks.                                                                                                                                                                            |
 | `OPENAI_TIMEOUT`                                            | `60`                                                     | Timeout in seconds for LLM requests.                                                                                                                                                                      |
@@ -71,6 +71,12 @@ Generated test scripts may import Playwright, `requests`, `Faker`, `psycopg2` (P
 | `TEST_EXECUTION_FILE_MAX_CHARS`                             | `20000`                                                  | Per-file character cap for repo files fetched by that tool loop.                                                                                                                                          |
 | `SCRIPT_EXECUTION_TIMEOUT`                                  | `60`                                                     | Wall-clock timeout in seconds for one test-script subprocess run.                                                                                                                                         |
 | `TEST_EXECUTION_JOB_TIMEOUT`                                | `3600`                                                   | RQ job timeout for test-execution jobs — sized for every case in a plan, each with multiple generate/execute/diagnose cycles.                                                                             |
+| `EXPLORATORY_MAX_ACTIONS` / `EXPLORATORY_MAX_CHARTERS`      | `25` / `6`                                               | SBTM time box in LLM tool rounds, and charters per run. `MAX_ACTIONS` is the main wall-clock lever — charters run serially, so a run costs the sum of its sessions.                                       |
+| `EXPLORATORY_MAX_FINDINGS`                                  | `20`                                                     | Findings per session. Also the free-recording budget: `record_finding` does not consume an action until this cap.                                                                                         |
+| `EXPLORATORY_SNAPSHOT_WINDOW` / `_SNAPSHOT_MAX_CHARS`       | `3` / `20000`                                            | Verbatim page snapshots kept in the conversation, and the per-snapshot character cap. Together they set the floor context compaction cannot go below.                                                     |
+| `EXPLORATORY_CONTEXT_TOKEN_LIMIT`                           | `40000`                                                  | Prompt-token size at which a session compacts its own history.                                                                                                                                            |
+| `EXPLORATORY_ACTION_TIMEOUT` / `_SECONDS_PER_ACTION`        | `10` / `8`                                               | Per-Playwright-action timeout, and the **display-only** figure behind the pre-run duration estimate.                                                                                                      |
+| `EXPLORATORY_JOB_TIMEOUT` / `EXPLORATORY_HEADLESS`          | `7200` / `true`                                          | RQ job timeout covering every charter serially, and headed mode for local debugging.                                                                                                                      |
 | `ISSUE_TRACKER_TIMEOUT`                                     | `15`                                                     | Timeout in seconds for one outbound issue-tracker request (verify, create issue, state check, attachment). There is deliberately no cap on how many issues a run may file — grouping is what bounds that. |
 | `RECONCILER_INTERVAL`                                       | `30`                                                     | Seconds between reconciler ticks (re-enqueues lost/backlogged jobs).                                                                                                                                      |
 | `HEARTBEAT_STALE_SECONDS`                                   | `180`                                                    | Age after which an `analyzing` heartbeat counts as a crashed worker; keep above `OPENAI_TIMEOUT`.                                                                                                         |
@@ -657,10 +663,10 @@ backend/
   main.py              # App factory, CORS, exception handlers, health check, reconciler lifespan
   config.py            # Environment variable configuration
   database.py          # Engine, session dependency, table initialisation
-  migrations.py        # Idempotent startup migrations (run after init_db)
+  migrations.py        # Idempotent startup migrations (run after init_db; list currently empty)
   worker.py            # RQ worker CLI (python -m backend.worker)
   models/
-    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase, IssueTrackerConfig, TestRun, TestExecution, TestCaseExecution, ExploratoryRun, ExploratorySession, ExploratoryFinding
+    database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase, IssueTrackerConfig, DefectGroup, DefectGroupTicket, TestRun, TestExecution, TestCaseExecution, ExploratoryRun, ExploratorySession, ExploratoryFinding
     types.py           # Request/response types
   routes/
     auth.py            # POST /api/auth/verify, GET /api/auth/check
@@ -673,7 +679,7 @@ backend/
     exploratory.py     # Charter drafting, exploratory run create/list/detail, session sheet, screenshot, restart, summary, export retry
     issue_tracker.py   # Issue-tracker config get/save/delete (live verification on every save)
   services/
-    storage.py         # Conditional README/PRD persistence (STORE_OFFLINE)
+    storage.py         # Conditional README/PRD/screenshot persistence (STORE_OFFLINE)
     queue.py           # RQ queue service (graceful degradation when Redis is down)
     llm.py             # OpenAI-SDK client: clarity/test-env checks, env-var extraction, PRD split, test plans (code-blind), test-script tool loop
     llm_prompts.py      # System prompts, prompt-assembly helpers, TestCaseLike, read_file tool schema
@@ -686,7 +692,7 @@ backend/
     qa_metrics.py       # Per-sprint QA metrics, computed at response time; never raises
     invalidation.py     # What editing a confirmed artifact invalidates
     finalization.py     # A terminal parent leaves no non-terminal children
-    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions)
+    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions + exploratory runs)
   tasks/
     analyze_requirement.py  # The analysis task executed by the worker
     generate_test_plan.py   # The plan-generation task (single LLM call, no repo access)
@@ -702,6 +708,8 @@ backend/
     prd_utils.py       # PRD text extraction (.md/.txt via UTF-8, .pdf via pypdf, .docx via python-docx)
     readme_utils.py    # Best-effort README resolution (stored copy → re-download → none) + forced README/file-tree refresh
     sprint_utils.py    # Unique sprint directory generation
+    environment_utils.py # Where a finding was observed (OS / script / browser), captured in code
+    exploratory_utils.py # session_sheets(run) — session rows as plain prompt data
   tests/               # pytest suite (in-memory SQLite, mocked GitHub API, Redis + LLM stubbed)
 ```
 

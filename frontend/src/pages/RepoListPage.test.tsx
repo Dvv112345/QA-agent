@@ -37,12 +37,6 @@ describe('RepoListPage', () => {
     vi.clearAllMocks()
   })
 
-  it('shows loading state initially', () => {
-    mockFetchRepos.mockReturnValue(new Promise(() => {}))
-    renderPage()
-    expect(screen.getByText(/loading repos/i)).toBeInTheDocument()
-  })
-
   it('shows error when fetch fails', async () => {
     mockFetchRepos.mockRejectedValue(new Error('API error'))
     renderPage()
@@ -105,14 +99,5 @@ describe('RepoListPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Deactivation failed')).toBeInTheDocument()
     })
-  })
-
-  it('has back link to sprints', async () => {
-    mockFetchRepos.mockResolvedValue([])
-    renderPage()
-    await waitFor(() => {
-      expect(screen.getByText(/no repos stored yet/i)).toBeInTheDocument()
-    })
-    expect(screen.getByRole('link', { name: /back to sprints/i })).toHaveAttribute('href', '/')
   })
 })

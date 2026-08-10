@@ -1,16 +1,15 @@
+/**
+ * Tests for the API client.
+ *
+ * Every function here is a thin `fetch(url).then(handleResponse)` wrapper, so
+ * a "returns the parsed body on 200" test only asserts that the mock echoes
+ * back what the mock was told to return. What is genuinely this module's own
+ * behaviour is `handleResponse`'s error parsing (FastAPI `detail` arrives as
+ * a string *or* as `[{ msg }]` — Convention #6) and the request bodies the
+ * wrappers build.
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import {
-  checkAuthStatus,
-  checkReadmeStatus,
-  createRepo,
-  createSprint,
-  deactivateRepo,
-  fetchRepos,
-  fetchSprint,
-  fetchSprints,
-  finishSprint,
-  verifyPassword,
-} from './api'
+import { checkAuthStatus, createRepo, createSprint, finishSprint, verifyPassword } from './api'
 import type { RepoResponse, SprintResponse } from '../types'
 
 function mockFetch(response: Response) {
@@ -45,27 +44,35 @@ const fakeSprint: SprintResponse = {
   has_exploratory_runs: false,
 }
 
-// ── Auth ─────────────────────────────────────────────────────────────
+// ── Error handling ───────────────────────────────────────────────────
 
-describe('checkAuthStatus', () => {
+describe('handleResponse', () => {
   beforeEach(() => vi.restoreAllMocks())
 
-  it('returns AuthCheckResponse with valid=true on 200', async () => {
-    mockFetch(new Response(JSON.stringify({ valid: true }), { status: 200 }))
-    const result = await checkAuthStatus()
-    expect(result).toEqual({ valid: true })
-  })
-
-  it('throws on non-200 response', async () => {
+  it('throws with the status when the body carries no detail', async () => {
     mockFetch(new Response('Internal error', { status: 500 }))
     await expect(checkAuthStatus()).rejects.toThrow('Auth check failed (500)')
   })
+
+  it('surfaces a string FastAPI detail', async () => {
+    mockFetch(new Response(JSON.stringify({ detail: 'Invalid URL' }), { status: 422 }))
+    await expect(createRepo('bad-url')).rejects.toThrow('Invalid URL')
+  })
+
+  it('surfaces a validation-error detail array', async () => {
+    mockFetch(
+      new Response(JSON.stringify({ detail: [{ msg: 'field required' }] }), { status: 422 }),
+    )
+    await expect(createRepo('bad-url')).rejects.toThrow('field required')
+  })
 })
 
-describe('verifyPassword', () => {
+// ── Request bodies ───────────────────────────────────────────────────
+
+describe('request construction', () => {
   beforeEach(() => vi.restoreAllMocks())
 
-  it('sends POST with correct JSON body', async () => {
+  it('verifyPassword sends POST with the password as JSON', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(JSON.stringify({ valid: true }), { status: 200 }))
@@ -76,66 +83,8 @@ describe('verifyPassword', () => {
     expect(options?.method).toBe('POST')
     expect(options?.body).toBe(JSON.stringify({ password: 'secret123' }))
   })
-})
 
-// ── Repos ────────────────────────────────────────────────────────────
-
-describe('createRepo', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('returns RepoResponse on 201', async () => {
-    mockFetch(new Response(JSON.stringify(fakeRepo), { status: 201 }))
-    const result = await createRepo('https://github.com/owner/repo')
-    expect(result).toEqual(fakeRepo)
-  })
-
-  it('throws on error response', async () => {
-    mockFetch(new Response(JSON.stringify({ detail: 'Invalid URL' }), { status: 422 }))
-    await expect(createRepo('bad-url')).rejects.toThrow('Invalid URL')
-  })
-})
-
-describe('fetchRepos', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('returns repo list on 200', async () => {
-    mockFetch(new Response(JSON.stringify([fakeRepo]), { status: 200 }))
-    const result = await fetchRepos()
-    expect(result).toEqual([fakeRepo])
-  })
-})
-
-describe('deactivateRepo', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('resolves on 200', async () => {
-    mockFetch(new Response(JSON.stringify({ deactivated: true }), { status: 200 }))
-    await expect(deactivateRepo(1)).resolves.toBeUndefined()
-  })
-})
-
-describe('checkReadmeStatus', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('returns has_readme true', async () => {
-    mockFetch(new Response(JSON.stringify({ has_readme: true }), { status: 200 }))
-    const result = await checkReadmeStatus(1)
-    expect(result).toEqual({ has_readme: true })
-  })
-})
-
-// ── Sprints ──────────────────────────────────────────────────────────
-
-describe('createSprint', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('returns SprintResponse on 201', async () => {
-    mockFetch(new Response(JSON.stringify(fakeSprint), { status: 201 }))
-    const result = await createSprint('Sprint 1', 1)
-    expect(result).toEqual(fakeSprint)
-  })
-
-  it('sends FormData with name and repo_id', async () => {
+  it('createSprint sends FormData with name, repo_id and the README file', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(JSON.stringify(fakeSprint), { status: 201 }))
@@ -149,42 +98,18 @@ describe('createSprint', () => {
     expect(body.get('repo_id')).toBe('42')
     expect(body.get('readme_file')).toBe(readmeFile)
   })
-})
 
-describe('fetchSprints', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('returns sprint list on 200', async () => {
-    mockFetch(new Response(JSON.stringify([fakeSprint]), { status: 200 }))
-    const result = await fetchSprints()
-    expect(result).toEqual([fakeSprint])
-  })
-})
-
-describe('fetchSprint', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('returns single sprint on 200', async () => {
-    mockFetch(new Response(JSON.stringify(fakeSprint), { status: 200 }))
-    const result = await fetchSprint(1)
-    expect(result).toEqual(fakeSprint)
-  })
-})
-
-describe('finishSprint', () => {
-  beforeEach(() => vi.restoreAllMocks())
-
-  it('sends PATCH with active=false', async () => {
+  it('finishSprint sends PATCH with active=false', async () => {
     const finished = { ...fakeSprint, active: false }
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(JSON.stringify(finished), { status: 200 }))
 
     const result = await finishSprint(1)
-    expect(result).toEqual(finished)
 
     const [, options] = fetchSpy.mock.calls[0]
     expect(options?.method).toBe('PATCH')
     expect(options?.body).toBe(JSON.stringify({ active: false }))
+    expect(result).toEqual(finished)
   })
 })

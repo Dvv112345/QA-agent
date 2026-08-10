@@ -128,44 +128,10 @@ async def test_returns_the_expected_shape_for_a_seeded_sprint(async_client, db_s
     assert body["excluded_runs_failed"] == 0
 
 
-@pytest.mark.asyncio
-async def test_an_in_flight_run_is_excluded_and_named(async_client, db_session):
-    sprint = _seed_sprint(db_session)
-    requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
-    plan = _seed_test_plan(db_session, requirement, status=TestPlanStatus.APPROVED)
-    case = _seed_test_case(db_session, plan, position=0)
-    run = _seed_test_run(db_session, sprint)
-    execution = _seed_test_execution(
-        db_session, run, requirement, status=TestExecutionStatus.RUNNING
-    )
-    _seed_test_case_execution(db_session, execution, case, status=TestCaseExecutionStatus.PENDING)
-
-    resp = await async_client.get(f"/api/sprints/{sprint.id}/qa-metrics")
-
-    body = resp.json()
-    assert body["excluded_runs_running"] == 1
-    assert body["case_executions"] == 0
-
-
-@pytest.mark.asyncio
-async def test_the_breakdown_names_an_archived_requirement(async_client, db_session):
-    sprint = _seed_sprint(db_session)
-    requirement = _seed_requirement(
-        db_session, sprint, status=RequirementStatus.CONFIRMED, name="Removed feature"
-    )
-    _seed_completed_scripted_run(
-        db_session, sprint, requirement, _seed_plan_cases(db_session, requirement, 1), bugs=1
-    )
-    requirement.archived = True
-    db_session.add(requirement)
-    db_session.commit()
-
-    resp = await async_client.get(f"/api/sprints/{sprint.id}/qa-metrics")
-
-    rows = resp.json()["per_requirement"]
-    assert len(rows) == 1
-    assert rows[0]["requirement_name"] == "Removed feature"
-    assert rows[0]["requirement_deleted"] is True
+# Run exclusion and archived-requirement flagging are counting rules, pinned
+# against the pure function in ``test_qa_metrics.py``
+# (``test_unfinished_runs_are_excluded_counted_and_split_by_reason``,
+# ``test_an_archived_requirement_is_present_and_flagged``).
 
 
 @pytest.mark.asyncio

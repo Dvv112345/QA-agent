@@ -7,6 +7,7 @@ deterministic prefilter, with ``llm.group_findings`` stubbed.
 """
 
 import json
+from datetime import timedelta
 
 import pytest
 from sqlmodel import select
@@ -731,6 +732,15 @@ def test_a_superseded_ticket_row_is_updated_in_place(db_session, tracker):
     sprint, first = _scripted_run(db_session)
     finding_export.export_findings(db_session, first)
     (before,) = _group_tickets(db_session)
+    # Back-date the first filing rather than racing the clock: two
+    # ``datetime.now()`` calls milliseconds apart are *identical* on a
+    # coarse-resolution platform (Windows ticks at ~15.6 ms), which made the
+    # strict ``>`` below a coin flip.  Back-dating keeps the assertion's
+    # meaning — a ``default_factory`` fires on insert only, so an untouched
+    # row would still read one hour old.
+    before.filed_at = before.filed_at - timedelta(hours=1)
+    db_session.add(before)
+    db_session.commit()
     filed_at = before.filed_at
     tracker.is_open = False
     _, second = _scripted_run_in(db_session, sprint)

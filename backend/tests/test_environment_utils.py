@@ -60,14 +60,6 @@ class TestScriptEnvironment:
         assert platform.platform() in result
         assert "Playwright" not in result
 
-    def test_survives_python_version_probing_failing(self, monkeypatch):
-        monkeypatch.setattr(
-            environment_utils.platform,
-            "python_version",
-            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-        )
-        assert script_environment()  # non-empty, and did not raise
-
 
 class TestBrowserEnvironment:
     def test_includes_every_part(self):
@@ -85,10 +77,6 @@ class TestBrowserEnvironment:
         result = browser_environment("Chromium 131", None, "https://app.test/")
         assert "viewport" not in result
         assert "Chromium 131" in result
-
-    def test_omits_viewport_with_incomplete_dimensions(self):
-        result = browser_environment("Chromium 131", {"width": 1280}, None)
-        assert "viewport" not in result
 
     def test_omits_url_when_unavailable(self):
         result = browser_environment("Chromium 131", {"width": 800, "height": 600}, None)

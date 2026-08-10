@@ -1122,23 +1122,10 @@ class TestExploratoryExportRollup:
         db_session.refresh(run)
         return run
 
-    @pytest.mark.asyncio
-    async def test_groups_findings_by_issue_key(self, async_client, db_session):
-        run = self._seed_run_with_findings(
-            db_session,
-            [
-                {"tracker_issue_key": "7", "tracker_issue_url": "https://gh/7"},
-                {"tracker_issue_key": "7", "tracker_issue_url": "https://gh/7"},
-                {"tracker_issue_key": "8", "tracker_issue_url": "https://gh/8"},
-            ],
-        )
-
-        body = (await async_client.get(f"/api/exploratory-runs/{run.id}")).json()
-
-        assert body["exported_finding_count"] == 3
-        assert body["exported_issue_count"] == 2
-        counts = {g["issue_key"]: g["finding_count"] for g in body["export_groups"]}
-        assert counts == {"7": 2, "8": 1}
+    # Grouping by issue key is ``export_rollup``'s own behaviour, covered
+    # once against the scripted run in ``test_test_execution_routes.py``.
+    # What is exploratory-specific — which rows reach it, and the list
+    # shape — is what remains here.
 
     @pytest.mark.asyncio
     async def test_issue_findings_are_not_counted(self, async_client, db_session):

@@ -1,6 +1,10 @@
-"""Tests for backend/config.py — env var helpers and module-level constants."""
+"""Tests for backend/config.py — the env var parsing helpers.
 
-import importlib
+The module-level constants are deliberately untested: asserting a default
+restates ``config.py`` rather than checking it, and doing so needs an
+``importlib.reload`` that mutates global state other tests read.
+"""
+
 import os
 
 import pytest
@@ -100,83 +104,3 @@ class TestGetOptionalPath:
     def test_unset_returns_none(self, monkeypatch):
         monkeypatch.delenv("TEST_PATH", raising=False)
         assert backend.config._get_optional_path("TEST_PATH") is None
-
-
-class TestModuleConstants:
-    """Tests for module-level constants loaded at import time."""
-
-    def test_defaults_when_env_is_unset(self, monkeypatch):
-        """Module constants should use their default values when no env vars are set."""
-        monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
-
-        monkeypatch.delenv("STORE_OFFLINE", raising=False)
-        monkeypatch.delenv("STORAGE_LOCATION", raising=False)
-        monkeypatch.delenv("MAX_UPLOAD_SIZE_MB", raising=False)
-        monkeypatch.delenv("CORS_ORIGINS", raising=False)
-        monkeypatch.delenv("VERSION", raising=False)
-
-        importlib.reload(backend.config)
-
-        assert backend.config.STORE_OFFLINE is False
-        assert os.path.normpath("./uploads") == backend.config.STORAGE_LOCATION
-        assert backend.config.MAX_UPLOAD_SIZE_MB == 100
-        assert backend.config.CORS_ORIGINS == ["http://localhost:5173"]
-        assert backend.config.VERSION == "0.1.0"
-
-    def test_store_offline_set_to_true(self, monkeypatch):
-        monkeypatch.setenv("STORE_OFFLINE", "true")
-        monkeypatch.delenv("STORAGE_LOCATION", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.STORE_OFFLINE is True
-
-    def test_cors_origins_parsed(self, monkeypatch):
-        monkeypatch.setenv("CORS_ORIGINS", "http://a:3000,http://b:8080")
-        monkeypatch.delenv("STORE_OFFLINE", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.CORS_ORIGINS == ["http://a:3000", "http://b:8080"]
-
-    def test_max_upload_size_mb_parsed(self, monkeypatch):
-        monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "50")
-        monkeypatch.delenv("STORE_OFFLINE", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.MAX_UPLOAD_SIZE_MB == 50
-
-    def test_version_custom(self, monkeypatch):
-        monkeypatch.setenv("VERSION", "2.0.0")
-        monkeypatch.delenv("STORE_OFFLINE", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.VERSION == "2.0.0"
-
-    def test_database_url_default(self, monkeypatch):
-        monkeypatch.delenv("DATABASE_URL", raising=False)
-        importlib.reload(backend.config)
-        assert "postgresql://" in backend.config.DATABASE_URL
-
-    def test_encryption_key_default_empty(self, monkeypatch):
-        monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.ENCRYPTION_KEY == ""
-
-    def test_github_api_timeout_default(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_API_TIMEOUT", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.GITHUB_API_TIMEOUT == 15
-
-    def test_issue_tracker_timeout_default(self, monkeypatch):
-        monkeypatch.delenv("ISSUE_TRACKER_TIMEOUT", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.ISSUE_TRACKER_TIMEOUT == 15
-
-    def test_issue_tracker_timeout_override(self, monkeypatch):
-        monkeypatch.setenv("ISSUE_TRACKER_TIMEOUT", "45")
-        importlib.reload(backend.config)
-        assert backend.config.ISSUE_TRACKER_TIMEOUT == 45
-
-    def test_redis_config_defaults(self, monkeypatch):
-        monkeypatch.delenv("REDIS_HOST", raising=False)
-        monkeypatch.delenv("REDIS_PORT", raising=False)
-        monkeypatch.delenv("REDIS_DB", raising=False)
-        importlib.reload(backend.config)
-        assert backend.config.REDIS_HOST == "localhost"
-        assert backend.config.REDIS_PORT == 6379
-        assert backend.config.REDIS_DB == 0

@@ -40,7 +40,7 @@ describe('App auth flow', () => {
     vi.clearAllMocks()
   })
 
-  it('shows LoginModal when checkAuthStatus returns valid=false', async () => {
+  it('shows LoginModal instead of router content when checkAuthStatus returns valid=false', async () => {
     mockCheckAuthStatus.mockResolvedValue({ valid: false })
     renderApp()
 
@@ -49,6 +49,8 @@ describe('App auth flow', () => {
     })
     expect(screen.getByLabelText('Access Code')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Submit' })).toBeInTheDocument()
+    // The gate must hide the outlet, not merely render the modal over it.
+    expect(screen.queryByText('Sprints')).not.toBeInTheDocument()
   })
 
   it('renders SprintListPage when checkAuthStatus returns valid=true', async () => {
@@ -59,16 +61,6 @@ describe('App auth flow', () => {
       expect(screen.getByText('Sprints')).toBeInTheDocument()
     })
     expect(screen.getByText('Create New Sprint')).toBeInTheDocument()
-  })
-
-  it('does not render router content when unauthenticated', async () => {
-    mockCheckAuthStatus.mockResolvedValue({ valid: false })
-    renderApp()
-
-    await waitFor(() => {
-      expect(screen.getByText('QA Agent')).toBeInTheDocument()
-    })
-    expect(screen.queryByText('Sprints')).not.toBeInTheDocument()
   })
 
   it('shows error when verifyPassword returns valid=false', async () => {

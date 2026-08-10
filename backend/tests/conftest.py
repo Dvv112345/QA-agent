@@ -28,8 +28,8 @@ TEST_CONNECT_ARGS = {"check_same_thread": False}
 # orphan a child row (or delete a parent out from under one) and still
 # pass, while PostgreSQL rejects the same statement in production.  The
 # listener is registered on the Engine *class* rather than an instance
-# because engines are built in several places: the two fixtures below and
-# ad-hoc ones in test_migrations.py.
+# because engines are built in more than one place: both fixtures below,
+# plus any ad-hoc engine a test builds for itself.
 
 
 @event.listens_for(Engine, "connect")
