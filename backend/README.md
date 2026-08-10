@@ -669,6 +669,7 @@ backend/
     database.py        # Table models: Repo, Sprint, Requirement, TestEnvironmentAccess, TestPlan, TestCase, IssueTrackerConfig, DefectGroup, DefectGroupTicket, TestRun, TestExecution, TestCaseExecution, ExploratoryRun, ExploratorySession, ExploratoryFinding
     types.py           # Request/response types
   routes/
+    _common.py         # get_sprint_or_404 / ensure_sprint_active, shared by every sprint-scoped router
     auth.py            # POST /api/auth/verify, GET /api/auth/check
     repos.py           # Repo registration, listing, deactivation, README status
     sprints.py         # Sprint create/list/get/finish + QA metrics
@@ -686,13 +687,14 @@ backend/
     script_runner.py    # Subprocess execution of generated test scripts (no sandboxing beyond a timeout)
     browser_session.py  # One Playwright browser + the exploratory tool executors (DB-free)
     issue_tracker.py    # Jira/GitHub transport: verify, create issue, state check, screenshot attach, redaction
+    findings.py         # One walk over a parent's findings, and one definition of what counts
     finding_dedup.py    # Grouping mechanics: deterministic prefilter + one LLM pass; never raises
     finding_grouping.py # Assigns a run's bug findings to the sprint's DefectGroup rows; never raises
     finding_export.py   # Which findings to file, and writing the receipts back; never raises
     qa_metrics.py       # Per-sprint QA metrics, computed at response time; never raises
     invalidation.py     # What editing a confirmed artifact invalidates
-    finalization.py     # A terminal parent leaves no non-terminal children
-    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions + exploratory runs)
+    finalization.py     # A terminal parent leaves no non-terminal children; the shared retry protocol (RowSpec)
+    reconciler.py      # Re-enqueues lost jobs, sweeps crashed-worker heartbeats (requirements + plans + executions + exploratory runs); SWEEP_SPECS also drives finish_sprint
   tasks/
     analyze_requirement.py  # The analysis task executed by the worker
     generate_test_plan.py   # The plan-generation task (single LLM call, no repo access)
@@ -706,9 +708,11 @@ backend/
     crypto.py          # Fernet encryption for GitHub tokens
     github_utils.py    # GitHub API client and error hierarchy
     prd_utils.py       # PRD text extraction (.md/.txt via UTF-8, .pdf via pypdf, .docx via python-docx)
-    readme_utils.py    # Best-effort README resolution (stored copy → re-download → none) + forced README/file-tree refresh
+    http_utils.py      # SSL_CONTEXT — the certifi context every outbound HTTPS client must use
+    readme_utils.py    # Best-effort README resolution (stored copy → re-download → none) + refresh_project_context for a run
     sprint_utils.py    # Unique sprint directory generation
-    environment_utils.py # Where a finding was observed (OS / script / browser), captured in code
+    upload_utils.py    # read_upload_capped — bounded multipart reads
+    environment_utils.py # Where a finding was observed, and which env values may leave the app
     exploratory_utils.py # session_sheets(run) — session rows as plain prompt data
   tests/               # pytest suite (in-memory SQLite, mocked GitHub API, Redis + LLM stubbed)
 ```
