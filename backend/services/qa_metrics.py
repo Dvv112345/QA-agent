@@ -236,7 +236,15 @@ def compute_sprint_metrics(sprint) -> dict:
 
 
 def _empty(sprint_id: int) -> dict:
-    """All zeros — what a sprint with no completed run honestly reports."""
+    """All zeros — what a sprint with no completed run honestly reports.
+
+    Also **the single declaration of the response shape**: `_compute`
+    builds on top of this rather than re-listing every key.  The two used
+    to be written out separately, which made a key added to one and
+    forgotten in the other turn any metrics exception into a
+    `response_model` validation error — a 500 on the one endpoint whose
+    whole contract is that it can never take the page down.
+    """
     return {
         "sprint_id": sprint_id,
         "distinct_test_cases_run": 0,
@@ -275,7 +283,7 @@ def _compute(sprint) -> dict:
     bug_count = len(bug_groups)
 
     return {
-        "sprint_id": sprint.id,
+        **_empty(sprint.id),
         "distinct_test_cases_run": distinct_cases,
         "case_executions": counted.case_executions,
         "executions_passed": counted.executions_passed,
@@ -309,7 +317,7 @@ def _compute(sprint) -> dict:
         ),
         "bugs_per_requirement": _density(bug_count, len(covered)),
         "bugs_per_test_case": _density(bug_count, distinct_cases),
-        "per_requirement": _per_requirement(sprint, counted, bug_groups, issue_findings),
+        "per_requirement": _per_requirement(sprint, counted, bug_groups, issue_findings, covered),
         "excluded_runs_running": counted.excluded_running,
         "excluded_runs_failed": counted.excluded_failed,
     }
@@ -320,6 +328,7 @@ def _per_requirement(
     counted: _Counted,
     bug_groups: list[list[Finding]],
     issue_findings: list[Finding],
+    covered: set[int],
 ) -> list[dict]:
     """The breakdown, one row per requirement a counted run covered.
 
@@ -336,7 +345,6 @@ def _per_requirement(
     headline exactly.  The footnote is therefore a bug-only concern.
     """
     labels = _requirement_labels(sprint)
-    covered = counted.scripted_requirements | counted.explored_requirements
 
     bugs_by_requirement: dict[int, int] = {}
     issues_by_requirement: dict[int, int] = {}

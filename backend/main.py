@@ -44,20 +44,19 @@ def _check_redis_health() -> str:
     """Check whether Redis is reachable.
 
     Returns a human-readable status string suitable for the health endpoint.
+
+    Uses the shared ``QueueService`` connection rather than opening its
+    own: the pool already exists in this process, and a probe that dials a
+    fresh socket every call is measuring something the application does
+    not actually use.
     """
-    import redis as _redis
+    from backend.services.queue import get_queue_service
 
-    from backend.config import REDIS_DB, REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
-
+    connection = get_queue_service().get_connection()
+    if connection is None:
+        return "unavailable: no Redis connection"
     try:
-        r = _redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            password=REDIS_PASSWORD,
-            db=REDIS_DB,
-            socket_connect_timeout=2,
-        )
-        r.ping()
+        connection.ping()
         return "available"
     except Exception as exc:
         return f"unavailable: {exc}"
@@ -140,8 +139,15 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     @app.get("/api/health", response_model=HealthResponse)
     async def health_check():
-        storage = _check_storage_health()
-        redis_status = _check_redis_health()
+        # Both probes block — one on the filesystem, one on a socket — and
+        # this endpoint is polled. Run them off the event loop, and
+        # concurrently with each other: when Redis is down, which is
+        # exactly when health gets watched, a serial probe parks the loop
+        # for the whole timeout and stalls every other request.
+        storage, redis_status = await asyncio.gather(
+            asyncio.to_thread(_check_storage_health),
+            asyncio.to_thread(_check_redis_health),
+        )
         return HealthResponse(status="ok", storage=storage, redis=redis_status)
 
     return app

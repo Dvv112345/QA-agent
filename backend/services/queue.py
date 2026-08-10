@@ -7,8 +7,9 @@ reconciler can enqueue them.
 
 All consumers should obtain the shared instance via ``get_queue_service()``
 rather than constructing ``QueueService`` directly.  The singleton is
-created lazily on first access and supports ``reset()`` for reconnection
-when Redis recovers after a transient outage.
+created lazily on first access; ``reset_queue_service()`` discards it so
+the next access reconnects, which is how a transient Redis outage is
+recovered from.
 
 PostgreSQL is the sole status of record — Redis is transport only, so this
 module deliberately has no job-status or job-meta helpers beyond the
@@ -17,7 +18,6 @@ module deliberately has no job-status or job-meta helpers beyond the
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -138,19 +138,6 @@ class QueueService:
     def available(self) -> bool:
         """``True`` when Redis is connected and ready."""
         return self._redis is not None and self._queue is not None
-
-    def reset(self) -> None:
-        """Close the current connection (if any) and reconnect.
-
-        Call this after detecting that Redis has become available following
-        a transient outage.
-        """
-        if self._redis:
-            with contextlib.suppress(Exception):
-                self._redis.close()
-        self._redis = None
-        self._queue = None
-        self._connect()
 
     def get_connection(self) -> redis.Redis | None:
         """Return the raw Redis connection (used by the worker CLI)."""

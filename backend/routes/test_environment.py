@@ -97,6 +97,20 @@ def _apply_check_result(
     invalidation.invalidate_for_environment_change(session, sprint)
 
 
+def _apply_verdict(test_env: TestEnvironmentAccess, result) -> None:
+    """Put the row into the state this check's verdict implies.
+
+    Sufficient means there is nothing left to ask, so a stale question is
+    cleared rather than left to reappear beside a `ready` badge.
+    """
+    if result.sufficient:
+        test_env.status = TestEnvironmentStatus.READY
+        test_env.clarifying_question = None
+    else:
+        test_env.status = TestEnvironmentStatus.NEEDS_INFO
+        test_env.clarifying_question = result.clarifying_question
+
+
 def _touch(test_env: TestEnvironmentAccess) -> None:
     test_env.updated_at = datetime.now(timezone.utc)
 
@@ -233,12 +247,7 @@ async def submit_test_environment(
     else:
         _apply_check_result(session, sprint, test_env, content, env_vars_json)
 
-    if result.sufficient:
-        test_env.status = TestEnvironmentStatus.READY
-        test_env.clarifying_question = None
-    else:
-        test_env.status = TestEnvironmentStatus.NEEDS_INFO
-        test_env.clarifying_question = result.clarifying_question
+    _apply_verdict(test_env, result)
 
     _touch(test_env)
     session.add(test_env)
@@ -299,12 +308,7 @@ async def answer_test_environment(
     # from there is what changes the text.
     _apply_check_result(session, sprint, test_env, result.rewritten_content, env_vars_json)
     test_env.revision_count += 1
-    if result.sufficient:
-        test_env.status = TestEnvironmentStatus.READY
-        test_env.clarifying_question = None
-    else:
-        test_env.status = TestEnvironmentStatus.NEEDS_INFO
-        test_env.clarifying_question = result.clarifying_question
+    _apply_verdict(test_env, result)
 
     _touch(test_env)
     session.add(test_env)

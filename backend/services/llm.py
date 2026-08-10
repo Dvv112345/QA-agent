@@ -129,10 +129,19 @@ def _complete(system_prompt: str, user_prompt: str, model_cls: type[_ResultT]) -
     except openai.OpenAIError as exc:
         raise LLMError(f"LLM request failed: {exc}") from exc
 
-    try:
-        return model_cls.model_validate(json.loads(content or ""))
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise LLMError(f"LLM returned malformed output: {exc}") from exc
+    return _parse_json(content, model_cls)
+
+
+def _require_followup(*, ok: bool, question: str | None, verdict: str) -> None:
+    """A negative verdict must come with something to ask the user.
+
+    Both clarification loops are driven entirely by the question: without
+    one the row goes to `needs_clarification` / `needs_info` with nothing
+    to show, and the user is stuck at a prompt that never appeared.  Four
+    entry points state this same invariant, so it is checked in one place.
+    """
+    if not ok and not question:
+        raise LLMError(f"LLM judged the {verdict} but gave no clarifying question.")
 
 
 def check_clarity(
@@ -145,8 +154,9 @@ def check_clarity(
     parts = context_sections(readme, file_tree)
     parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
     result = _complete(CHECK_SYSTEM_PROMPT, "\n\n".join(parts), ClarityResult)
-    if not result.clear and not result.clarifying_question:
-        raise LLMError("LLM judged the requirement unclear but gave no clarifying question.")
+    _require_followup(
+        ok=result.clear, question=result.clarifying_question, verdict="requirement unclear"
+    )
     return result
 
 
@@ -167,8 +177,9 @@ def revise_requirement(
         f"User's answer:\n{answer}"
     )
     result = _complete(REVISE_SYSTEM_PROMPT, "\n\n".join(parts), ClarityResult)
-    if not result.clear and not result.clarifying_question:
-        raise LLMError("LLM judged the requirement unclear but gave no clarifying question.")
+    _require_followup(
+        ok=result.clear, question=result.clarifying_question, verdict="requirement unclear"
+    )
     if not result.rewritten_description:
         raise LLMError("LLM revision did not include a rewritten description.")
     return result
@@ -223,8 +234,11 @@ def check_test_environment(
     parts.extend(context_sections(readme, file_tree))
     parts.append(f"Test environment access description:\n{content}")
     result = _complete(TEST_ENV_CHECK_SYSTEM_PROMPT, "\n\n".join(parts), TestEnvironmentResult)
-    if not result.sufficient and not result.clarifying_question:
-        raise LLMError("LLM judged the description insufficient but gave no clarifying question.")
+    _require_followup(
+        ok=result.sufficient,
+        question=result.clarifying_question,
+        verdict="description insufficient",
+    )
     return result
 
 
@@ -245,8 +259,11 @@ def revise_test_environment(
         f"User's answer:\n{answer}"
     )
     result = _complete(TEST_ENV_REVISE_SYSTEM_PROMPT, "\n\n".join(parts), TestEnvironmentResult)
-    if not result.sufficient and not result.clarifying_question:
-        raise LLMError("LLM judged the description insufficient but gave no clarifying question.")
+    _require_followup(
+        ok=result.sufficient,
+        question=result.clarifying_question,
+        verdict="description insufficient",
+    )
     if not result.rewritten_content:
         raise LLMError("LLM revision did not include rewritten content.")
     return result

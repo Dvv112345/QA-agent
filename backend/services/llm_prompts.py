@@ -6,6 +6,7 @@ edited without wading through client/completion plumbing.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from backend.config import README_MAX_CHARS
@@ -109,6 +110,13 @@ TEST_ENV_REVISE_SYSTEM_PROMPT = (
     '{"sufficient": boolean, "clarifying_question": string or null, '
     '"rewritten_content": string}.'
 )
+
+
+def bullets(items: Sequence[str], empty: str = "(none)") -> str:
+    """One ``- item`` per line, or *empty* when there are none."""
+    if not items:
+        return empty
+    return "\n".join(f"- {item}" for item in items)
 
 
 def requirements_section(requirements: list[tuple[str, str]]) -> str:
@@ -384,8 +392,7 @@ def test_script_context(
     """Shared user-prompt blocks for test-script generation and diagnosis."""
     parts = context_sections(readme, file_tree)
     parts.append(
-        "Available environment variables (read via os.environ):\n"
-        + ("\n".join(f"- {v}" for v in env_var_names) if env_var_names else "(none)")
+        "Available environment variables (read via os.environ):\n" + bullets(env_var_names)
     )
     parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
     case_block = (
@@ -742,10 +749,7 @@ def charter_context(
             "Scripted test cases already approved for this requirement "
             f"(already covered — explore what these miss):\n{covered}"
         )
-    parts.append(
-        "Available test environment variable names:\n"
-        + ("\n".join(f"- {v}" for v in env_var_names) if env_var_names else "(none)")
-    )
+    parts.append("Available test environment variable names:\n" + bullets(env_var_names))
     return parts
 
 
@@ -778,10 +782,7 @@ def exploration_context(
             "Typing a URL outside these origins is refused; following the "
             "application's own links off them is allowed."
         )
-    parts.append(
-        "Environment variable names available to fill_secret:\n"
-        + ("\n".join(f"- {v}" for v in env_var_names) if env_var_names else "(none)")
-    )
+    parts.append("Environment variable names available to fill_secret:\n" + bullets(env_var_names))
     return parts
 
 

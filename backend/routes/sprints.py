@@ -145,7 +145,7 @@ async def create_sprint(
             )
 
     # ── Generate unique directory ─────────────────────────────────────
-    directory, _dir_path = generate_sprint_directory(session, STORAGE_LOCATION)
+    directory, _dir_path = generate_sprint_directory(STORAGE_LOCATION)
 
     # ── Save README to disk ───────────────────────────────────────────
     storage = StorageService()
@@ -164,10 +164,25 @@ async def create_sprint(
     session.commit()
     session.refresh(sprint)
 
-    # Re-fetch to load the relationship
-    sprint = session.get(Sprint, sprint.id)
     logger.info("Sprint created: id=%d name=%s repo=%s", sprint.id, sprint.name, repo.name)
     return sprint
+
+
+# Everything `SprintResponse`'s computed flags touch. They are evaluated
+# for every serialized sprint, so without these the list endpoint issues
+# several queries per row and the detail endpoint one per requirement.
+#
+# `all_requirements` rather than `requirements`: the latter is the
+# archived-filtering property over it and cannot be given to selectinload.
+_SPRINT_LOAD_OPTIONS = (
+    selectinload(Sprint.all_requirements).selectinload(Requirement.test_plan),
+    selectinload(Sprint.test_environment),
+    selectinload(Sprint.repo),
+    # `has_test_runs` / `has_exploratory_runs` ask only whether the
+    # collection is non-empty, so neither chain needs its children here.
+    selectinload(Sprint.test_runs),
+    selectinload(Sprint.exploratory_runs),
+)
 
 
 @router.get("/sprints", response_model=list[SprintResponse])
@@ -180,15 +195,7 @@ async def list_sprints(
     return list(
         session.exec(
             select(Sprint)
-            # The computed SprintResponse flags touch these relationships on
-            # every row — eager-load them to avoid per-row lazy queries.
-            .options(
-                # Eager-load the raw collection; `Sprint.requirements` is the
-                # filtered property over it and cannot be given to selectinload.
-                selectinload(Sprint.all_requirements).selectinload(Requirement.test_plan),
-                selectinload(Sprint.test_environment),
-                selectinload(Sprint.test_runs).selectinload(TestRun.executions),
-            )
+            .options(*_SPRINT_LOAD_OPTIONS)
             .order_by(Sprint.active.desc(), Sprint.created_at.desc())  # noqa: E712
             .offset(offset)
             .limit(limit)
@@ -202,7 +209,12 @@ async def get_sprint(
     session: Session = Depends(get_session),
 ) -> Sprint:
     """Get a single sprint with its associated repo info."""
-    return get_sprint_or_404(session, sprint_id)
+    sprint = session.exec(
+        select(Sprint).where(Sprint.id == sprint_id).options(*_SPRINT_LOAD_OPTIONS)
+    ).one_or_none()
+    if sprint is None:
+        raise HTTPException(status_code=404, detail="Sprint not found.")
+    return sprint
 
 
 @router.get("/sprints/{sprint_id}/qa-metrics", response_model=SprintMetricsResponse)

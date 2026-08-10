@@ -94,18 +94,20 @@ def _classify_error(status_code: int, has_token: bool) -> GitHubError:
     return GitHubError(f"GitHub API returned unexpected status {status_code}.")
 
 
-async def _get(
+async def _request(
     client: httpx.AsyncClient,
     url: str,
     token: str | None,
-) -> dict[str, Any]:
-    """Perform an authenticated GET request and return parsed JSON.
+) -> httpx.Response:
+    """One authenticated GET, with every transport failure mapped to ours.
 
-    Raises the appropriate ``GitHubError`` subclass on failure.
+    Returns the response whatever its status — the callers differ on which
+    codes are fatal, and on whether they want the body at all.  Only
+    failures that produced *no* response raise from here.
     """
     headers = _build_headers(token)
     try:
-        response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
+        return await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
     except httpx.TimeoutException:
         raise GitHubUnavailableError(
             f"GitHub API request timed out after {GITHUB_API_TIMEOUT}s: {url}"
@@ -113,6 +115,27 @@ async def _get(
     except httpx.RequestError as exc:
         raise GitHubUnavailableError(f"Could not reach GitHub API: {exc}") from exc
 
+
+async def _get(
+    client: httpx.AsyncClient,
+    url: str,
+    token: str | None,
+    *,
+    allow_404: bool = False,
+) -> dict[str, Any] | None:
+    """Perform an authenticated GET request and return parsed JSON.
+
+    Raises the appropriate ``GitHubError`` subclass on failure.
+
+    ``allow_404=True`` answers ``None`` for a missing resource instead of
+    raising, for the callers where absence is a value rather than an error
+    — a repository with no README is an ordinary repository.  Everything
+    else still raises, so "not there" and "cannot tell" stay distinct.
+    """
+    response = await _request(client, url, token)
+
+    if allow_404 and response.status_code == 404:
+        return None
     if not response.is_success:
         raise _classify_error(response.status_code, bool(token))
 
@@ -148,16 +171,11 @@ async def check_readme_exists(owner: str, repo: str, token: str | None = None) -
     on 404, and raises on other errors.
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/readme"
-    headers = _build_headers(token)
     async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
-        try:
-            response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
-        except httpx.TimeoutException:
-            raise GitHubUnavailableError(
-                f"GitHub README check timed out after {GITHUB_API_TIMEOUT}s"
-            ) from None
-        except httpx.RequestError as exc:
-            raise GitHubUnavailableError(f"Could not reach GitHub API: {exc}") from exc
+        # `_request`, not `_get`: existence is the whole question, and
+        # parsing a body this caller discards would let a 200 with an
+        # unexpected payload read as "no README".
+        response = await _request(client, url, token)
 
     if response.status_code == 200:
         return True
@@ -175,24 +193,12 @@ async def download_readme(owner: str, repo: str, token: str | None = None) -> st
     failures.
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/readme"
-    headers = _build_headers(token)
     async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
-        try:
-            response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
-        except httpx.TimeoutException:
-            raise GitHubUnavailableError(
-                f"GitHub README download timed out after {GITHUB_API_TIMEOUT}s"
-            ) from None
-        except httpx.RequestError as exc:
-            raise GitHubUnavailableError(f"Could not reach GitHub API: {exc}") from exc
+        data = await _get(client, url, token, allow_404=True)
 
-    if response.status_code == 200:
-        content_b64 = response.json().get("content", "")
-        return base64.b64decode(content_b64).decode("utf-8")
-    if response.status_code == 404:
+    if data is None:
         return None
-
-    raise _classify_error(response.status_code, bool(token))
+    return base64.b64decode(data.get("content", "")).decode("utf-8")
 
 
 # ── Repo file tree ───────────────────────────────────────────────────
@@ -330,23 +336,11 @@ async def fetch_file(
     if ref:
         url += f"?ref={urllib.parse.quote(ref)}"
 
-    headers = _build_headers(token)
     async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
-        try:
-            response = await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
-        except httpx.TimeoutException:
-            raise GitHubUnavailableError(
-                f"GitHub file fetch timed out after {GITHUB_API_TIMEOUT}s"
-            ) from None
-        except httpx.RequestError as exc:
-            raise GitHubUnavailableError(f"Could not reach GitHub API: {exc}") from exc
+        data = await _get(client, url, token, allow_404=True)
 
-    if response.status_code == 404:
+    if data is None:
         return None
-    if not response.is_success:
-        raise _classify_error(response.status_code, bool(token))
-
-    data = response.json()
     # A directory returns a JSON list; files >1 MB come back without inline
     # content — neither is readable text for our purposes.
     if not isinstance(data, dict) or data.get("type") != "file" or not data.get("content"):

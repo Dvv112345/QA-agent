@@ -532,7 +532,8 @@ async def restart_exploratory_run(
     run.updated_at = datetime.now(timezone.utc)
     session.add(run)
     session.commit()
-    session.refresh(run)
+    # No refresh here: `enqueue_rows` commits and refreshes the row itself,
+    # and the reload below re-reads it with its relationships eager-loaded.
     enqueue_rows(session, [run], get_queue_service().enqueue_exploration)
     return _run_detail(_get_run_or_404(session, run_id))
 

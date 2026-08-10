@@ -48,6 +48,27 @@ def _get_requirement_or_404(session: Session, requirement_id: int) -> Requiremen
     return requirement
 
 
+def _sprint_requirements(session: Session, sprint_id: int) -> list[Requirement]:
+    """The sprint's live requirements, in creation order.
+
+    Mirrors ``test_plans._sprint_plans``.  The ``archived`` filter is
+    written by hand here as it is at every other explicit
+    ``select(Requirement)`` site — the soft delete is deliberate and the
+    ORM cannot apply it — but naming the query means the list endpoint and
+    confirm-all cannot answer it two different ways.
+    """
+    return list(
+        session.exec(
+            select(Requirement)
+            .where(
+                Requirement.sprint_id == sprint_id,
+                Requirement.archived == False,  # noqa: E712
+            )
+            .order_by(Requirement.created_at, Requirement.id)
+        ).all()
+    )
+
+
 def _touch(requirement: Requirement) -> None:
     requirement.updated_at = datetime.now(timezone.utc)
 
@@ -216,16 +237,7 @@ async def list_requirements(
 ) -> list[Requirement]:
     """List a sprint's requirements — this is the polling endpoint (plain DB read)."""
     get_sprint_or_404(session, sprint_id)
-    return list(
-        session.exec(
-            select(Requirement)
-            .where(
-                Requirement.sprint_id == sprint_id,
-                Requirement.archived == False,  # noqa: E712
-            )
-            .order_by(Requirement.created_at, Requirement.id)
-        ).all()
-    )
+    return _sprint_requirements(session, sprint_id)
 
 
 @router.post(
@@ -257,16 +269,7 @@ async def confirm_all_requirements(
     )
     session.commit()
 
-    return list(
-        session.exec(
-            select(Requirement)
-            .where(
-                Requirement.sprint_id == sprint_id,
-                Requirement.archived == False,  # noqa: E712
-            )
-            .order_by(Requirement.created_at, Requirement.id)
-        ).all()
-    )
+    return _sprint_requirements(session, sprint_id)
 
 
 @router.post("/requirements/{requirement_id}/answer", response_model=RequirementResponse)

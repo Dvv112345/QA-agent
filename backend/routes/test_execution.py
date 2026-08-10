@@ -3,7 +3,6 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from functools import partial
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -353,10 +352,16 @@ async def export_test_run_findings(
 
     # `requested=True`: the click is the consent the run's toggle stands in
     # for, so this files even for a run started before a tracker existed.
-    for execution in run.executions:
-        await asyncio.to_thread(
-            partial(finding_export.export_findings, session, execution, requested=True)
-        )
+    #
+    # One thread hop for the whole loop, not one per execution: the
+    # executions share a session and are filed in order regardless, so
+    # hopping per row buys nothing and costs an event-loop suspension each
+    # time. The exploratory twin already does a single hop.
+    def _export_all() -> None:
+        for execution in run.executions:
+            finding_export.export_findings(session, execution, requested=True)
+
+    await asyncio.to_thread(_export_all)
 
     session.expire_all()
     return _run_detail(_get_run_or_404(session, run_id))
