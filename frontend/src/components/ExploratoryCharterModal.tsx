@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { createExploratoryRun, fetchTestPlans, generateCharters } from '../services/api'
+import { createExploratoryRun, generateCharters } from '../services/api'
 import type {
   CharterDraft,
   ExploratoryCharterDraftResponse,
@@ -14,43 +14,27 @@ import './ExploratoryCharterModal.css'
 
 interface Props {
   sprintId: number
+  /**
+   * The sprint's approved test plans, passed down for the same reason
+   * `tracker` is: the parent already knows them, and fetching here meant
+   * pulling every plan's full `cases[]` on each modal open to render a
+   * list of requirement names.
+   */
+  plans: TestPlanResponse[]
   /** The sprint's tracker, passed down so the modal needs no second fetch. */
   tracker?: IssueTrackerConfig | null
   onClose: () => void
 }
 
-export default function ExploratoryCharterModal({ sprintId, tracker, onClose }: Props) {
+export default function ExploratoryCharterModal({ sprintId, plans, tracker, onClose }: Props) {
   const navigate = useNavigate()
-  const [plans, setPlans] = useState<TestPlanResponse[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<number | null>(null)
+  const [selected, setSelected] = useState<number | null>(plans[0]?.requirement_id ?? null)
   const [draft, setDraft] = useState<ExploratoryCharterDraftResponse | null>(null)
   const [charters, setCharters] = useState<CharterDraft[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // See RunTestModal — checked by default when a tracker is connected.
   const [exportFindings, setExportFindings] = useState(Boolean(tracker))
-
-  useEffect(() => {
-    let cancelled = false
-    fetchTestPlans(sprintId)
-      .then((data) => {
-        if (cancelled) return
-        const approved = data.filter((plan) => plan.status === 'approved')
-        setPlans(approved)
-        setSelected(approved[0]?.requirement_id ?? null)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (cancelled) return
-        setLoadError(err.message)
-        setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [sprintId])
 
   const handleGenerate = () => {
     if (selected === null) return
@@ -130,11 +114,7 @@ export default function ExploratoryCharterModal({ sprintId, tracker, onClose }: 
       <div className="charter-card">
         <h2>Start exploratory testing</h2>
 
-        {loading ? (
-          <p className="charter-message">Loading requirements&hellip;</p>
-        ) : loadError ? (
-          <p className="charter-message charter-error">{loadError}</p>
-        ) : plans.length === 0 ? (
+        {plans.length === 0 ? (
           <p className="charter-message">No requirements have an approved test plan yet.</p>
         ) : draft === null ? (
           <>

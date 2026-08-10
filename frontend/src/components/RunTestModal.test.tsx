@@ -13,9 +13,8 @@ vi.mock('../services/api', async (importOriginal) => {
   }
 })
 
-import { createTestRun, fetchTestPlans } from '../services/api'
+import { createTestRun } from '../services/api'
 
-const mockFetchTestPlans = fetchTestPlans as ReturnType<typeof vi.fn>
 const mockCreateTestRun = createTestRun as ReturnType<typeof vi.fn>
 
 function makePlan(overrides: Partial<TestPlanResponse> = {}): TestPlanResponse {
@@ -63,12 +62,16 @@ function exportCheckbox() {
   return screen.getByRole('checkbox', { name: /File bug findings/ })
 }
 
-function renderModal(onClose = vi.fn(), tracker: IssueTrackerConfig | null = null) {
+function renderModal(
+  onClose = vi.fn(),
+  tracker: IssueTrackerConfig | null = null,
+  plans: TestPlanResponse[] = [makePlan()],
+) {
   const router = createMemoryRouter(
     [
       {
         path: '/sprints/:id/test-runs',
-        element: <RunTestModal sprintId={1} tracker={tracker} onClose={onClose} />,
+        element: <RunTestModal sprintId={1} plans={plans} tracker={tracker} onClose={onClose} />,
       },
       { path: '/sprints/:id/test-runs/:runId', element: <div>Run detail</div> },
     ],
@@ -82,24 +85,20 @@ describe('RunTestModal', () => {
     vi.clearAllMocks()
   })
 
-  it('lists only requirements with an approved plan', async () => {
-    mockFetchTestPlans.mockResolvedValue([
+  it('lists the requirements it is given', async () => {
+    // The approved-plan filter now lives in `TestRunsPage`, which owns the
+    // fetch — see its own test. This asserts only that the modal renders
+    // exactly the plans handed to it.
+    renderModal(vi.fn(), null, [
       makePlan({ requirement_name: 'Login', status: 'approved' }),
-      makePlan({
-        id: 11,
-        requirement_id: 101,
-        requirement_name: 'Search',
-        status: 'draft',
-      }),
+      makePlan({ id: 11, requirement_id: 101, requirement_name: 'Search', status: 'approved' }),
     ])
-    renderModal()
 
     await screen.findByText('Login')
-    expect(screen.queryByText('Search')).not.toBeInTheDocument()
+    expect(screen.getByText('Search')).toBeInTheDocument()
   })
 
   it('disables Start run with none checked', async () => {
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     renderModal()
 
     await screen.findByText('Login')
@@ -110,7 +109,6 @@ describe('RunTestModal', () => {
   })
 
   it('creates the run and navigates to the detail route', async () => {
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     mockCreateTestRun.mockResolvedValue({
       id: 42,
       sprint_id: 1,
@@ -131,7 +129,6 @@ describe('RunTestModal', () => {
   })
 
   it('surfaces create errors inline and keeps the modal open', async () => {
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     mockCreateTestRun.mockRejectedValue(
       new Error('These requirements already have a run in progress: Login.'),
     )
@@ -148,7 +145,6 @@ describe('RunTestModal', () => {
   })
 
   it('offers the export toggle unchecked and disabled with no tracker', async () => {
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     renderModal()
 
     await screen.findByText('Login')
@@ -160,7 +156,6 @@ describe('RunTestModal', () => {
   it('checks the export toggle by default when a tracker is connected', async () => {
     // Connecting a tracker is itself the statement that findings should
     // go there — asking again per run would be asking twice.
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     renderModal(vi.fn(), makeTracker())
 
     await screen.findByText('Login')
@@ -171,7 +166,6 @@ describe('RunTestModal', () => {
   })
 
   it('sends the export flag through to the API', async () => {
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     mockCreateTestRun.mockResolvedValue({ id: 42 })
     renderModal(vi.fn(), makeTracker())
 
@@ -185,7 +179,6 @@ describe('RunTestModal', () => {
   })
 
   it('an unchecked toggle sends false even with a tracker connected', async () => {
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     mockCreateTestRun.mockResolvedValue({ id: 42 })
     renderModal(vi.fn(), makeTracker())
 
@@ -201,7 +194,6 @@ describe('RunTestModal', () => {
 
   it('calls onClose from Cancel', async () => {
     const onClose = vi.fn()
-    mockFetchTestPlans.mockResolvedValue([makePlan()])
     renderModal(onClose)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))

@@ -1,21 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { createTestRun, fetchTestPlans } from '../services/api'
+import { createTestRun } from '../services/api'
 import type { IssueTrackerConfig, TestPlanResponse } from '../types'
 import './RunTestModal.css'
 
 interface Props {
   sprintId: number
+  /**
+   * The sprint's approved test plans, passed down for the same reason
+   * `tracker` is: the parent already knows them, and fetching here meant
+   * pulling every plan's full `cases[]` on each modal open to render a
+   * list of requirement names.
+   */
+  plans: TestPlanResponse[]
   /** The sprint's tracker, passed down so the modal needs no second fetch. */
   tracker?: IssueTrackerConfig | null
   onClose: () => void
 }
 
-export default function RunTestModal({ sprintId, tracker, onClose }: Props) {
+export default function RunTestModal({ sprintId, plans, tracker, onClose }: Props) {
   const navigate = useNavigate()
-  const [plans, setPlans] = useState<TestPlanResponse[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -23,26 +27,6 @@ export default function RunTestModal({ sprintId, tracker, onClose }: Props) {
   // itself the statement that findings should go there, so making the
   // user re-affirm it per run would be asking twice.
   const [exportFindings, setExportFindings] = useState(Boolean(tracker))
-
-  useEffect(() => {
-    let cancelled = false
-    fetchTestPlans(sprintId)
-      .then((data) => {
-        if (!cancelled) {
-          setPlans(data.filter((plan) => plan.status === 'approved'))
-          setLoading(false)
-        }
-      })
-      .catch((err: Error) => {
-        if (!cancelled) {
-          setLoadError(err.message)
-          setLoading(false)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [sprintId])
 
   const toggle = (requirementId: number) => {
     setSelected((prev) => {
@@ -72,11 +56,7 @@ export default function RunTestModal({ sprintId, tracker, onClose }: Props) {
       <div className="run-test-card">
         <h2>Run new test</h2>
 
-        {loading ? (
-          <p className="run-test-message">Loading requirements&hellip;</p>
-        ) : loadError ? (
-          <p className="run-test-message run-test-error">{loadError}</p>
-        ) : plans.length === 0 ? (
+        {plans.length === 0 ? (
           <p className="run-test-message">No requirements have an approved test plan yet.</p>
         ) : (
           <ul className="run-test-list">

@@ -34,8 +34,10 @@ export default function SprintListPage() {
   const handleFinish = (sprintId: number) => {
     setFinishing(sprintId)
     finishSprint(sprintId)
-      .then(() => fetchSprints())
-      .then((data) => setSprints(data))
+      // The response is the updated sprint — every other caller uses it.
+      // Refetching the list instead re-downloaded every sprint to learn
+      // what this one call already returned.
+      .then((updated) => setSprints((prev) => prev.map((s) => (s.id === updated.id ? updated : s))))
       .catch((err: Error) => setError(err.message))
       .finally(() => setFinishing(null))
   }

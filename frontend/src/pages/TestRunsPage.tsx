@@ -10,6 +10,7 @@ import {
   fetchIssueTracker,
   fetchSprint,
   fetchSprintMetrics,
+  fetchTestPlans,
   fetchTestRuns,
 } from '../services/api'
 import type {
@@ -17,6 +18,7 @@ import type {
   IssueTrackerConfig,
   SprintMetrics,
   SprintResponse,
+  TestPlanResponse,
   TestRunResponse,
 } from '../types'
 import { awaitingExport } from '../exportState'
@@ -54,6 +56,7 @@ export default function TestRunsPage() {
   const [showRunModal, setShowRunModal] = useState(false)
   const [showCharterModal, setShowCharterModal] = useState(false)
   const [tracker, setTracker] = useState<IssueTrackerConfig | null>(null)
+  const [approvedPlans, setApprovedPlans] = useState<TestPlanResponse[]>([])
   const [showTrackerModal, setShowTrackerModal] = useState(false)
 
   useEffect(() => {
@@ -62,9 +65,11 @@ export default function TestRunsPage() {
       fetchSprint(sprintId),
       fetchTestRuns(sprintId),
       fetchExploratoryRuns(sprintId),
-      // Fetched once here and passed down as a prop, so neither run modal
-      // needs a second round trip to decide its export toggle.
+      // Fetched once here and passed down as props, so neither run modal
+      // needs a second round trip — for its export toggle, or for the
+      // requirement list it offers to run.
       fetchIssueTracker(sprintId),
+      fetchTestPlans(sprintId),
       // Swallowed, unlike the four above: the panel is decoration and the
       // run lists are the page. `services/qa_metrics.py` already never
       // raises so a metrics failure cannot 500 this endpoint — but that
@@ -74,12 +79,13 @@ export default function TestRunsPage() {
       // already nullable and the panel renders behind it.
       fetchSprintMetrics(sprintId).catch(() => null),
     ])
-      .then(([sprintData, runData, exploratoryData, trackerData, metricsData]) => {
+      .then(([sprintData, runData, exploratoryData, trackerData, planData, metricsData]) => {
         if (!cancelled) {
           setSprint(sprintData)
           setRuns(runData)
           setExploratoryRuns(exploratoryData)
           setTracker(trackerData)
+          setApprovedPlans(planData.filter((plan) => plan.status === 'approved'))
           setMetrics(metricsData)
           setLoading(false)
         }
@@ -275,6 +281,7 @@ export default function TestRunsPage() {
       {showRunModal && (
         <RunTestModal
           sprintId={sprintId}
+          plans={approvedPlans}
           tracker={tracker}
           onClose={() => setShowRunModal(false)}
         />
@@ -282,6 +289,7 @@ export default function TestRunsPage() {
       {showCharterModal && (
         <ExploratoryCharterModal
           sprintId={sprintId}
+          plans={approvedPlans}
           tracker={tracker}
           onClose={() => setShowCharterModal(false)}
         />

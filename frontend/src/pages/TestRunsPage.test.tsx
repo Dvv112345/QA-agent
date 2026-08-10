@@ -201,6 +201,28 @@ describe('TestRunsPage', () => {
     expect(screen.getByText('Login')).toBeInTheDocument()
   })
 
+  it('passes only approved plans to the run modal', async () => {
+    // This page owns the fetch and the filter, so both run modals get the
+    // same already-filtered list without a round trip of their own.
+    mockFetchSprint.mockResolvedValue(makeSprint())
+    mockFetchTestPlans.mockResolvedValue([
+      makePlan({ requirement_name: 'Login', status: 'approved' }),
+      makePlan({
+        id: 11,
+        requirement_id: 101,
+        requirement_name: 'Search',
+        status: 'draft',
+      }),
+    ])
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run new test' }))
+
+    await screen.findByRole('dialog')
+    expect(screen.getByText('Login')).toBeInTheDocument()
+    expect(screen.queryByText('Search')).not.toBeInTheDocument()
+  })
+
   it('polling advances a running row to completed and stops', async () => {
     vi.useFakeTimers()
     try {
