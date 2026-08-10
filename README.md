@@ -27,7 +27,7 @@ A sprint can also be connected to a **Jira project or GitHub Issues repo** — f
 - An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis, the test-environment check, test-plan generation, test execution, and exploratory testing)
 - `ENCRYPTION_KEY` (a Fernet key — required to register a repo with an access token, and to connect an issue tracker)
 - Optional: a Jira or GitHub Issues account, to file bug findings from a run (for GitHub, the sprint's own repository and its stored token can be used instead — the token needs permission to write issues)
-- For test execution and exploratory testing: `playwright install chromium` on the worker host (one-time, after `pip install -e ".[dev]"`)
+- For test execution and exploratory testing: `playwright install chromium` on the worker host (one-time, after `pip install -e .` — the `playwright` pip package doesn't include the browser binary)
 
 ### Backend
 

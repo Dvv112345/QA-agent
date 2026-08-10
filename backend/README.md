@@ -723,6 +723,6 @@ backend/
 - PostgreSQL
 - Redis (for requirement analysis, test-plan generation, test execution, and exploratory testing; optional otherwise)
 - An LLM API key (`OPENAI_API_KEY` — for requirement analysis, the test-environment check, test-plan generation, test execution, and exploratory testing)
-- For test execution and exploratory testing: `playwright install chromium` on the worker host (one-time)
-- Dependencies declared in `pyproject.toml` (install with `pip install -e ".[dev]"` from the repo root)
+- For test execution and exploratory testing: `playwright install chromium` on the worker host (one-time, after `pip install -e .` — `playwright` is a base dependency, so the `[dev]` extra isn't needed for this)
+- Dependencies declared in `pyproject.toml` (install with `pip install -e ".[dev]"` from the repo root; `pip install -e .` alone covers everything except the test/lint tooling)
 - If using conda, start `python -m backend.worker` from an **activated** environment — generated test scripts inherit the worker process's own environment as-is, so an unactivated worker means an unactivated (and potentially broken) script environment too
