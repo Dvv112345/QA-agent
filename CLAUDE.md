@@ -302,18 +302,15 @@ Ruff (lint + format) for Python; Prettier + ESLint for frontend; general hooks (
 
 ## Skills
 
-| Skill                          | Purpose                                                                |
-| ------------------------------ | ---------------------------------------------------------------------- |
-| `code-review`                  | Review code files in a specified scope and provide fix recommendations |
-| `verify`                       | Run the app and observe behavior to confirm a change works             |
-| `simplify`                     | Review changed code for reuse, simplification, efficiency; apply fixes |
-| `workflows-plan`               | Create detailed implementation plans for features                      |
-| `workflows-work`               | Execute an approved implementation plan with progress tracking         |
-| `deep-research`                | Multi-source, fact-checked research reports with citations             |
-| `gstack-qa` / `gstack-qa-only` | QA workflow (full stack / QA only)                                     |
-| `gstack-review`                | Review a pull request                                                  |
-| `review`                       | Review a pull request                                                  |
-| `security-review`              | Security-focused code review                                           |
+| Skill             | Purpose                                                                |
+| ----------------- | ---------------------------------------------------------------------- |
+| `simplify`        | Review changed code for reuse, simplification, efficiency; apply fixes |
+| `grilling`        | Interview the user to understand requirements clearly                  |
+| `workflows-plan`  | Create detailed implementation plans for features                      |
+| `workflows-work`  | Execute an approved implementation plan with progress tracking         |
+| `deep-research`   | Multi-source, fact-checked research reports with citations             |
+| `gstack-review`   | Review a pull request                                                  |
+| `security-review` | Security-focused code review                                           |
 
 ## Conventions and Notes
 
