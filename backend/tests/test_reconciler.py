@@ -456,6 +456,14 @@ def _reload_plan(db_session, plan_id):
 
 
 class TestTestPlanSweeps:
+    """Wiring only.
+
+    ``reconcile_once`` runs three generic sweeps over ``_SWEEP_SPECS``, so
+    the behaviour of each sweep is proven once against the ``Requirement``
+    spec above. What is spec-specific — the row type, the in-progress and
+    terminal statuses, ``clear_field`` — is what these tests pin.
+    """
+
     def test_fails_in_progress_plans_on_finished_sprint(self, db_session, stub_queue):
         from backend.models.database import TestPlanStatus
 
@@ -479,26 +487,6 @@ class TestTestPlanSweeps:
             assert row.retry_count == 0
         assert stub_queue.enqueued_plans == []
 
-    def test_settled_plans_on_finished_sprint_untouched(self, db_session, stub_queue):
-        from backend.models.database import TestPlanStatus
-
-        sprint = _seed_sprint(db_session, active=False)
-        seeded = {
-            _seed_plan(db_session, sprint, status=status).id: status
-            for status in (
-                TestPlanStatus.DRAFT,
-                TestPlanStatus.APPROVED,
-                TestPlanStatus.FAILED,
-            )
-        }
-
-        reconcile_once()
-
-        for plan_id, status in seeded.items():
-            row = _reload_plan(db_session, plan_id)
-            assert row.status == status
-            assert row.error is None
-
     def test_stale_generating_plan_returns_to_pending_and_reenqueues(self, db_session, stub_queue):
         from backend.models.database import TestPlanStatus
 
@@ -520,44 +508,6 @@ class TestTestPlanSweeps:
         assert row.job_id == f"plan-job-{plan.id}"
         assert stub_queue.enqueued_plans == [plan.id]
 
-    def test_stale_generating_plan_exhausted_marks_failed(self, db_session, stub_queue):
-        from backend.models.database import TestPlanStatus
-
-        sprint = _seed_sprint(db_session)
-        plan = _seed_plan(
-            db_session,
-            sprint,
-            status=TestPlanStatus.GENERATING,
-            last_heartbeat=_stale_time(),
-            retry_count=2,
-        )
-
-        reconcile_once()
-
-        row = _reload_plan(db_session, plan.id)
-        assert row.status == TestPlanStatus.FAILED
-        assert row.retry_count == 3
-        assert row.error is not None
-        assert stub_queue.enqueued_plans == []
-
-    def test_fresh_generating_plan_untouched(self, db_session, stub_queue):
-        from backend.models.database import TestPlanStatus
-
-        sprint = _seed_sprint(db_session)
-        plan = _seed_plan(
-            db_session,
-            sprint,
-            status=TestPlanStatus.GENERATING,
-            last_heartbeat=datetime.now(timezone.utc),
-        )
-
-        reconcile_once()
-
-        row = _reload_plan(db_session, plan.id)
-        assert row.status == TestPlanStatus.GENERATING
-        assert row.retry_count == 0
-        assert stub_queue.enqueued_plans == []
-
     def test_enqueues_pending_plan_and_persists_job_id(self, db_session, stub_queue):
         from backend.models.database import TestPlanStatus
 
@@ -570,69 +520,6 @@ class TestTestPlanSweeps:
         row = _reload_plan(db_session, plan.id)
         assert row.status == TestPlanStatus.PENDING
         assert row.job_id == f"plan-job-{plan.id}"
-
-    def test_skips_pending_plan_with_live_job(self, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
-        plan = _seed_plan(db_session, sprint, job_id="live-plan-job")
-        stub_queue.jobs["live-plan-job"] = _StubJob("queued")
-
-        reconcile_once()
-
-        assert stub_queue.enqueued_plans == []
-        row = _reload_plan(db_session, plan.id)
-        assert row.job_id == "live-plan-job"
-
-    def test_stale_started_plan_job_retries(self, db_session, stub_queue):
-        """The pending sweep's crashed-before-generating detection applies
-        to plan jobs exactly as it does to analysis jobs."""
-        sprint = _seed_sprint(db_session)
-        plan = _seed_plan(db_session, sprint, job_id="crashed-plan-job")
-        stub_queue.jobs["crashed-plan-job"] = _StubJob("started", started_at=_stale_time())
-
-        reconcile_once()
-
-        row = _reload_plan(db_session, plan.id)
-        assert row.retry_count == 1
-        assert row.job_id == f"plan-job-{plan.id}"
-        assert stub_queue.enqueued_plans == [plan.id]
-
-    def test_requirement_and_plan_sweeps_share_a_tick(self, db_session, stub_queue):
-        """Both row types are handled in the same reconcile_once call."""
-        sprint = _seed_sprint(db_session)
-        req = _seed_requirement(db_session, sprint)
-        plan = _seed_plan(db_session, sprint)
-
-        reconcile_once()
-
-        assert stub_queue.enqueued == [req.id]
-        assert stub_queue.enqueued_plans == [plan.id]
-
-    def test_plan_db_sweeps_run_when_redis_down(self, db_session, monkeypatch):
-        from backend.models.database import TestPlanStatus
-
-        stub = _StubQueueService(available=False)
-        monkeypatch.setattr(reconciler_module, "get_queue_service", lambda: stub)
-        monkeypatch.setattr(reconciler_module, "reset_queue_service", lambda: None)
-
-        active = _seed_sprint(db_session)
-        stale = _seed_plan(
-            db_session,
-            active,
-            status=TestPlanStatus.GENERATING,
-            last_heartbeat=_stale_time(),
-        )
-        finished = _seed_sprint(db_session, active=False)
-        orphaned = _seed_plan(db_session, finished)
-
-        reconcile_once()
-
-        stale_row = _reload_plan(db_session, stale.id)
-        assert stale_row.status == TestPlanStatus.PENDING
-        assert stale_row.retry_count == 1
-        orphaned_row = _reload_plan(db_session, orphaned.id)
-        assert orphaned_row.status == TestPlanStatus.FAILED
-        assert orphaned_row.error == SPRINT_FINISHED_ERROR
-        assert stub.enqueued_plans == []
 
 
 # == Test-execution sweeps (mirroring the requirement/plan sweeps) =====
@@ -655,6 +542,8 @@ def _reload_execution(db_session, execution_id):
 
 
 class TestTestExecutionSweeps:
+    """Wiring only — see ``TestTestPlanSweeps``."""
+
     def test_fails_in_progress_executions_on_finished_sprint(self, db_session, stub_queue):
         from backend.models.database import TestExecutionStatus
 
@@ -673,22 +562,6 @@ class TestTestExecutionSweeps:
             assert row.last_heartbeat is None
             assert row.retry_count == 0
         assert stub_queue.enqueued_executions == []
-
-    def test_settled_executions_on_finished_sprint_untouched(self, db_session, stub_queue):
-        from backend.models.database import TestExecutionStatus
-
-        sprint = _seed_sprint(db_session, active=False)
-        seeded = {
-            _seed_execution(db_session, sprint, status=status).id: status
-            for status in (TestExecutionStatus.COMPLETED, TestExecutionStatus.FAILED)
-        }
-
-        reconcile_once()
-
-        for execution_id, status in seeded.items():
-            row = _reload_execution(db_session, execution_id)
-            assert row.status == status
-            assert row.error is None
 
     def test_stale_running_execution_returns_to_pending_and_reenqueues(
         self, db_session, stub_queue
@@ -713,44 +586,6 @@ class TestTestExecutionSweeps:
         assert row.job_id == f"execution-job-{execution.id}"
         assert stub_queue.enqueued_executions == [execution.id]
 
-    def test_stale_running_execution_exhausted_marks_failed(self, db_session, stub_queue):
-        from backend.models.database import TestExecutionStatus
-
-        sprint = _seed_sprint(db_session)
-        execution = _seed_execution(
-            db_session,
-            sprint,
-            status=TestExecutionStatus.RUNNING,
-            last_heartbeat=_stale_time(),
-            retry_count=2,
-        )
-
-        reconcile_once()
-
-        row = _reload_execution(db_session, execution.id)
-        assert row.status == TestExecutionStatus.FAILED
-        assert row.retry_count == 3
-        assert row.error is not None
-        assert stub_queue.enqueued_executions == []
-
-    def test_fresh_running_execution_untouched(self, db_session, stub_queue):
-        from backend.models.database import TestExecutionStatus
-
-        sprint = _seed_sprint(db_session)
-        execution = _seed_execution(
-            db_session,
-            sprint,
-            status=TestExecutionStatus.RUNNING,
-            last_heartbeat=datetime.now(timezone.utc),
-        )
-
-        reconcile_once()
-
-        row = _reload_execution(db_session, execution.id)
-        assert row.status == TestExecutionStatus.RUNNING
-        assert row.retry_count == 0
-        assert stub_queue.enqueued_executions == []
-
     def test_enqueues_pending_execution_and_persists_job_id(self, db_session, stub_queue):
         sprint = _seed_sprint(db_session)
         execution = _seed_execution(db_session, sprint)
@@ -760,17 +595,6 @@ class TestTestExecutionSweeps:
         assert stub_queue.enqueued_executions == [execution.id]
         row = _reload_execution(db_session, execution.id)
         assert row.job_id == f"execution-job-{execution.id}"
-
-    def test_skips_pending_execution_with_live_job(self, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
-        execution = _seed_execution(db_session, sprint, job_id="live-execution-job")
-        stub_queue.jobs["live-execution-job"] = _StubJob("queued")
-
-        reconcile_once()
-
-        assert stub_queue.enqueued_executions == []
-        row = _reload_execution(db_session, execution.id)
-        assert row.job_id == "live-execution-job"
 
     def test_clear_field_none_path_does_not_error(self, db_session, stub_queue):
         """TestExecution has no pending-input field — the setattr skip must
@@ -784,19 +608,6 @@ class TestTestExecutionSweeps:
 
         row = _reload_execution(db_session, execution.id)
         assert row.status == TestExecutionStatus.FAILED
-
-    def test_requirement_plan_and_execution_sweeps_share_a_tick(self, db_session, stub_queue):
-        """All three row types are handled in the same reconcile_once call."""
-        sprint = _seed_sprint(db_session)
-        req = _seed_requirement(db_session, sprint)
-        plan = _seed_plan(db_session, sprint)
-        execution = _seed_execution(db_session, sprint)
-
-        reconcile_once()
-
-        assert stub_queue.enqueued == [req.id]
-        assert stub_queue.enqueued_plans == [plan.id]
-        assert stub_queue.enqueued_executions == [execution.id]
 
 
 # == Child rows settled alongside a failed parent ======================
@@ -952,6 +763,8 @@ def _reload_exploration(db_session, run_id):
 
 
 class TestExploratoryRunSweeps:
+    """Wiring only — see ``TestTestPlanSweeps``."""
+
     def test_fails_in_progress_runs_on_finished_sprint(self, db_session, stub_queue):
         from backend.models.database import ExploratoryRunStatus
 
@@ -969,22 +782,6 @@ class TestExploratoryRunSweeps:
             assert row.error == SPRINT_FINISHED_ERROR
             assert row.last_heartbeat is None
         assert stub_queue.enqueued_explorations == []
-
-    def test_settled_runs_on_finished_sprint_untouched(self, db_session, stub_queue):
-        from backend.models.database import ExploratoryRunStatus
-
-        sprint = _seed_sprint(db_session, active=False)
-        seeded = {
-            _seed_exploration(db_session, sprint, status=status).id: status
-            for status in (ExploratoryRunStatus.COMPLETED, ExploratoryRunStatus.FAILED)
-        }
-
-        reconcile_once()
-
-        for run_id, status in seeded.items():
-            row = _reload_exploration(db_session, run_id)
-            assert row.status == status
-            assert row.error is None
 
     def test_stale_running_run_returns_to_pending_and_reenqueues(self, db_session, stub_queue):
         from backend.models.database import ExploratoryRunStatus
@@ -1007,42 +804,6 @@ class TestExploratoryRunSweeps:
         assert row.job_id == f"exploration-job-{run.id}"
         assert stub_queue.enqueued_explorations == [run.id]
 
-    def test_stale_running_run_exhausted_marks_failed(self, db_session, stub_queue):
-        from backend.models.database import ExploratoryRunStatus
-
-        sprint = _seed_sprint(db_session)
-        run = _seed_exploration(
-            db_session,
-            sprint,
-            status=ExploratoryRunStatus.RUNNING,
-            last_heartbeat=_stale_time(),
-            retry_count=2,
-        )
-
-        reconcile_once()
-
-        row = _reload_exploration(db_session, run.id)
-        assert row.status == ExploratoryRunStatus.FAILED
-        assert "Exploration worker died" in row.error
-        assert stub_queue.enqueued_explorations == []
-
-    def test_fresh_running_run_untouched(self, db_session, stub_queue):
-        from backend.models.database import ExploratoryRunStatus
-
-        sprint = _seed_sprint(db_session)
-        run = _seed_exploration(
-            db_session,
-            sprint,
-            status=ExploratoryRunStatus.RUNNING,
-            last_heartbeat=datetime.now(timezone.utc),
-        )
-
-        reconcile_once()
-
-        row = _reload_exploration(db_session, run.id)
-        assert row.status == ExploratoryRunStatus.RUNNING
-        assert row.retry_count == 0
-
     def test_enqueues_pending_run_and_persists_job_id(self, db_session, stub_queue):
         sprint = _seed_sprint(db_session)
         run = _seed_exploration(db_session, sprint)
@@ -1051,15 +812,6 @@ class TestExploratoryRunSweeps:
 
         assert stub_queue.enqueued_explorations == [run.id]
         assert _reload_exploration(db_session, run.id).job_id == f"exploration-job-{run.id}"
-
-    def test_skips_pending_run_with_live_job(self, db_session, stub_queue):
-        sprint = _seed_sprint(db_session)
-        _seed_exploration(db_session, sprint, job_id="live-job")
-        stub_queue.jobs["live-job"] = _StubJob("queued")
-
-        reconcile_once()
-
-        assert stub_queue.enqueued_explorations == []
 
     def test_all_four_sweeps_share_a_tick(self, db_session, stub_queue):
         """The fourth row type joins the same parametrized sweep."""

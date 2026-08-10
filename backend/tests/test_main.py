@@ -4,7 +4,6 @@ import importlib
 import os
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 
 def _reload_main(monkeypatch):
@@ -54,38 +53,14 @@ class TestHealthEndpoint:
         response = await async_client.get("/api/health")
         assert response.json()["storage"] == "memory_only"
 
-    @pytest.mark.asyncio
-    async def test_health_storage_available(self, monkeypatch, tmp_path):
-        storage_dir = str(tmp_path / "store")
-        monkeypatch.setenv("STORE_OFFLINE", "true")
-        monkeypatch.setenv("STORAGE_LOCATION", storage_dir)
-        _reload_main(monkeypatch)
-        from backend.main import create_app
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/health")
-        assert response.status_code == 200
-        assert response.json()["storage"] == "available"
-
-    @pytest.mark.asyncio
-    async def test_health_storage_available_with_default_path(self, monkeypatch):
-        monkeypatch.setenv("STORE_OFFLINE", "true")
-        monkeypatch.delenv("STORAGE_LOCATION", raising=False)
-        _reload_main(monkeypatch)
-        from backend.main import create_app
-
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/health")
-        assert response.status_code == 200
-        assert response.json()["storage"] == "available"
-
 
 class TestCheckStorageHealth:
-    """Tests for ``_check_storage_health()`` directly."""
+    """Tests for ``_check_storage_health()`` directly.
+
+    The endpoint only relays this function's return value, so the
+    ``available`` branches are covered here rather than a second time
+    over HTTP.
+    """
 
     def test_memory_only(self, monkeypatch):
         monkeypatch.setenv("STORE_OFFLINE", "false")

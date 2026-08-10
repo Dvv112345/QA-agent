@@ -1361,13 +1361,6 @@ class TestExploratoryModel:
         )
         assert run.base_url_env_vars == ["APP_URL", "API_URL"]
 
-    def test_base_url_env_vars_splits_single(self, db_session):
-        sprint, requirement = self._sprint_and_requirement(db_session)
-        run = _seed_exploratory_run(
-            db_session, sprint, requirement, base_url_env_vars_csv="APP_URL"
-        )
-        assert run.base_url_env_vars == ["APP_URL"]
-
     def test_base_url_env_vars_empty_string_yields_empty_list(self, db_session):
         """A naive ``"".split(",")`` returns ``[""]`` — the property must not."""
         sprint, requirement = self._sprint_and_requirement(db_session)

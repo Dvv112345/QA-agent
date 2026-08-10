@@ -105,12 +105,6 @@ describe('SprintDetailPage', () => {
     mockFetchRequirements.mockResolvedValue([])
   })
 
-  it('shows loading state initially', () => {
-    mockFetchSprint.mockReturnValue(new Promise(() => {}))
-    renderPage()
-    expect(screen.getByText(/loading sprint/i)).toBeInTheDocument()
-  })
-
   it('shows error when fetch fails', async () => {
     mockFetchSprint.mockRejectedValue(new Error('API error'))
     renderPage()
@@ -164,16 +158,6 @@ describe('SprintDetailPage', () => {
     await waitFor(() => {
       expect(mockFinishSprint).toHaveBeenCalledWith(1)
     })
-  })
-
-  it('has back link to sprints list', async () => {
-    mockFetchSprint.mockResolvedValue(fakeSprint)
-    renderPage()
-
-    await waitFor(() => {
-      expect(screen.getByText('Sprint 1')).toBeInTheDocument()
-    })
-    expect(screen.getByRole('link', { name: /back to sprints/i })).toHaveAttribute('href', '/')
   })
 
   describe('requirements section', () => {

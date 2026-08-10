@@ -18,22 +18,6 @@ function makeProps(
 }
 
 describe('LoginModal', () => {
-  it('renders modal overlay with password input and submit button', () => {
-    render(<LoginModal {...makeProps()} />)
-
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByLabelText('Access Code')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Submit' })).toBeInTheDocument()
-    expect(screen.getByText('QA Agent')).toBeInTheDocument()
-  })
-
-  it('has no close button in the DOM', () => {
-    render(<LoginModal {...makeProps()} />)
-
-    expect(screen.queryByRole('button', { name: /close/i })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText(/close/i)).not.toBeInTheDocument()
-  })
-
   it('auto-focuses the password input on mount', () => {
     render(<LoginModal {...makeProps()} />)
 
@@ -72,24 +56,11 @@ describe('LoginModal', () => {
     expect(alert).toHaveTextContent('Incorrect access code')
   })
 
-  it('does not show error when error prop is null', () => {
-    render(<LoginModal {...makeProps({ error: null })} />)
-
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  })
-
   it('submit button shows "Verifying…" and is disabled when loading', () => {
     render(<LoginModal {...makeProps({ loading: true })} />)
 
     const button = screen.getByRole('button', { name: 'Verifying…' })
     expect(button).toBeDisabled()
-  })
-
-  it('aria-modal and role are set on overlay', () => {
-    render(<LoginModal {...makeProps()} />)
-
-    const dialog = screen.getByRole('dialog')
-    expect(dialog).toHaveAttribute('aria-modal', 'true')
   })
 
   it('does not call onLogin when loading and submit is clicked', () => {

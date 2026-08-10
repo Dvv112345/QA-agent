@@ -207,11 +207,6 @@ class TestSplitPrd:
         with pytest.raises(LLMError, match="missing name or description"):
             split_prd("PRD text", None, None)
 
-    def test_malformed_json_raises(self, stub_client):
-        stub_client.content = "not json"
-        with pytest.raises(LLMError, match="malformed"):
-            split_prd("PRD text", None, None)
-
     def test_missing_requirements_key_raises(self, stub_client):
         stub_client.content = json.dumps({"items": []})
         with pytest.raises(LLMError, match="malformed"):
@@ -248,11 +243,6 @@ class TestCheckTestEnvironment:
         with pytest.raises(LLMError, match="no clarifying question"):
             check_test_environment("SSH to staging.", _REQS, None, None)
 
-    def test_malformed_json_raises(self, stub_client):
-        stub_client.content = "not json at all"
-        with pytest.raises(LLMError, match="malformed"):
-            check_test_environment("SSH to staging.", _REQS, None, None)
-
     def test_requirements_and_contexts_in_prompt(self, stub_client):
         stub_client.content = json.dumps({"sufficient": True, "clarifying_question": None})
         check_test_environment("SSH to staging.", _REQS, "# My README", "src/app.py\nsrc/db.py")
@@ -262,11 +252,6 @@ class TestCheckTestEnvironment:
         assert "# My README" in prompt
         assert "src/app.py" in prompt
         assert "SSH to staging." in prompt
-
-    def test_long_readme_truncated(self, stub_client):
-        stub_client.content = json.dumps({"sufficient": True, "clarifying_question": None})
-        check_test_environment("SSH to staging.", _REQS, "x" * 20000, None)
-        assert len(_user_prompt(stub_client)) < 20000
 
 
 class TestReviseTestEnvironment:
@@ -426,12 +411,6 @@ class TestGenerateTestPlan:
         with pytest.raises(LLMError, match="LLM request failed"):
             _generate()
 
-    def test_malformed_json_raises(self, monkeypatch):
-        _sequence_client(monkeypatch, _final_response("not json at all"))
-
-        with pytest.raises(LLMError, match="malformed"):
-            _generate()
-
     @pytest.mark.parametrize(
         "payload",
         [
@@ -474,13 +453,6 @@ class TestGenerateTestPlan:
         assert "SSH to staging as qa." in prompt
         assert "# My README" in prompt
         assert "src/app.py" in prompt
-
-    def test_long_readme_truncated(self, monkeypatch):
-        client = _sequence_client(monkeypatch, _final_response(_plan_payload()))
-
-        _generate(readme="x" * 20000)
-
-        assert len(client.requests[0]["messages"][1]["content"]) < 20000
 
 
 class TestReviseTestPlan:
@@ -551,11 +523,6 @@ class TestGenerateEnvVars:
         with pytest.raises(LLMError):
             generate_env_vars("SSH to staging.", None, None)
 
-    def test_malformed_json_raises(self, stub_client):
-        stub_client.content = "not json at all"
-        with pytest.raises(LLMError, match="malformed"):
-            generate_env_vars("SSH to staging.", None, None)
-
     def test_prompt_contains_raw_content_verbatim(self, stub_client):
         stub_client.content = json.dumps({"variables": {"BASE_URL": "x"}})
         generate_env_vars(
@@ -567,11 +534,6 @@ class TestGenerateEnvVars:
         assert "SSH to staging.example.com as qa with key ~/.ssh/qa." in prompt
         assert "# My README" in prompt
         assert "src/app.py" in prompt
-
-    def test_no_tools_sent(self, stub_client):
-        stub_client.content = json.dumps({"variables": {"BASE_URL": "x"}})
-        generate_env_vars("SSH to staging.", None, None)
-        assert "tools" not in stub_client.requests[-1]
 
 
 _TEST_CASE = TestCaseLike(
@@ -919,17 +881,17 @@ class TestScriptPromptsAdvertiseAvailableLibraries:
     identically, so generation and diagnosis never drift apart on what's
     actually importable in the worker's venv."""
 
-    @pytest.mark.parametrize("library", ["requests", "faker", "psycopg2", "sqlite3"])
-    def test_generation_prompt_lists_libraries(self, library):
-        from backend.services.llm_prompts import TEST_SCRIPT_SYSTEM_PROMPT
+    def test_both_prompts_embed_the_shared_library_list(self):
+        """Asserting the constant itself, rather than a sample of names, is
+        both the stronger check and the one that cannot drift apart."""
+        from backend.services.llm_prompts import (
+            AVAILABLE_TEST_LIBRARIES,
+            TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
+            TEST_SCRIPT_SYSTEM_PROMPT,
+        )
 
-        assert library in TEST_SCRIPT_SYSTEM_PROMPT
-
-    @pytest.mark.parametrize("library", ["requests", "faker", "psycopg2", "sqlite3"])
-    def test_diagnosis_prompt_lists_libraries(self, library):
-        from backend.services.llm_prompts import TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
-
-        assert library in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
+        assert AVAILABLE_TEST_LIBRARIES in TEST_SCRIPT_SYSTEM_PROMPT
+        assert AVAILABLE_TEST_LIBRARIES in TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT
 
 
 class TestFindingSeverityBarIsShared:

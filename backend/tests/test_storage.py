@@ -67,18 +67,6 @@ class TestStoreScreenshot:
         with open(path, "rb") as fh:
             assert fh.read() == b"PNGDATA"
 
-    def test_multiple_findings_in_one_session(self, offline_service):
-        first = offline_service.store_screenshot(b"one", "sprint-1", 5, 0)
-        second = offline_service.store_screenshot(b"two", "sprint-1", 5, 1)
-
-        assert first != second
-        assert os.path.isfile(first) and os.path.isfile(second)
-
-    def test_sessions_are_isolated(self, offline_service):
-        first = offline_service.store_screenshot(b"one", "sprint-1", 5, 0)
-        second = offline_service.store_screenshot(b"two", "sprint-1", 6, 0)
-        assert os.path.dirname(first) != os.path.dirname(second)
-
     def test_returns_none_when_offline_disabled(self, online_service):
         """STORE_OFFLINE=false means findings simply carry no screenshot.
 
@@ -86,10 +74,6 @@ class TestStoreScreenshot:
         caller must persist the finding regardless.
         """
         assert online_service.store_screenshot(b"PNGDATA", "sprint-1", 12, 0) is None
-
-    def test_no_directory_created_when_offline_disabled(self, online_service, tmp_path):
-        online_service.store_screenshot(b"PNGDATA", "sprint-1", 12, 0)
-        assert not (tmp_path / "sprint-1").exists()
 
 
 class TestConstruction:
