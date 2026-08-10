@@ -255,7 +255,7 @@ Both workflows trigger on `pull_request` to **`main`**: `backend_ci.yml` (Python
 
 Pre-commit runs Ruff (lint + format), Prettier + ESLint, and general hooks (trailing whitespace, EOF, YAML/TOML, 500KB file cap, merge conflicts, private keys). Do not skip hooks unless explicitly asked. Scope manual runs to `git diff --name-only`, not `--all-files` (EOL churn).
 
-## MCP Servers and Skills
+## MCP Servers
 
 | Server              | When to use                                                                                           |
 | ------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -265,7 +265,17 @@ Pre-commit runs Ruff (lint + format), Prettier + ESLint, and general hooks (trai
 
 **code-review-graph** is faster and cheaper than file scanning and gives structural context (callers, dependents, test coverage). **Always call `get_minimal_context_tool` first.** Then: `semantic_search_nodes` / `query_graph` instead of Grep; `get_impact_radius` instead of tracing imports by hand; `detect_changes` + `get_review_context` for reviews; `get_affected_flows` for execution paths; `get_architecture_overview` for structure; `refactor_tool` for renames and dead code. The graph auto-updates on file changes via hooks. Fall back to Grep/Glob/Read only when the graph doesn't cover what you need.
 
-Skills: `simplify` (reuse/simplification review + fixes), `grilling` (requirements interview), `workflows-plan` / `workflows-work` (plan then execute), `deep-research`, `gstack-review` (PR review), `security-review`.
+## Skills
+
+| Skill             | Purpose                                                                |
+| ----------------- | ---------------------------------------------------------------------- |
+| `simplify`        | Review changed code for reuse, simplification, efficiency; apply fixes |
+| `grilling`        | Interview the user to understand requirements clearly                  |
+| `workflows-plan`  | Create detailed implementation plans for features                      |
+| `workflows-work`  | Execute an approved implementation plan with progress tracking         |
+| `deep-research`   | Multi-source, fact-checked research reports with citations             |
+| `gstack-review`   | Review a pull request                                                  |
+| `security-review` | Security-focused code review                                           |
 
 ## Conventions and Notes
 
