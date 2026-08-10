@@ -4,7 +4,7 @@ Both run types have exactly one writer for their child rows: the loop
 inside ``tasks/execute_test.py`` walks ``TestCaseExecution``, the loop
 inside ``tasks/explore_requirement.py`` walks ``ExploratorySession``.
 Nothing else touches those tables — the reconciler and ``finish_sprint``
-sweeps are parametrized over the *parent* row types (``_SWEEP_SPECS``).
+sweeps are parametrized over the *parent* row types (``SWEEP_SPECS``).
 
 That is fine while a job runs to the end, and wrong every other way it can
 stop.  A superseded execution, a finished sprint, a plan un-approved
@@ -41,21 +41,39 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, update
 
+from backend.config import MAX_AUTO_RETRIES
 from backend.models.database import (
+    ExploratoryRun,
+    ExploratoryRunStatus,
     ExploratorySession,
     ExploratorySessionStatus,
+    Requirement,
+    RequirementStatus,
     TestCaseExecution,
     TestCaseExecutionStatus,
+    TestExecution,
+    TestExecutionStatus,
+    TestPlan,
+    TestPlanStatus,
 )
 
 logger = logging.getLogger(__name__)
+
+# Cap on the error text stored on a failed row — long enough to name the
+# cause, short enough that a stack trace cannot fill a column.
+ERROR_SUMMARY_MAX_CHARS = 300
+
+
+def now() -> datetime:
+    """UTC now, as every status transition in this application stamps it."""
+    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)
 class ChildSpec:
     """One parent→child pairing this module can finalize.
 
-    Mirrors ``reconciler._SweepSpec``: the status columns share names
+    Mirrors ``reconciler.SweepSpec``: the status columns share names
     across both models, so only the model, its foreign key back to the
     parent, and the three status values differ.
     """
@@ -85,6 +103,120 @@ EXPLORATORY_SESSION_SPEC = ChildSpec(
     running_status=ExploratorySessionStatus.RUNNING,
     skipped_status=ExploratorySessionStatus.SKIPPED,
 )
+
+
+# ── The parent rows a task drives ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RowSpec:
+    """One job-backed parent row type, as its task needs to fail it.
+
+    The machinery columns (``status`` / ``retry_count`` / ``last_heartbeat``
+    / ``error`` / ``updated_at``) share names across all four models, so the
+    retry protocol below is written once and only these fields differ.
+
+    Deliberately *not* carrying ``clear_field``: the reconciler clears the
+    pending-user-input column when it fails a row, and the tasks never have
+    — ``generate_test_plan`` documents preserving ``pending_feedback`` so a
+    Restart resumes an interrupted revision.  Adding it here would change
+    task behaviour under cover of a refactor.  See ``reconciler.SweepSpec``,
+    which carries it for the sweeps that do want it.
+    """
+
+    model: type
+    label: str
+    pending_status: str
+    failed_status: str
+    # Child rows to settle whenever this row reaches `failed_status`.
+    # None for Requirement/TestPlan, which have no children.
+    child_spec: ChildSpec | None = None
+
+
+REQUIREMENT_SPEC = RowSpec(
+    model=Requirement,
+    label="Requirement",
+    pending_status=RequirementStatus.PENDING,
+    failed_status=RequirementStatus.FAILED,
+)
+
+TEST_PLAN_SPEC = RowSpec(
+    model=TestPlan,
+    label="Test plan",
+    pending_status=TestPlanStatus.PENDING,
+    failed_status=TestPlanStatus.FAILED,
+)
+
+TEST_EXECUTION_SPEC = RowSpec(
+    model=TestExecution,
+    label="Test execution",
+    pending_status=TestExecutionStatus.PENDING,
+    failed_status=TestExecutionStatus.FAILED,
+    child_spec=TEST_CASE_SPEC,
+)
+
+EXPLORATORY_RUN_SPEC = RowSpec(
+    model=ExploratoryRun,
+    label="Exploratory run",
+    pending_status=ExploratoryRunStatus.PENDING,
+    failed_status=ExploratoryRunStatus.FAILED,
+    child_spec=EXPLORATORY_SESSION_SPEC,
+)
+
+
+def record_failure(session: Session, spec: RowSpec, row_id: int, exc: Exception) -> None:
+    """Count a task failure and either re-queue the row or fail it.
+
+    The retry protocol every task shares: roll back whatever the raising
+    attempt staged, re-read the row on a clean session, and spend one
+    retry.  Under the cap the row goes back to ``pending`` for the
+    reconciler to re-enqueue; at the cap it is failed and — for the two
+    row types that have children — its unreached children are settled.
+
+    The child cleanup is on the failing branch **only**.  A row going back
+    to ``pending`` is resumed exactly where it stopped, so a ``running``
+    child there is what the next attempt picks up.
+
+    Commits, unlike the rest of this module: it owns the whole transaction
+    because its first act is to discard the caller's.
+    """
+    session.rollback()
+    row = session.get(spec.model, row_id)
+    if row is None:
+        return
+
+    row.retry_count += 1
+    if row.retry_count >= MAX_AUTO_RETRIES:
+        row.status = spec.failed_status
+        row.error = str(exc)[:ERROR_SUMMARY_MAX_CHARS]
+        if spec.child_spec is not None:
+            abandon_unreached_children(session, spec.child_spec, row_id, row.error)
+    else:
+        # Back to pending — the reconciler re-enqueues it.
+        row.status = spec.pending_status
+    row.last_heartbeat = None
+    row.updated_at = now()
+    session.add(row)
+    session.commit()
+
+
+def fail_row(session: Session, spec: RowSpec, row, error: str) -> None:
+    """Fail a row outright and settle every child it never reached.
+
+    Unlike :func:`record_failure` this spends no retry: it is the exit for
+    conditions a retry cannot fix — a job-start guard that refused, or an
+    upstream edit that superseded the work mid-run.  The single chokepoint
+    for those, which is why the child cleanup belongs here rather than at
+    each call site.
+    """
+    row.status = spec.failed_status
+    row.error = error
+    row.last_heartbeat = None
+    row.updated_at = now()
+    session.add(row)
+    if spec.child_spec is not None:
+        abandon_unreached_children(session, spec.child_spec, row.id, error)
+    session.commit()
 
 
 def _not_run(reason: str) -> str:

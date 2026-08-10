@@ -19,12 +19,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from backend.config import (
-    MAX_AUTO_RETRIES,
     MAX_SCRIPT_FIX_ROUNDS,
     SCRIPT_EXECUTION_TIMEOUT,
     TEST_EXECUTION_FILE_MAX_CHARS,
@@ -55,11 +53,8 @@ from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
 
-# Cap for the user-facing error summary stored on a failed row.
-_ERROR_SUMMARY_MAX_CHARS = 300
-
 # Cap for stored per-case output/error text (combined stdout+stderr, or a
-# diagnosis explanation) — mirrors the _ERROR_SUMMARY_MAX_CHARS precedent.
+# diagnosis explanation) — mirrors the finalization.ERROR_SUMMARY_MAX_CHARS precedent.
 _OUTPUT_MAX_CHARS = 5000
 
 _FILE_TRUNCATION_MARKER = "\n… (truncated)"
@@ -70,42 +65,6 @@ _FILE_TRUNCATION_MARKER = "\n… (truncated)"
 # comment here used to say so.
 _PLAN_NOT_APPROVED_ERROR = "Test plan is no longer approved."
 _ENV_VARS_MISSING_ERROR = "Test environment access variables have not been established."
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _record_failure(session: Session, test_execution_id: int, exc: Exception) -> None:
-    """Count the failure and either re-queue the row or mark it failed.
-
-    A case already finalized before the exception stays finalized — the
-    next attempt resumes from the first non-finalized case.
-    """
-    session.rollback()
-    execution = session.get(TestExecution, test_execution_id)
-    if execution is None:
-        return
-
-    execution.retry_count += 1
-    if execution.retry_count >= MAX_AUTO_RETRIES:
-        execution.status = TestExecutionStatus.FAILED
-        execution.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
-        # Terminal, so the cases this attempt never finished never will —
-        # including the one it was mid-way through when it raised, which
-        # was already committed as `running`. Only on this branch: the
-        # retry below must leave that row alone so the next attempt
-        # resumes it.
-        finalization.abandon_unreached_children(
-            session, finalization.TEST_CASE_SPEC, test_execution_id, execution.error
-        )
-    else:
-        # Back to pending — the reconciler re-enqueues it.
-        execution.status = TestExecutionStatus.PENDING
-    execution.last_heartbeat = None
-    execution.updated_at = _now()
-    session.add(execution)
-    session.commit()
 
 
 def _build_read_file(
@@ -210,24 +169,6 @@ _NO_FINDING = {
 }
 
 
-def _fail_execution(session: Session, execution: TestExecution, error: str) -> None:
-    """Fail the execution and settle every case it never reached.
-
-    The single chokepoint for all four job-start guards *and* the mid-run
-    supersede exit, which is why the child cleanup belongs here rather than
-    at each call site.
-    """
-    execution.status = TestExecutionStatus.FAILED
-    execution.error = error
-    execution.last_heartbeat = None
-    execution.updated_at = _now()
-    session.add(execution)
-    finalization.abandon_unreached_children(
-        session, finalization.TEST_CASE_SPEC, execution.id, error
-    )
-    session.commit()
-
-
 def execute_test_task(test_execution_id: int) -> None:
     """Run (or resume) every non-finalized test case for one requirement."""
     with new_session() as session:
@@ -249,8 +190,11 @@ def execute_test_task(test_execution_id: int) -> None:
         # not a cause — name the right one.
         deleted = requirement is not None and requirement.archived
         if deleted or sprint is None or not sprint.active:
-            _fail_execution(
-                session, execution, REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR
+            finalization.fail_row(
+                session,
+                finalization.TEST_EXECUTION_SPEC,
+                execution,
+                REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR,
             )
             logger.info(
                 "Test execution %d: %s — marked failed",
@@ -261,7 +205,9 @@ def execute_test_task(test_execution_id: int) -> None:
 
         plan = requirement.test_plan
         if plan is None or plan.status != TestPlanStatus.APPROVED:
-            _fail_execution(session, execution, _PLAN_NOT_APPROVED_ERROR)
+            finalization.fail_row(
+                session, finalization.TEST_EXECUTION_SPEC, execution, _PLAN_NOT_APPROVED_ERROR
+            )
             logger.warning(
                 "Test execution %d: plan no longer approved — marked failed", test_execution_id
             )
@@ -274,13 +220,15 @@ def execute_test_task(test_execution_id: int) -> None:
         test_env = sprint.test_environment
         env_vars = test_env.env_vars if test_env else None
         if not env_vars:
-            _fail_execution(session, execution, _ENV_VARS_MISSING_ERROR)
+            finalization.fail_row(
+                session, finalization.TEST_EXECUTION_SPEC, execution, _ENV_VARS_MISSING_ERROR
+            )
             logger.warning("Test execution %d: env vars missing — marked failed", test_execution_id)
             return
 
         execution.status = TestExecutionStatus.RUNNING
-        execution.last_heartbeat = _now()
-        execution.updated_at = _now()
+        execution.last_heartbeat = finalization.now()
+        execution.updated_at = finalization.now()
         session.add(execution)
         session.commit()
 
@@ -300,7 +248,7 @@ def execute_test_task(test_execution_id: int) -> None:
             def on_round() -> None:
                 # Heartbeat between LLM rounds and subprocess runs so a live
                 # loop is never swept as a crashed worker.
-                execution.last_heartbeat = _now()
+                execution.last_heartbeat = finalization.now()
                 session.add(execution)
                 session.commit()
 
@@ -348,8 +296,9 @@ def execute_test_task(test_execution_id: int) -> None:
                 # changes.
                 session.expire_all()
                 if execution.outdated:
-                    _fail_execution(
+                    finalization.fail_row(
                         session,
+                        finalization.TEST_EXECUTION_SPEC,
                         execution,
                         REQUIREMENT_DELETED_ERROR
                         if execution.requirement_deleted
@@ -363,7 +312,7 @@ def execute_test_task(test_execution_id: int) -> None:
                     return
 
                 case_exec.status = TestCaseExecutionStatus.RUNNING
-                case_exec.updated_at = _now()
+                case_exec.updated_at = finalization.now()
                 session.add(case_exec)
                 session.commit()
 
@@ -447,7 +396,7 @@ def execute_test_task(test_execution_id: int) -> None:
                 case_exec.script_snapshot = script
                 for field, value in finding.items():
                     setattr(case_exec, field, value)
-                case_exec.updated_at = _now()
+                case_exec.updated_at = finalization.now()
                 session.add(case_exec)
 
                 if final_status in (TestCaseExecutionStatus.PASSED, TestCaseExecutionStatus.FAILED):
@@ -461,7 +410,7 @@ def execute_test_task(test_execution_id: int) -> None:
             execution.status = TestExecutionStatus.COMPLETED
             execution.last_heartbeat = None
             execution.retry_count = 0
-            execution.updated_at = _now()
+            execution.updated_at = finalization.now()
             session.add(execution)
             session.commit()
             logger.info("Test execution %d completed", test_execution_id)
@@ -469,15 +418,17 @@ def execute_test_task(test_execution_id: int) -> None:
             # Never re-raise: the DB retry counter, not RQ's failed registry,
             # is the recovery mechanism.
             logger.exception("Test execution failed for execution %d", test_execution_id)
-            _record_failure(session, test_execution_id, exc)
+            finalization.record_failure(
+                session, finalization.TEST_EXECUTION_SPEC, test_execution_id, exc
+            )
             return
 
         # Both calls below sit deliberately *after* the COMPLETED commit
         # and outside the try above: a slow or failing tracker must never
         # turn a finished run into a retry that re-executes every case.
         #
-        # Equally deliberately, neither is called from `_fail_execution`
-        # or `_record_failure`'s terminal branch. An unfinished run's
+        # Equally deliberately, neither is called from `fail_row` or
+        # `record_failure`'s terminal branch. An unfinished run's
         # finding set is incomplete by definition, and the run page's
         # file/retry button is where a human decides to file it anyway.
         #

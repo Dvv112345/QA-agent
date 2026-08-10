@@ -458,7 +458,7 @@ def _reload_plan(db_session, plan_id):
 class TestTestPlanSweeps:
     """Wiring only.
 
-    ``reconcile_once`` runs three generic sweeps over ``_SWEEP_SPECS``, so
+    ``reconcile_once`` runs three generic sweeps over ``SWEEP_SPECS``, so
     the behaviour of each sweep is proven once against the ``Requirement``
     spec above. What is spec-specific — the row type, the in-progress and
     terminal statuses, ``clear_field`` — is what these tests pin.

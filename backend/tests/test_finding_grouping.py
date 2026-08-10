@@ -426,7 +426,7 @@ def test_an_unexpected_failure_leaves_every_row_ungrouped(db_session, monkeypatc
     def explode(session, sprint_row):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(finding_grouping, "_sprint_for", explode)
+    monkeypatch.setattr(finding_grouping, "sprint_for", explode)
 
     finding_grouping.assign_defect_groups(db_session, execution)  # must not raise
 

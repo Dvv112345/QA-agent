@@ -57,19 +57,10 @@ from backend.models.database import (
     TestExecutionStatus,
 )
 from backend.services.finding_dedup import dedup_key
+from backend.services.findings import TERMINAL_CASE_STATUSES, Finding, iter_findings
 
 logger = logging.getLogger(__name__)
 
-# A case that reached a verdict. Defensive given `abandon_unreached_children`
-# — a completed run should hold no `pending`/`running`/`skipped` case — but
-# the filter is what makes that guarantee locally visible instead of assumed.
-_TERMINAL_CASE_STATUSES = frozenset(
-    {
-        TestCaseExecutionStatus.PASSED,
-        TestCaseExecutionStatus.FAILED,
-        TestCaseExecutionStatus.ERROR,
-    }
-)
 
 # An errored session still drove a browser, so it counts as work done.
 # `skipped` is the charter the run never reached.
@@ -81,30 +72,7 @@ _COUNTED_SESSION_STATUSES = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class _Finding:
-    """One finding off either carrier, under one set of names.
-
-    ``TestCaseExecution`` prefixes its fields ``finding_`` while
-    ``ExploratoryFinding`` uses the bare names, so both are read into this
-    shape once and everything below is carrier-agnostic — the same
-    adaptation ``finding_export`` does into ``FindingCandidate``.  Needed
-    regardless of de-duplication, since the per-requirement bucketing walks
-    both carriers too.
-    """
-
-    finding_type: str
-    severity: str
-    title: str
-    expected: str
-    actual: str
-    tracker_issue_key: str | None
-    tracker_target: str | None
-    defect_group_id: int | None
-    requirement_id: int
-
-
-def _defect_key(finding: _Finding) -> tuple:
+def _defect_key(finding: Finding) -> tuple:
     """What makes two findings the same defect — three keys, in order.
 
     Uniformly tagged tuples, so three kinds of identity cannot collide in
@@ -140,64 +108,6 @@ def _defect_key(finding: _Finding) -> tuple:
     return ("text", dedup_key(finding.title, finding.expected, finding.actual))
 
 
-def _scripted_findings(execution) -> list[_Finding]:
-    """This execution's findings, in case order.
-
-    **Gated on ``finding_title``**, exactly as ``TestRun.bug_findings`` is.
-    Not for legacy rows — live code writes the finding fields as a group on
-    the terminal-failure path, so a titleless verdict is unreachable — but
-    because ``bug_findings`` is what ``export_rollup`` counts and what the
-    run pages display.  Counting by ``finding_type`` alone here would let
-    the two definitions disagree on the same sprint: the run page reporting
-    three bugs beside a metrics panel reporting four, with nothing to say
-    which is right.  One condition removes the possibility.
-    """
-    findings: list[_Finding] = []
-    for case in execution.cases:
-        if case.status not in _TERMINAL_CASE_STATUSES:
-            continue
-        if not case.finding_type or not case.finding_title:
-            continue
-        findings.append(
-            _Finding(
-                finding_type=case.finding_type,
-                severity=case.finding_severity or "",
-                title=case.finding_title,
-                expected=case.finding_expected or "",
-                actual=case.finding_actual or "",
-                tracker_issue_key=case.tracker_issue_key,
-                tracker_target=case.tracker_target,
-                defect_group_id=case.defect_group_id,
-                requirement_id=execution.requirement_id,
-            )
-        )
-    return findings
-
-
-def _exploratory_findings(run, exploratory_session) -> list[_Finding]:
-    """One session's findings, in position order.
-
-    No title gate: ``ExploratoryFinding.title`` is a non-nullable column
-    written by the ``record_finding`` tool, so there is no titleless row to
-    guard against — the asymmetry with the scripted side is in the schema,
-    not in the counting rule.
-    """
-    return [
-        _Finding(
-            finding_type=finding.finding_type,
-            severity=finding.severity,
-            title=finding.title,
-            expected=finding.expected,
-            actual=finding.actual,
-            tracker_issue_key=finding.tracker_issue_key,
-            tracker_target=finding.tracker_target,
-            defect_group_id=finding.defect_group_id,
-            requirement_id=run.requirement_id,
-        )
-        for finding in exploratory_session.findings
-    ]
-
-
 @dataclass
 class _Counted:
     """Everything one pass over the sprint's completed runs collected."""
@@ -210,7 +120,7 @@ class _Counted:
     executions_errored: int
     # requirement_id -> counted session count
     sessions_by_requirement: dict[int, int]
-    findings: list[_Finding]
+    findings: list[Finding]
     scripted_requirements: set[int]
     explored_requirements: set[int]
     excluded_running: int
@@ -246,7 +156,7 @@ def _collect(sprint) -> _Counted:
             requirement_id = execution.requirement_id
             cases = counted.cases_by_requirement.setdefault(requirement_id, set())
             for case in execution.cases:
-                if case.status not in _TERMINAL_CASE_STATUSES:
+                if case.status not in TERMINAL_CASE_STATUSES:
                     continue
                 cases.add(case.test_case_id)
                 counted.case_executions += 1
@@ -263,7 +173,11 @@ def _collect(sprint) -> _Counted:
             # what an earlier one already counted.
             if cases:
                 counted.scripted_requirements.add(requirement_id)
-            counted.findings.extend(_scripted_findings(execution))
+            # Gated on a report as well as a type, exactly as
+            # `TestRun.bug_findings` is — see `services/findings.py`. Counting
+            # by `finding_type` alone would let the run page and this panel
+            # disagree on the same sprint.
+            counted.findings.extend(iter_findings(execution, terminal_only=True))
 
     for run in sprint.exploratory_runs:
         if run.status != ExploratoryRunStatus.COMPLETED:
@@ -279,14 +193,14 @@ def _collect(sprint) -> _Counted:
                 counted.sessions_by_requirement.get(run.requirement_id, 0) + 1
             )
             counted.explored_requirements.add(run.requirement_id)
-            counted.findings.extend(_exploratory_findings(run, exploratory_session))
+            counted.findings.extend(iter_findings(exploratory_session))
 
     return counted
 
 
-def _group(findings: list[_Finding]) -> list[list[_Finding]]:
+def _group(findings: list[Finding]) -> list[list[Finding]]:
     """Collapse *findings* of one type into one list per distinct defect."""
-    groups: dict[tuple, list[_Finding]] = {}
+    groups: dict[tuple, list[Finding]] = {}
     for finding in findings:
         groups.setdefault(_defect_key(finding), []).append(finding)
     return list(groups.values())
@@ -404,8 +318,8 @@ def _compute(sprint) -> dict:
 def _per_requirement(
     sprint,
     counted: _Counted,
-    bug_groups: list[list[_Finding]],
-    issue_findings: list[_Finding],
+    bug_groups: list[list[Finding]],
+    issue_findings: list[Finding],
 ) -> list[dict]:
     """The breakdown, one row per requirement a counted run covered.
 

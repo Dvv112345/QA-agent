@@ -11,18 +11,12 @@ from sqlmodel import Session, select
 from backend.config import STORAGE_LOCATION
 from backend.database import get_session
 from backend.models.database import (
-    SPRINT_FINISHED_ERROR,
     ExploratoryRun,
-    ExploratoryRunStatus,
     ExploratorySession,
     Repo,
     Requirement,
-    RequirementStatus,
     Sprint,
     TestExecution,
-    TestExecutionStatus,
-    TestPlan,
-    TestPlanStatus,
     TestRun,
 )
 from backend.models.types import (
@@ -31,12 +25,8 @@ from backend.models.types import (
     SprintUpdateRequest,
 )
 from backend.routes._common import get_sprint_or_404
-from backend.services.finalization import (
-    EXPLORATORY_SESSION_SPEC,
-    TEST_CASE_SPEC,
-    abandon_unreached_children,
-)
 from backend.services.qa_metrics import compute_sprint_metrics
+from backend.services.reconciler import SWEEP_SPECS, fail_in_progress_rows
 from backend.services.storage import StorageService
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token
@@ -272,109 +262,33 @@ async def finish_sprint(
     sprint.active = False
     session.add(sprint)
 
-    # ── Fail requirements still awaiting analysis ─────────────────────
-    # Analysis on a finished sprint would only mutate cards the user can
-    # no longer act on, so mark in-progress rows failed in the same commit.
+    # ── Fail everything still in progress, in this same commit ────────
+    # Work on a finished sprint would only mutate rows the user can no
+    # longer act on. The four row types are swept by the reconciler's own
+    # specs, which already encode each one's statuses, its join to Sprint,
+    # its pending-input field, and its child rows — so this is the same
+    # sweep the reconciler runs, scoped to one sprint instead of to every
+    # inactive one.
     #
     # Deliberately *not* filtered on `archived`: this is convergence, not a
     # user-facing view. An archived row left in-progress would sit there
     # forever, since the reconciler skips archived rows by design.
-    in_progress = session.exec(
-        select(Requirement).where(
-            Requirement.sprint_id == sprint_id,
-            Requirement.status.in_(  # type: ignore[attr-defined]
-                [RequirementStatus.PENDING, RequirementStatus.ANALYZING]
-            ),
-        )
-    ).all()
-    for requirement in in_progress:
-        requirement.status = RequirementStatus.FAILED
-        requirement.error = SPRINT_FINISHED_ERROR
-        requirement.last_heartbeat = None
-        requirement.pending_answer = None
-        requirement.updated_at = datetime.now(timezone.utc)
-        session.add(requirement)
-
-    # ── Fail test plans still awaiting generation (same rationale) ────
-    in_progress_plans = session.exec(
-        select(TestPlan)
-        .join(Requirement, TestPlan.requirement_id == Requirement.id)  # type: ignore[arg-type]
-        .where(
-            Requirement.sprint_id == sprint_id,
-            TestPlan.status.in_(  # type: ignore[attr-defined]
-                [TestPlanStatus.PENDING, TestPlanStatus.GENERATING]
-            ),
-        )
-    ).all()
-    for plan in in_progress_plans:
-        plan.status = TestPlanStatus.FAILED
-        plan.error = SPRINT_FINISHED_ERROR
-        plan.last_heartbeat = None
-        plan.pending_feedback = None
-        plan.updated_at = datetime.now(timezone.utc)
-        session.add(plan)
-
-    # ── Fail test executions still awaiting a run (same rationale) ────
-    in_progress_executions = session.exec(
-        select(TestExecution)
-        .join(Requirement, TestExecution.requirement_id == Requirement.id)  # type: ignore[arg-type]
-        .where(
-            Requirement.sprint_id == sprint_id,
-            TestExecution.status.in_(  # type: ignore[attr-defined]
-                [TestExecutionStatus.PENDING, TestExecutionStatus.RUNNING]
-            ),
-        )
-    ).all()
-    for execution in in_progress_executions:
-        execution.status = TestExecutionStatus.FAILED
-        execution.error = SPRINT_FINISHED_ERROR
-        execution.last_heartbeat = None
-        execution.updated_at = datetime.now(timezone.utc)
-        session.add(execution)
-        # A terminal parent leaves no non-terminal children — otherwise the
-        # cases this run never reached read as "Queued" forever on a sprint
-        # that can no longer run anything.
-        abandon_unreached_children(session, TEST_CASE_SPEC, execution.id, SPRINT_FINISHED_ERROR)
-
-    # ── Fail exploratory runs still in progress (same rationale) ──────
-    in_progress_explorations = session.exec(
-        select(ExploratoryRun).where(
-            ExploratoryRun.sprint_id == sprint_id,
-            ExploratoryRun.status.in_(  # type: ignore[attr-defined]
-                [ExploratoryRunStatus.PENDING, ExploratoryRunStatus.RUNNING]
-            ),
-        )
-    ).all()
-    for exploration in in_progress_explorations:
-        exploration.status = ExploratoryRunStatus.FAILED
-        exploration.error = SPRINT_FINISHED_ERROR
-        exploration.last_heartbeat = None
-        exploration.updated_at = datetime.now(timezone.utc)
-        session.add(exploration)
-        abandon_unreached_children(
-            session, EXPLORATORY_SESSION_SPEC, exploration.id, SPRINT_FINISHED_ERROR
-        )
+    now = datetime.now(timezone.utc)
+    failed_counts: list[tuple[str, int]] = []
+    for spec in SWEEP_SPECS:
+        rows = fail_in_progress_rows(session, spec, Sprint.id == sprint_id, now)
+        if rows:
+            failed_counts.append((spec.label, len(rows)))
 
     session.commit()
     session.refresh(sprint)
 
-    if in_progress:
+    for label, count in failed_counts:
         logger.info(
-            "Sprint id=%d: %d in-progress requirements marked failed on finish",
+            "Sprint id=%d: %d in-progress %s rows marked failed on finish",
             sprint_id,
-            len(in_progress),
-        )
-    if in_progress_plans:
-        logger.info(
-            "Sprint id=%d: %d in-progress test plans marked failed on finish",
-            sprint_id,
-            len(in_progress_plans),
-        )
-    if in_progress_executions:
-        logger.info(
-            "Sprint id=%d: %d in-progress test executions marked failed on finish",
-            sprint_id,
-            len(in_progress_executions),
+            count,
+            label.lower(),
         )
     logger.info("Sprint finished: id=%d name=%s", sprint.id, sprint.name)
     return sprint

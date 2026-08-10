@@ -14,48 +14,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from backend.config import MAX_AUTO_RETRIES
 from backend.database import new_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
     Requirement,
     RequirementStatus,
 )
-from backend.services import invalidation, llm
+from backend.services import finalization, invalidation, llm
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
 
 # Cap for the user-facing error summary stored on failed rows.
-_ERROR_SUMMARY_MAX_CHARS = 300
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _record_failure(session: Session, requirement_id: int, exc: Exception) -> None:
-    """Count the failure and either re-queue the row or mark it failed."""
-    session.rollback()
-    requirement = session.get(Requirement, requirement_id)
-    if requirement is None:
-        return
-
-    requirement.retry_count += 1
-    if requirement.retry_count >= MAX_AUTO_RETRIES:
-        requirement.status = RequirementStatus.FAILED
-        requirement.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
-    else:
-        # Back to pending — the reconciler re-enqueues it.
-        requirement.status = RequirementStatus.PENDING
-    requirement.last_heartbeat = None
-    requirement.updated_at = _now()
-    session.add(requirement)
-    session.commit()
 
 
 def analyze_requirement_task(requirement_id: int) -> None:
@@ -83,15 +56,15 @@ def analyze_requirement_task(requirement_id: int) -> None:
             requirement.error = SPRINT_FINISHED_ERROR
             requirement.last_heartbeat = None
             requirement.pending_answer = None
-            requirement.updated_at = _now()
+            requirement.updated_at = finalization.now()
             session.add(requirement)
             session.commit()
             logger.info("Requirement %d: sprint inactive — marked failed", requirement_id)
             return
 
         requirement.status = RequirementStatus.ANALYZING
-        requirement.last_heartbeat = _now()
-        requirement.updated_at = _now()
+        requirement.last_heartbeat = finalization.now()
+        requirement.updated_at = finalization.now()
         session.add(requirement)
         session.commit()
 
@@ -100,7 +73,7 @@ def analyze_requirement_task(requirement_id: int) -> None:
             file_tree = sprint.repo.file_tree if sprint.repo else None
 
             # Work-unit boundary before the (long) LLM call.
-            requirement.last_heartbeat = _now()
+            requirement.last_heartbeat = finalization.now()
             session.add(requirement)
             session.commit()
 
@@ -162,7 +135,7 @@ def analyze_requirement_task(requirement_id: int) -> None:
 
             requirement.retry_count = 0
             requirement.last_heartbeat = None
-            requirement.updated_at = _now()
+            requirement.updated_at = finalization.now()
             session.add(requirement)
             session.commit()
             logger.info("Requirement %d analyzed → %s", requirement_id, requirement.status)
@@ -170,4 +143,4 @@ def analyze_requirement_task(requirement_id: int) -> None:
             # Never re-raise: the DB retry counter, not RQ's failed registry,
             # is the recovery mechanism.
             logger.exception("Analysis failed for requirement %d", requirement_id)
-            _record_failure(session, requirement_id, exc)
+            finalization.record_failure(session, finalization.REQUIREMENT_SPEC, requirement_id, exc)

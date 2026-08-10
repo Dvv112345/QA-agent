@@ -15,11 +15,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 
-from sqlmodel import Session, select
+from sqlmodel import select
 
-from backend.config import MAX_AUTO_RETRIES
 from backend.database import new_session
 from backend.models.database import (
     REQUIREMENT_DELETED_ERROR,
@@ -28,41 +26,12 @@ from backend.models.database import (
     TestPlan,
     TestPlanStatus,
 )
-from backend.services import llm
+from backend.services import finalization, llm
 from backend.utils.readme_utils import resolve_readme
 
 logger = logging.getLogger(__name__)
 
 # Cap for the user-facing error summary stored on failed rows.
-_ERROR_SUMMARY_MAX_CHARS = 300
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _record_failure(session: Session, test_plan_id: int, exc: Exception) -> None:
-    """Count the failure and either re-queue the row or mark it failed.
-
-    ``pending_feedback`` is deliberately preserved so a Restart resumes an
-    interrupted feedback revision.
-    """
-    session.rollback()
-    plan = session.get(TestPlan, test_plan_id)
-    if plan is None:
-        return
-
-    plan.retry_count += 1
-    if plan.retry_count >= MAX_AUTO_RETRIES:
-        plan.status = TestPlanStatus.FAILED
-        plan.error = str(exc)[:_ERROR_SUMMARY_MAX_CHARS]
-    else:
-        # Back to pending — the reconciler re-enqueues it.
-        plan.status = TestPlanStatus.PENDING
-    plan.last_heartbeat = None
-    plan.updated_at = _now()
-    session.add(plan)
-    session.commit()
 
 
 def _serialize_plan(plan: TestPlan) -> str:
@@ -109,7 +78,7 @@ def generate_test_plan_task(test_plan_id: int) -> None:
             plan.error = REQUIREMENT_DELETED_ERROR if deleted else SPRINT_FINISHED_ERROR
             plan.last_heartbeat = None
             plan.pending_feedback = None
-            plan.updated_at = _now()
+            plan.updated_at = finalization.now()
             session.add(plan)
             session.commit()
             logger.info(
@@ -120,8 +89,8 @@ def generate_test_plan_task(test_plan_id: int) -> None:
             return
 
         plan.status = TestPlanStatus.GENERATING
-        plan.last_heartbeat = _now()
-        plan.updated_at = _now()
+        plan.last_heartbeat = finalization.now()
+        plan.updated_at = finalization.now()
         session.add(plan)
         session.commit()
 
@@ -143,7 +112,7 @@ def generate_test_plan_task(test_plan_id: int) -> None:
             # HEARTBEAT_STALE_SECONDS. That is why no per-round callback is
             # passed any more: there are no rounds, and a second stamp
             # microseconds after this one would report nothing new.
-            plan.last_heartbeat = _now()
+            plan.last_heartbeat = finalization.now()
             session.add(plan)
             session.commit()
 
@@ -215,7 +184,7 @@ def generate_test_plan_task(test_plan_id: int) -> None:
             plan.status = TestPlanStatus.DRAFT
             plan.retry_count = 0
             plan.last_heartbeat = None
-            plan.updated_at = _now()
+            plan.updated_at = finalization.now()
             session.add(plan)
             session.commit()
             logger.info(
@@ -228,4 +197,4 @@ def generate_test_plan_task(test_plan_id: int) -> None:
             # Never re-raise: the DB retry counter, not RQ's failed registry,
             # is the recovery mechanism.
             logger.exception("Test plan generation failed for plan %d", test_plan_id)
-            _record_failure(session, test_plan_id, exc)
+            finalization.record_failure(session, finalization.TEST_PLAN_SPEC, test_plan_id, exc)
