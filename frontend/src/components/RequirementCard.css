@@ -144,16 +144,6 @@
   white-space: pre-wrap;
 }
 
-.btn-link {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--color-primary, #2563eb);
-  cursor: pointer;
-  font-size: 0.85rem;
-  text-decoration: underline;
-}
-
 .requirement-card-edit textarea {
   width: 100%;
   box-sizing: border-box;

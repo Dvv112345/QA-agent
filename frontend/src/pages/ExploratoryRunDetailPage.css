@@ -95,26 +95,3 @@
   margin-top: 0.35rem;
   flex-wrap: wrap;
 }
-
-.session-badge {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 0.15rem 0.45rem;
-  border-radius: 3px;
-  background: #e0e4ea;
-  color: #333;
-  white-space: nowrap;
-}
-
-.session-badge-completed {
-  background: #d7ecd9;
-}
-
-.session-badge-running {
-  background: #d8e6f7;
-}
-
-.session-badge-error {
-  background: #f7d9d7;
-}

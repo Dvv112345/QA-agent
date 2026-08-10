@@ -4,11 +4,6 @@
   padding: 2rem 1rem;
 }
 
-.back-links {
-  display: flex;
-  gap: 1.25rem;
-}
-
 .test-plans-message {
   text-align: center;
   padding: 2rem;

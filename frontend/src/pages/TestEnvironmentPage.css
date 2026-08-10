@@ -4,11 +4,6 @@
   padding: 2rem 1rem;
 }
 
-.back-links {
-  display: flex;
-  gap: 1.25rem;
-}
-
 .test-env-message {
   text-align: center;
   padding: 2rem;
@@ -102,16 +97,6 @@
   padding: 0.5rem 1rem;
   color: var(--color-text-secondary, #555);
   white-space: pre-wrap;
-}
-
-.btn-link {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--color-primary, #2563eb);
-  cursor: pointer;
-  font-size: 0.85rem;
-  text-decoration: underline;
 }
 
 .test-env-question {
