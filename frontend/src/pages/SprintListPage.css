@@ -1,9 +1,3 @@
-.sprint-list {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
-
 .sprint-list-header {
   display: flex;
   flex-direction: column;

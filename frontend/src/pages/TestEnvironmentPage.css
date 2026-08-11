@@ -1,9 +1,3 @@
-.test-env {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
-
 .test-env-error {
   color: var(--danger);
 }
@@ -144,12 +138,17 @@
   margin-top: 1rem;
 }
 
-.test-env-continue {
-  margin-top: 1.5rem;
+/*
+ * The cascade notice follows the buttons here, where on the requirement and
+ * plan cards it precedes them — so the shared rule's bottom-only margin left it
+ * touching the Edit button. Scoped to this page's own class rather than added
+ * to `.cascade-notice`, which would push the two card layouts apart to fix a
+ * spacing problem neither of them has (Convention #13).
+ */
+.test-env-actions + .cascade-notice {
+  margin-top: 1rem;
 }
 
-.test-env-footer {
-  margin-top: 2rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
+.test-env-continue {
+  margin-top: 1.5rem;
 }

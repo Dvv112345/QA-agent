@@ -1,7 +1,10 @@
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import PageState from '../components/PageState'
 import FindingCard from '../components/FindingCard'
-import { fetchExploratorySession, findingScreenshotUrl } from '../services/api'
+import FinishSprintControl from '../components/FinishSprintControl'
+import { fetchExploratorySession, fetchSprint, findingScreenshotUrl } from '../services/api'
+import type { SprintResponse } from '../types'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { useCrumb } from '../BreadcrumbContext'
 import { usePolling } from '../hooks/usePolling'
@@ -26,6 +29,30 @@ export default function ExploratorySessionPage() {
     enabled: !!inProgress,
   })
 
+  /*
+   * The sprint is fetched only so this page can offer Finish Sprint and name
+   * the sprint in the breadcrumb. It is kept out of the session's `useAsyncData`
+   * on purpose: the session polls while it runs, and folding the sprint in would
+   * mean re-reading it every 2.5 s for a value that does not move. A failure
+   * here costs the button and the crumb label, nothing else.
+   */
+  const [sprint, setSprint] = useState<SprintResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchSprint(sprintId)
+      .then((data) => {
+        if (!cancelled) setSprint(data)
+      })
+      .catch(() => {
+        /* the session sheet is what this page is for — it renders regardless */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sprintId])
+
+  useCrumb('sprint', sprint?.name)
+
   // The parent run is not in this URL — it comes from the fetched session.
   useCrumb(
     'run',
@@ -39,12 +66,15 @@ export default function ExploratorySessionPage() {
 
   return (
     <div className="exp-session">
-      <nav className="page-back">
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
         <Link
           to={`/sprints/${sprintId}/exploratory-runs/${session.exploratory_run_id}`}
-          className="back-link"
+          className="btn btn-secondary"
+          aria-label="Back to Exploratory Run"
         >
-          &larr; Back to Exploratory Run
+          &larr; Back
         </Link>
       </nav>
 

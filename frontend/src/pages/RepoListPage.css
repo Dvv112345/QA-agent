@@ -1,9 +1,3 @@
-.repo-list {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
-
 .repo-list-error {
   color: var(--danger);
 }

@@ -8,6 +8,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { stageBlockedReason } from './stages'
+import type { SprintResponse } from './types'
 
 /**
  * Lets a page improve a breadcrumb once its data lands — `sprint.name` for the
@@ -32,13 +34,18 @@ type Overrides = Record<string, string>
 interface Store {
   labels: Overrides
   targets: Overrides
+  /** Crumb id → why that stage cannot be opened yet. Absent means reachable. */
+  blocked: Overrides
   publish: (id: string, label: string | null, href?: string) => void
+  publishBlocked: (id: string, reason: string | null) => void
 }
 
 const NO_PROVIDER: Store = {
   labels: {},
   targets: {},
+  blocked: {},
   publish: () => {},
+  publishBlocked: () => {},
 }
 
 const BreadcrumbContext = createContext<Store>(NO_PROVIDER)
@@ -59,6 +66,7 @@ function withEntry(prev: Overrides, id: string, value: string | undefined): Over
 export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   const [labels, setLabels] = useState<Overrides>({})
   const [targets, setTargets] = useState<Overrides>({})
+  const [blocked, setBlocked] = useState<Overrides>({})
 
   /*
    * `publish` must be stable, and it only ever uses the updater form, so it
@@ -75,14 +83,28 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
     setTargets((prev) => withEntry(prev, id, label === null ? undefined : href))
   }, [])
 
-  const store = useMemo<Store>(() => ({ labels, targets, publish }), [labels, targets, publish])
+  // Stable for the same reason `publish` is, and with the same consequence if
+  // it stops being: a new identity re-runs the effect, whose cleanup clears the
+  // entry, which moves state and recreates the identity again.
+  const publishBlocked = useCallback<Store['publishBlocked']>((id, reason) => {
+    setBlocked((prev) => withEntry(prev, id, reason ?? undefined))
+  }, [])
+
+  const store = useMemo<Store>(
+    () => ({ labels, targets, blocked, publish, publishBlocked }),
+    [labels, targets, blocked, publish, publishBlocked],
+  )
 
   return <BreadcrumbContext.Provider value={store}>{children}</BreadcrumbContext.Provider>
 }
 
-export function useBreadcrumbOverrides(): { labels: Overrides; targets: Overrides } {
-  const { labels, targets } = useContext(BreadcrumbContext)
-  return { labels, targets }
+export function useBreadcrumbOverrides(): {
+  labels: Overrides
+  targets: Overrides
+  blocked: Overrides
+} {
+  const { labels, targets, blocked } = useContext(BreadcrumbContext)
+  return { labels, targets, blocked }
 }
 
 /**
@@ -102,4 +124,37 @@ export function useCrumb(id: string, label: string | null | undefined, href?: st
     // Clear on unmount, so a name cannot outlive the page that set it.
     return () => publish(id, null)
   }, [id, label, href, publish])
+}
+
+/**
+ * Publish why the stage crumb `id` cannot be opened, or `null` when it can.
+ *
+ * Unlike `useCrumb`, `null` is meaningful rather than "no opinion": it actively
+ * clears the block, which is how a gate opening turns a dimmed crumb back into
+ * a link without a remount.
+ */
+export function useCrumbGate(id: string, reason: string | null): void {
+  const { publishBlocked } = useContext(BreadcrumbContext)
+
+  useEffect(() => {
+    publishBlocked(id, reason)
+    // A block must not outlive the page that knew about it.
+    return () => publishBlocked(id, null)
+  }, [id, reason, publishBlocked])
+}
+
+/**
+ * Publish the gate state of every pipeline stage from a page that holds the
+ * sprint. A missing sprint blocks all three, so the load window reads as "not
+ * yet reachable" rather than offering a click into a guarded page.
+ *
+ * The three calls are deliberately unconditional and separate. Deriving one map
+ * and passing it as an effect dependency would be a fresh object every render
+ * and re-run forever — the trap CLAUDE.md documents for `location.state`. Three
+ * fixed hooks, each with a primitive string dependency, cannot do that.
+ */
+export function useCrumbGates(sprint: SprintResponse | null | undefined): void {
+  useCrumbGate('test-environment', stageBlockedReason('test-environment', sprint))
+  useCrumbGate('test-plans', stageBlockedReason('test-plans', sprint))
+  useCrumbGate('test-runs', stageBlockedReason('test-runs', sprint))
 }

@@ -194,7 +194,7 @@ describe('TestPlansPage', () => {
     })
 
     it('approves all draft plans and replaces the list', async () => {
-      // The completion banner reads the sprint's own flag, so the mock has
+      // The next-stage control reads the sprint's own flag, so the mock has
       // to move the way the server does: incomplete on load, complete once
       // the approval has landed.
       mockFetchSprint
@@ -218,7 +218,9 @@ describe('TestPlansPage', () => {
       await waitFor(() => {
         expect(mockApproveAllTestPlans).toHaveBeenCalledWith(1)
       })
-      expect(await screen.findByText('All test plans approved.')).toBeInTheDocument()
+      // Approving the last plan opens the gate to Test Runs, which is what the
+      // refreshed sprint flag is for.
+      expect(await screen.findByRole('link', { name: /Test Runs/ })).toBeInTheDocument()
     })
 
     it('surfaces errors from a rejected approve-all call', async () => {
@@ -233,7 +235,7 @@ describe('TestPlansPage', () => {
     })
   })
 
-  it('shows the summary line and completion banner', async () => {
+  it('shows the summary line', async () => {
     mockFetchSprint.mockResolvedValue(
       makeSprint({ has_test_plans: true, test_plans_complete: true }),
     )
@@ -244,10 +246,9 @@ describe('TestPlansPage', () => {
     renderPage()
 
     expect(await screen.findByText('2 of 2 plans drafted · 2 approved')).toBeInTheDocument()
-    expect(screen.getByText('All test plans approved.')).toBeInTheDocument()
   })
 
-  it('hides the Continue to Test Runs link while any plan is unapproved', async () => {
+  it('shuts the Test Runs control, with its reason, while any plan is unapproved', async () => {
     mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
     mockFetchTestPlans.mockResolvedValue([
       makePlan({ status: 'draft' }),
@@ -256,10 +257,14 @@ describe('TestPlansPage', () => {
     renderPage()
 
     await screen.findByText('2 of 2 plans drafted · 1 approved')
-    expect(screen.queryByRole('link', { name: 'Continue to Test Runs' })).not.toBeInTheDocument()
+    // Shut, not hidden — the control says where the user is headed and why
+    // they cannot go yet.
+    const button = screen.getByRole('button', { name: /Test Runs/ })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAccessibleDescription('Approve every test plan to continue.')
   })
 
-  it('shows the Continue to Test Runs link once every plan is approved', async () => {
+  it('opens the Test Runs control once every plan is approved', async () => {
     mockFetchSprint.mockResolvedValue(
       makeSprint({ has_test_plans: true, test_plans_complete: true }),
     )
@@ -269,15 +274,15 @@ describe('TestPlansPage', () => {
     ])
     renderPage()
 
-    const link = await screen.findByRole('link', { name: 'Continue to Test Runs' })
+    const link = await screen.findByRole('link', { name: /Test Runs/ })
     expect(link).toHaveAttribute('href', '/sprints/1/test-runs')
   })
 
   it('does not claim completion when a requirement has no plan at all', async () => {
     // The bug this flag exists for: editing a confirmed requirement removes
     // its plan, and every *remaining* plan is approved — so deriving
-    // completion from the plan list alone said "all approved" and offered
-    // Continue, while the edited requirement could not be run at all.
+    // completion from the plan list alone said "all approved" and opened the
+    // way forward, while the edited requirement could not be run at all.
     mockFetchSprint.mockResolvedValue(
       makeSprint({ has_test_plans: true, test_plans_missing: true, test_plans_complete: false }),
     )
@@ -285,8 +290,8 @@ describe('TestPlansPage', () => {
     renderPage()
 
     await screen.findByText('1 of 1 plans drafted · 1 approved')
-    expect(screen.queryByText('All test plans approved.')).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Continue to Test Runs' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Test Runs/ })).toBeDisabled()
+    expect(screen.queryByRole('link', { name: /Test Runs/ })).not.toBeInTheDocument()
   })
 
   it('offers regeneration when a requirement lost its plan', async () => {

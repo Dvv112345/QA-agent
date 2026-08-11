@@ -1,19 +1,14 @@
 import { useEffect, useState } from 'react'
 import PageState from '../components/PageState'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import FinishSprintModal from '../components/FinishSprintModal'
+import FinishSprintControl from '../components/FinishSprintControl'
 import PrdUploadForm from '../components/PrdUploadForm'
 import RequirementCard from '../components/RequirementCard'
 import RequirementForm from '../components/RequirementForm'
 import StageNav from '../components/StageNav'
-import {
-  confirmAllRequirements,
-  fetchRequirements,
-  fetchSprint,
-  finishSprint,
-} from '../services/api'
+import { confirmAllRequirements, fetchRequirements, fetchSprint } from '../services/api'
 import type { RequirementResponse, SprintResponse } from '../types'
-import { useCrumb } from '../BreadcrumbContext'
+import { useCrumb, useCrumbGates } from '../BreadcrumbContext'
 import { usePolling } from '../hooks/usePolling'
 import { formatDate } from '../format'
 import './SprintDetailPage.css'
@@ -31,12 +26,6 @@ export default function SprintDetailPage() {
   const [sprint, setSprint] = useState<SprintResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [finishing, setFinishing] = useState(false)
-  const [confirmingFinish, setConfirmingFinish] = useState(false)
-  // Kept apart from `error`, which means "the sprint would not load" and blanks
-  // the page. A finish that is refused should report inside the dialog the user
-  // is looking at, not replace the page behind it.
-  const [finishError, setFinishError] = useState<string | null>(null)
   const [requirements, setRequirements] = useState<RequirementResponse[]>([])
   const [requirementsError, setRequirementsError] = useState<string | null>(null)
   const [continuing, setContinuing] = useState(false)
@@ -80,18 +69,7 @@ export default function SprintDetailPage() {
   usePolling(() => fetchRequirements(sprintId).then(setRequirements), { enabled: shouldPoll })
 
   useCrumb('sprint', sprint?.name)
-
-  const handleFinish = () => {
-    setFinishing(true)
-    setFinishError(null)
-    finishSprint(sprintId)
-      .then((updated) => {
-        setSprint(updated)
-        setConfirmingFinish(false)
-      })
-      .catch((err: Error) => setFinishError(err.message))
-      .finally(() => setFinishing(false))
-  }
+  useCrumbGates(sprint)
 
   // The mount-time requirements_complete flag goes stale as the user
   // confirms requirements on this page — re-fetch before navigating.
@@ -172,18 +150,14 @@ export default function SprintDetailPage() {
 
   return (
     <div className="sprint-detail">
-      <nav className="page-back">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
-      </nav>
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
 
-      <StageNav
-        to={`/sprints/${sprintId}/test-environment`}
-        label="Test Environment"
-        ready={sprint.requirements_complete}
-        blockedReason="Confirm every requirement to continue."
-      />
+      <nav className="page-nav">
+        <Link to="/" className="btn btn-secondary" aria-label="Back to Sprints">
+          &larr; Back
+        </Link>
+        <StageNav stage="test-environment" sprintId={sprintId} sprint={sprint} />
+      </nav>
 
       <header className="sprint-detail-header">
         <h1>{sprint.name}</h1>
@@ -275,29 +249,6 @@ export default function SprintDetailPage() {
           </button>
           {continueError && <p className="sprint-detail-error">{continueError}</p>}
         </div>
-      )}
-
-      {sprint.active && (
-        <button
-          className="btn btn-danger"
-          disabled={finishing}
-          onClick={() => setConfirmingFinish(true)}
-        >
-          Finish Sprint
-        </button>
-      )}
-
-      {confirmingFinish && (
-        <FinishSprintModal
-          sprintName={sprint.name}
-          busy={finishing}
-          error={finishError}
-          onConfirm={handleFinish}
-          onCancel={() => {
-            setConfirmingFinish(false)
-            setFinishError(null)
-          }}
-        />
       )}
     </div>
   )

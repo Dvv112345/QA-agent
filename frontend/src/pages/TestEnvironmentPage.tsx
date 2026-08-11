@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
-import FinishSprintModal from '../components/FinishSprintModal'
+import FinishSprintControl from '../components/FinishSprintControl'
 import StageNav from '../components/StageNav'
 import EnvVarsEditor from '../components/EnvVarsEditor'
 import {
@@ -9,10 +9,9 @@ import {
   confirmTestEnvironment,
   fetchSprint,
   fetchTestEnvironment,
-  finishSprint,
   submitTestEnvironment,
 } from '../services/api'
-import { useCrumb } from '../BreadcrumbContext'
+import { useCrumb, useCrumbGates } from '../BreadcrumbContext'
 import type { SprintResponse, TestEnvironmentResponse, TestEnvironmentStatus } from '../types'
 import './TestEnvironmentPage.css'
 
@@ -32,11 +31,6 @@ export default function TestEnvironmentPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [finishing, setFinishing] = useState(false)
-  const [confirmingFinish, setConfirmingFinish] = useState(false)
-  // Kept apart from `actionError`, which renders in the page body — behind the
-  // dialog's overlay, where a user waiting on the dialog cannot see it.
-  const [finishError, setFinishError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [answer, setAnswer] = useState('')
@@ -127,18 +121,7 @@ export default function TestEnvironmentPage() {
   }
 
   useCrumb('sprint', sprint?.name)
-
-  const handleFinish = () => {
-    setFinishing(true)
-    setFinishError(null)
-    finishSprint(sprintId)
-      .then((updated) => {
-        setSprint(updated)
-        setConfirmingFinish(false)
-      })
-      .catch((err: Error) => setFinishError(err.message))
-      .finally(() => setFinishing(false))
-  }
+  useCrumbGates(sprint)
 
   const startEditing = () => {
     if (!testEnv) return
@@ -174,18 +157,18 @@ export default function TestEnvironmentPage() {
 
   return (
     <div className="test-env">
-      <nav className="page-back">
-        <Link to={`/sprints/${sprintId}`} className="back-link">
-          &larr; Back to Requirements
-        </Link>
-      </nav>
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
 
-      <StageNav
-        to={`/sprints/${sprintId}/test-plans`}
-        label="Test Plans"
-        ready={sprint.environment_confirmed}
-        blockedReason="Confirm the test environment to continue."
-      />
+      <nav className="page-nav">
+        <Link
+          to={`/sprints/${sprintId}`}
+          className="btn btn-secondary"
+          aria-label="Back to Requirements"
+        >
+          &larr; Back
+        </Link>
+        <StageNav stage="test-plans" sprintId={sprintId} sprint={sprint} />
+      </nav>
 
       <header className="test-env-header">
         <h1>Test Environment Access</h1>
@@ -346,31 +329,6 @@ export default function TestEnvironmentPage() {
       )}
 
       {actionError && <p className="test-env-error">{actionError}</p>}
-
-      {active && (
-        <div className="test-env-footer">
-          <button
-            className="btn btn-danger"
-            disabled={finishing}
-            onClick={() => setConfirmingFinish(true)}
-          >
-            Finish Sprint
-          </button>
-        </div>
-      )}
-
-      {confirmingFinish && (
-        <FinishSprintModal
-          sprintName={sprint.name}
-          busy={finishing}
-          error={finishError}
-          onConfirm={handleFinish}
-          onCancel={() => {
-            setConfirmingFinish(false)
-            setFinishError(null)
-          }}
-        />
-      )}
     </div>
   )
 }

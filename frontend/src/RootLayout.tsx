@@ -21,8 +21,12 @@ export default function RootLayout() {
   // appears over the login modal.
   return (
     <BreadcrumbProvider>
-      <Breadcrumb />
-      <Outlet />
+      {/* One column for the chrome and the page alike — see `.page-frame`.
+          Nesting them is what guarantees they share a left edge. */}
+      <div className="page-frame">
+        <Breadcrumb />
+        <Outlet />
+      </div>
       <ScrollToTop />
     </BreadcrumbProvider>
   )

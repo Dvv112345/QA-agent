@@ -1,16 +1,18 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import ExportSummary from '../components/ExportSummary'
+import FinishSprintControl from '../components/FinishSprintControl'
 import OutdatedBadge from '../components/OutdatedBadge'
 import RestartControl from '../components/RestartControl'
 import {
   exportExploratoryRunFindings,
   fetchExploratoryRun,
+  fetchSprint,
   restartExploratoryRun,
   summarizeExploratoryRun,
 } from '../services/api'
-import type { ExploratoryRunDetailResponse } from '../types'
+import type { ExploratoryRunDetailResponse, SprintResponse } from '../types'
 import { awaitingExport } from '../exportState'
 import { plural } from '../format'
 import { useAction } from '../hooks/useAction'
@@ -45,6 +47,29 @@ export default function ExploratoryRunDetailPage() {
     maxTicks: inProgress ? undefined : EXPORT_GRACE_TICKS,
   })
 
+  /*
+   * The sprint is fetched only so this page can offer Finish Sprint and name
+   * the sprint in the breadcrumb. It is kept out of the run's `useAsyncData` on
+   * purpose: the run polls while it works, and folding the sprint in would mean
+   * re-reading it every 2.5 s for a value that does not move. A failure here
+   * costs the button and the crumb label, nothing else.
+   */
+  const [sprint, setSprint] = useState<SprintResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchSprint(sprintId)
+      .then((data) => {
+        if (!cancelled) setSprint(data)
+      })
+      .catch(() => {
+        /* the run is what this page is for — it renders regardless */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sprintId])
+
+  useCrumb('sprint', sprint?.name)
   useCrumb('run', run ? `Exploratory Run #${run.id}` : null)
 
   if (loading) return <PageState kind="loading">Loading exploratory run&hellip;</PageState>
@@ -53,9 +78,15 @@ export default function ExploratoryRunDetailPage() {
 
   return (
     <div className="exp-run">
-      <nav className="page-back">
-        <Link to={`/sprints/${sprintId}/test-runs`} className="back-link">
-          &larr; Back to Test Runs
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
+        <Link
+          to={`/sprints/${sprintId}/test-runs`}
+          className="btn btn-secondary"
+          aria-label="Back to Test Runs"
+        >
+          &larr; Back
         </Link>
       </nav>
 

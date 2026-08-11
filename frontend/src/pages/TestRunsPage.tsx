@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
+import FinishSprintControl from '../components/FinishSprintControl'
 import IssueTrackerModal from '../components/IssueTrackerModal'
 import OutdatedBadge from '../components/OutdatedBadge'
 import RunTestModal from '../components/RunTestModal'
@@ -152,9 +153,15 @@ export default function TestRunsPage() {
 
   return (
     <div className="test-runs">
-      <nav className="page-back">
-        <Link to={`/sprints/${sprintId}/test-plans`} className="back-link">
-          &larr; Back to Test Plans
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
+        <Link
+          to={`/sprints/${sprintId}/test-plans`}
+          className="btn btn-secondary"
+          aria-label="Back to Test Plans"
+        >
+          &larr; Back
         </Link>
       </nav>
 

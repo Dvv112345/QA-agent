@@ -11,6 +11,7 @@ import TestRunDetailPage from './pages/TestRunDetailPage'
 import TestRunsPage from './pages/TestRunsPage'
 import RootLayout from './RootLayout'
 import type { CrumbSpec } from './components/Breadcrumb'
+import { STAGES, type StageId } from './stages'
 
 /*
  * Breadcrumb structure lives here, next to the routes it describes, so two
@@ -25,14 +26,41 @@ import type { CrumbSpec } from './components/Breadcrumb'
 
 const SPRINTS: CrumbSpec = { id: 'sprints', label: 'Sprints', path: '/' }
 const SPRINT: CrumbSpec = { id: 'sprint', label: 'Sprint', path: '/sprints/:id' }
-const TEST_RUNS: CrumbSpec = {
-  id: 'test-runs',
-  label: 'Test Runs',
-  path: '/sprints/:id/test-runs',
+
+/*
+ * The pipeline stages, in the order a sprint is walked through them, built from
+ * the one definition in `stages.ts` so the bar and `StageNav` cannot disagree.
+ *
+ * A stage's chain names every stage it came through, not just its URL parent:
+ * `/sprints/7/test-runs` is a sibling of `/sprints/7/test-plans` as far as the
+ * path is concerned, but you only arrive at runs by way of the environment and
+ * the plans, and the trail is what says how far along the sprint is. The sprint
+ * crumb doubles as the first stage, which is why there is no separate
+ * Requirements crumb.
+ */
+function stageCrumb(id: StageId): CrumbSpec {
+  return { id, label: STAGES[id].label, path: STAGES[id].pattern }
 }
+
+const TEST_ENV = stageCrumb('test-environment')
+const TEST_PLANS = stageCrumb('test-plans')
+const TEST_RUNS = stageCrumb('test-runs')
 
 function crumbs(...chain: CrumbSpec[]) {
   return { crumbs: chain }
+}
+
+/*
+ * A stage page: the trail behind it, plus the stages ahead of it.
+ *
+ * The forward stages render dimmed until their gate opens, so the bar shows the
+ * whole sequence and how far along the sprint is rather than stopping wherever
+ * the user happens to be. Only the four stage pages get one — a run detail page
+ * is inside a stage, not at one, and forward stages there would read as
+ * siblings of the run.
+ */
+function stagePage(chain: CrumbSpec[], ahead: CrumbSpec[]) {
+  return { crumbs: chain, forward: ahead }
 }
 
 export const routes = [
@@ -52,32 +80,39 @@ export const routes = [
       {
         path: '/sprints/:id',
         element: <SprintDetailPage />,
-        handle: crumbs(SPRINTS, SPRINT),
+        handle: stagePage([SPRINTS, SPRINT], [TEST_ENV, TEST_PLANS, TEST_RUNS]),
       },
       {
         path: '/sprints/:id/test-environment',
         element: <TestEnvironmentPage />,
-        handle: crumbs(SPRINTS, SPRINT, { id: 'test-environment', label: 'Test Environment' }),
+        handle: stagePage([SPRINTS, SPRINT, TEST_ENV], [TEST_PLANS, TEST_RUNS]),
       },
       {
         path: '/sprints/:id/test-plans',
         element: <TestPlansPage />,
-        handle: crumbs(SPRINTS, SPRINT, { id: 'test-plans', label: 'Test Plans' }),
+        handle: stagePage([SPRINTS, SPRINT, TEST_ENV, TEST_PLANS], [TEST_RUNS]),
       },
       {
+        // The terminal stage — nothing ahead of it.
         path: '/sprints/:id/test-runs',
         element: <TestRunsPage />,
-        handle: crumbs(SPRINTS, SPRINT, { id: 'test-runs', label: 'Test Runs' }),
+        handle: crumbs(SPRINTS, SPRINT, TEST_ENV, TEST_PLANS, TEST_RUNS),
       },
       {
         path: '/sprints/:id/test-runs/:runId',
         element: <TestRunDetailPage />,
-        handle: crumbs(SPRINTS, SPRINT, TEST_RUNS, { id: 'run', label: 'Run' }),
+        handle: crumbs(SPRINTS, SPRINT, TEST_ENV, TEST_PLANS, TEST_RUNS, {
+          id: 'run',
+          label: 'Run',
+        }),
       },
       {
         path: '/sprints/:id/exploratory-runs/:runId',
         element: <ExploratoryRunDetailPage />,
-        handle: crumbs(SPRINTS, SPRINT, TEST_RUNS, { id: 'run', label: 'Exploratory Run' }),
+        handle: crumbs(SPRINTS, SPRINT, TEST_ENV, TEST_PLANS, TEST_RUNS, {
+          id: 'run',
+          label: 'Exploratory Run',
+        }),
       },
       {
         // The parent exploratory run is not in this URL — it comes from the
@@ -89,6 +124,8 @@ export const routes = [
         handle: crumbs(
           SPRINTS,
           SPRINT,
+          TEST_ENV,
+          TEST_PLANS,
           TEST_RUNS,
           { id: 'run', label: 'Exploratory Run', path: '/sprints/:id/test-runs' },
           { id: 'session', label: 'Session Sheet' },

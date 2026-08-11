@@ -201,6 +201,30 @@
   box-sizing: border-box;
 }
 
+/*
+ * The content column — the one place a page's width and gutters are decided.
+ * `RootLayout` puts the breadcrumb and the outlet inside it together, so the
+ * breadcrumb, the nav row and the page body cannot disagree about where the
+ * left edge is.
+ *
+ * They used to. Every page restated `max-width` / `margin` / `padding` in its
+ * own stylesheet, and the copies had drifted into three different alignments:
+ * eight pages padded `2rem 1rem`, the two exploratory pages `1.5rem`, and none
+ * of them set `box-sizing`, so their padding fell *outside* the 60rem cap while
+ * the breadcrumb's fell inside it. The nav row therefore started at a different
+ * offset on almost every page.
+ *
+ * `box-sizing: border-box` is the load-bearing line: without it the column is
+ * 60rem *plus* its gutters, and no sibling that includes them can line up.
+ */
+.page-frame {
+  width: 100%;
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding: 1rem 1rem 2rem;
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
 }

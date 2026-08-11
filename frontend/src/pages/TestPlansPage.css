@@ -1,9 +1,3 @@
-.test-plans {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
-
 .test-plans-error {
   color: var(--danger);
 }
@@ -74,10 +68,4 @@
 
 .test-plans-continue {
   margin: 0 0 1.5rem;
-}
-
-.test-plans-footer {
-  margin-top: 2rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
 }

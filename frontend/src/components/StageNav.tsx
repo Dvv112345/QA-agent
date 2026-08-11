@@ -1,5 +1,7 @@
 import { useId } from 'react'
 import { Link } from 'react-router-dom'
+import { STAGES, type StageId } from '../stages'
+import type { SprintResponse } from '../types'
 import './StageNav.css'
 
 /**
@@ -13,20 +15,23 @@ import './StageNav.css'
  * Labelled by destination rather than "Continue", which reads wrong on a
  * finished sprint where the downstream pages are still readable.
  *
- * `ready` must come from a backend-computed flag on `SprintResponse`
- * (Convention #10) — never a re-derivation from the rows on screen.
+ * The label, URL, gate and blocking reason all come from `stages.ts`, which the
+ * breadcrumb's dimmed forward crumbs read too — the two say the same thing about
+ * the same stage, so they must not be able to drift.
  */
 
 interface Props {
-  to: string
-  label: string
-  ready: boolean
-  /** Why the next stage is unreachable. Shown only while `ready` is false. */
-  blockedReason: string
+  /** The stage this page leads to. Everything else comes from `stages.ts`. */
+  stage: StageId
+  sprintId: number
+  sprint: SprintResponse
 }
 
-export default function StageNav({ to, label, ready, blockedReason }: Props) {
+export default function StageNav({ stage, sprintId, sprint }: Props) {
   const reasonId = useId()
+  const { label, href, isOpen, blockedReason } = STAGES[stage]
+  const ready = isOpen(sprint)
+  const to = href(sprintId)
 
   return (
     <div className="stage-nav">

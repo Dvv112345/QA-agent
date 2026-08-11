@@ -1,9 +1,7 @@
+/* Width and gutters come from `.page-frame`, which wraps this and the outlet
+   together — this owns only the gap to whatever the page renders first. */
 .breadcrumb {
-  width: 100%;
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 1rem 1rem 0;
-  box-sizing: border-box;
+  margin-bottom: 1rem;
 }
 
 .breadcrumb-list {
@@ -27,7 +25,8 @@
 }
 
 .breadcrumb-link,
-.breadcrumb-current {
+.breadcrumb-current,
+.breadcrumb-blocked {
   display: inline-block;
   max-width: 22ch;
   overflow: hidden;
@@ -47,4 +46,15 @@
 
 .breadcrumb-current {
   color: var(--text);
+}
+
+/* A stage the sprint has not reached. It must read as clearly inert next to a
+   live crumb without disappearing: `--text` is already the low-contrast role in
+   both schemes, so this leans on the italic and the cursor as well as opacity
+   rather than dimming until it vanishes in dark mode. */
+.breadcrumb-blocked {
+  color: var(--text);
+  opacity: 0.6;
+  font-style: italic;
+  cursor: not-allowed;
 }

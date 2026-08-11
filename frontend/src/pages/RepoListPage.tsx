@@ -48,9 +48,9 @@ export default function RepoListPage() {
 
   return (
     <div className="repo-list">
-      <nav className="page-back">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
+      <nav className="page-nav">
+        <Link to="/" className="btn btn-secondary" aria-label="Back to Sprints">
+          &larr; Back
         </Link>
       </nav>
 

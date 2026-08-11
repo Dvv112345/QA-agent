@@ -1,9 +1,3 @@
-.sprint-detail {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
-
 .sprint-detail-error {
   color: var(--danger);
 }

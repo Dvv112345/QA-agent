@@ -6,12 +6,6 @@
  * inherited these rules (Convention #13).
  */
 
-.create-sprint {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
-
 .create-sprint h1 {
   margin: 0 0 1.5rem;
 }

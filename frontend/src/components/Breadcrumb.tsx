@@ -28,6 +28,12 @@ export interface CrumbSpec {
 
 interface RouteHandle {
   crumbs?: CrumbSpec[]
+  /**
+   * The pipeline stages *after* this page, shown so the bar reads as the whole
+   * sequence rather than a dead end. Each renders dimmed until its gate opens.
+   * Absent on the run detail pages, which sit inside a stage rather than at one.
+   */
+  forward?: CrumbSpec[]
 }
 
 function resolvePath(
@@ -40,22 +46,30 @@ function resolvePath(
 export default function Breadcrumb() {
   const matches = useMatches()
   const params = useParams()
-  const { labels, targets } = useBreadcrumbOverrides()
+  const { labels, targets, blocked } = useBreadcrumbOverrides()
 
-  const crumbs = matches
-    .map((match) => (match.handle as RouteHandle | undefined)?.crumbs)
-    .filter((value): value is CrumbSpec[] => Boolean(value))
+  const handle = matches
+    .map((match) => match.handle as RouteHandle | undefined)
+    .filter((value): value is RouteHandle => Boolean(value?.crumbs?.length))
     .at(-1)
 
-  if (!crumbs || crumbs.length === 0) return null
+  if (!handle?.crumbs) return null
+  const { crumbs, forward = [] } = handle
+
+  const labelFor = (crumb: CrumbSpec) => labels[crumb.id] ?? crumb.label
+  const targetFor = (crumb: CrumbSpec) =>
+    targets[crumb.id] ?? (crumb.path && resolvePath(crumb.path, params))
 
   return (
     <nav aria-label="Breadcrumb" className="breadcrumb">
       <ol className="breadcrumb-list">
         {crumbs.map((crumb, index) => {
+          // The trail behind the page. `aria-current` marks the last of *these*
+          // rather than the last item in the list, since the forward stages
+          // below are rendered after it.
           const isCurrent = index === crumbs.length - 1
-          const label = labels[crumb.id] ?? crumb.label
-          const target = targets[crumb.id] ?? (crumb.path && resolvePath(crumb.path, params))
+          const label = labelFor(crumb)
+          const target = targetFor(crumb)
 
           return (
             <li key={crumb.id} className="breadcrumb-item">
@@ -64,6 +78,37 @@ export default function Breadcrumb() {
                   className="breadcrumb-current"
                   aria-current={isCurrent ? 'page' : undefined}
                   title={label}
+                >
+                  {label}
+                </span>
+              ) : (
+                <Link to={target} className="breadcrumb-link" title={label}>
+                  {label}
+                </Link>
+              )}
+            </li>
+          )
+        })}
+
+        {/* The stages still ahead. A gate only ever shuts one of these — a stage
+            behind you stays clickable even if its gate has since closed, because
+            you have already been there and going back is how you reopen it. */}
+        {forward.map((crumb) => {
+          const label = labelFor(crumb)
+          const target = targetFor(crumb)
+          const reason = blocked[crumb.id]
+
+          return (
+            <li key={crumb.id} className="breadcrumb-item">
+              {reason || !target ? (
+                <span
+                  className="breadcrumb-blocked"
+                  aria-disabled="true"
+                  // The reason rides in the accessible name as well as the
+                  // tooltip: `aria-disabled` on a span is announced unevenly,
+                  // and a dimmed word with no explanation is the defect here.
+                  aria-label={reason ? `${label}, unavailable: ${reason}` : undefined}
+                  title={reason || label}
                 >
                   {label}
                 </span>

@@ -1,5 +1,5 @@
 /*
- * The app's shared control layer: buttons, badges, and the back-link row.
+ * The app's shared control layer: buttons, badges, and the page nav row.
  *
  * These are global class names, and they were previously defined inside
  * page-scoped stylesheets — `.btn` in `SprintListPage.css`, `.run-badge` in
@@ -67,23 +67,45 @@
 
 /* ── Navigation ──────────────────────────────────────────────────── */
 
-.back-link {
-  display: inline-block;
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 0.9rem;
+/*
+ * The page's nav row, on its own line beneath the breadcrumb: one step back on
+ * the left, the next stage on the right. Both wear `.btn`, so the pair reads as
+ * a matched set rather than a text link sitting beside a button.
+ *
+ * `space-between` does the placement, which means a page with nothing ahead of
+ * it — every run detail page, and the terminal Test Runs — just leaves Back on
+ * the left with nothing opposite. No modifier class, no second layout.
+ *
+ * `flex-start` rather than centre: the right-hand side is a column whose second
+ * line explains a shut gate, and it should grow downward from the button rather
+ * than dragging the button up.
+ *
+ * One link back, not the two or three each page used to list — the breadcrumb
+ * above covers jumping anywhere, and this covers the common one-step case.
+ *
+ * The visible label is just "← Back"; each page names the destination in an
+ * `aria-label` instead. Eight pages carrying an identically-named link would
+ * otherwise be indistinguishable in a screen reader's link list, and the
+ * breadcrumb directly above already shows sighted users where back leads. The
+ * accessible name still contains the visible word, so the two do not disagree.
+ */
+.page-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
 }
 
 /*
- * The row that holds it, on its own line beneath the breadcrumb. It carries the
- * bottom margin rather than `.back-link` doing so — the two old definitions of
- * `.back-link` disagreed on exactly that, and import order decided which won.
- *
- * One link, not the two or three each page used to list: the breadcrumb above
- * covers jumping anywhere, and this covers the common one-step case.
+ * Finish Sprint, above the nav row on every page inside a sprint. Right-aligned
+ * and small: it is always reachable, but it is not the thing the page is for,
+ * and it must not compete with the forward control directly below it.
  */
-.page-back {
-  margin-bottom: 1.5rem;
+.sprint-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.75rem;
 }
 
 /* ── Sprint status ───────────────────────────────────────────────── */

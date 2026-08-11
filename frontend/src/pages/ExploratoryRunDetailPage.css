@@ -1,9 +1,3 @@
-.exp-run {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 1.5rem;
-}
-
 .exp-run-error {
   color: var(--danger);
 }

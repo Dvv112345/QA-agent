@@ -1,9 +1,3 @@
-.exp-session {
-  max-width: var(--content-width);
-  margin: 0 auto;
-  padding: 1.5rem;
-}
-
 .exp-session-error {
   color: var(--danger);
 }
