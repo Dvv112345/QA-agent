@@ -21,16 +21,6 @@
   gap: 0.5rem;
 }
 
-.sprint-list-message {
-  text-align: center;
-  color: var(--text);
-  padding: 2rem 0;
-}
-
-.sprint-list-error {
-  color: var(--danger);
-}
-
 .sprint-cards {
   display: flex;
   flex-direction: column;

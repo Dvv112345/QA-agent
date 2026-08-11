@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import FinishSprintModal from '../components/FinishSprintModal'
 import StageNav from '../components/StageNav'
@@ -140,9 +141,9 @@ export default function TestEnvironmentPage() {
     setEditing(true)
   }
 
-  if (loading) return <p className="test-env-message">Loading test environment&hellip;</p>
-  if (loadError) return <p className="test-env-message test-env-error">{loadError}</p>
-  if (!sprint) return <p className="test-env-message">Sprint not found.</p>
+  if (loading) return <PageState kind="loading">Loading test environment&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const active = sprint.active
   const guarded = !testEnv && (!active || !sprint.requirements_complete)

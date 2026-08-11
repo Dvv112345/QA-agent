@@ -4,12 +4,6 @@
   padding: 2rem 1rem;
 }
 
-.test-runs-message {
-  text-align: center;
-  padding: 2rem;
-  color: var(--text);
-}
-
 .test-runs-error {
   color: var(--danger);
 }

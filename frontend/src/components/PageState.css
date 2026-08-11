@@ -1,0 +1,11 @@
+.page-state {
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--text);
+}
+
+.page-state-error {
+  color: var(--danger);
+}

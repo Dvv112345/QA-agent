@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
@@ -76,9 +77,9 @@ export default function TestRunDetailPage() {
       .finally(() => setRestarting(null))
   }
 
-  if (loading) return <p className="test-run-detail-message">Loading test run&hellip;</p>
-  if (loadError) return <p className="test-run-detail-message test-run-detail-error">{loadError}</p>
-  if (!run || !sprint) return <p className="test-run-detail-message">Test run not found.</p>
+  if (loading) return <PageState kind="loading">Loading test run&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!run || !sprint) return <PageState kind="empty">Test run not found.</PageState>
 
   return (
     <div className="test-run-detail">

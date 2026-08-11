@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
+import PageState from '../components/PageState'
 import FindingCard from '../components/FindingCard'
 import { fetchExploratorySession, findingScreenshotUrl } from '../services/api'
 import { useAsyncData } from '../hooks/useAsyncData'
@@ -32,9 +33,9 @@ export default function ExploratorySessionPage() {
     session ? `/sprints/${sprintId}/exploratory-runs/${session.exploratory_run_id}` : undefined,
   )
 
-  if (loading) return <p className="exp-session-message">Loading session sheet&hellip;</p>
-  if (loadError) return <p className="exp-session-message exp-session-error">{loadError}</p>
-  if (!session) return <p className="exp-session-message">Session not found.</p>
+  if (loading) return <PageState kind="loading">Loading session sheet&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!session) return <PageState kind="empty">Session not found.</PageState>
 
   return (
     <div className="exp-session">

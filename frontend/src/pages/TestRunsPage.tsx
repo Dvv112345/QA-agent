@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
 import IssueTrackerModal from '../components/IssueTrackerModal'
@@ -138,9 +139,9 @@ export default function TestRunsPage() {
 
   useCrumb('sprint', sprint?.name)
 
-  if (loading) return <p className="test-runs-message">Loading test runs&hellip;</p>
-  if (loadError) return <p className="test-runs-message test-runs-error">{loadError}</p>
-  if (!sprint) return <p className="test-runs-message">Sprint not found.</p>
+  if (loading) return <PageState kind="loading">Loading test runs&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const active = sprint.active
   // Runs can outlive test_plans_complete becoming false again — guard on

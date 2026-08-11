@@ -4,6 +4,10 @@
   padding: 1.5rem;
 }
 
+.exp-run-error {
+  color: var(--danger);
+}
+
 .exp-run-header {
   display: flex;
   align-items: center;
@@ -42,15 +46,6 @@
 
 .exp-run-muted {
   color: var(--text);
-}
-
-.exp-run-message {
-  padding: 1.5rem;
-  color: var(--text);
-}
-
-.exp-run-error {
-  color: var(--danger);
 }
 
 .exp-session-list {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import FinishSprintModal from '../components/FinishSprintModal'
 import PrdUploadForm from '../components/PrdUploadForm'
@@ -152,9 +153,9 @@ export default function SprintDetailPage() {
     void refreshSprint()
   }
 
-  if (loading) return <p className="sprint-detail-message">Loading sprint&hellip;</p>
-  if (error) return <p className="sprint-detail-message sprint-detail-error">{error}</p>
-  if (!sprint) return <p className="sprint-detail-message">Sprint not found.</p>
+  if (loading) return <PageState kind="loading">Loading sprint&hellip;</PageState>
+  if (error) return <PageState kind="error">{error}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const repo = sprint.repo
   const analyzedCount = requirements.filter((req) => !isInProgress(req)).length

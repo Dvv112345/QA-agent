@@ -4,12 +4,6 @@
   padding: 2rem 1rem;
 }
 
-.test-env-message {
-  text-align: center;
-  padding: 2rem;
-  color: var(--text);
-}
-
 .test-env-error {
   color: var(--danger);
 }

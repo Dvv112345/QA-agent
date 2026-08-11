@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link } from 'react-router-dom'
 import FinishSprintModal from '../components/FinishSprintModal'
 import { fetchSprints, finishSprint } from '../services/api'
@@ -47,8 +48,8 @@ export default function SprintListPage() {
       .finally(() => setFinishing(null))
   }
 
-  if (loading) return <p className="sprint-list-message">Loading sprints&hellip;</p>
-  if (error) return <p className="sprint-list-message sprint-list-error">{error}</p>
+  if (loading) return <PageState kind="loading">Loading sprints&hellip;</PageState>
+  if (error) return <PageState kind="error">{error}</PageState>
 
   return (
     <div className="sprint-list">
@@ -65,9 +66,9 @@ export default function SprintListPage() {
       </header>
 
       {sprints.length === 0 ? (
-        <p className="sprint-list-message">
+        <PageState kind="empty">
           No sprints yet. <Link to="/sprints/new">Create your first sprint</Link>.
-        </p>
+        </PageState>
       ) : (
         <div className="sprint-cards">
           {sprints.map((sprint) => (

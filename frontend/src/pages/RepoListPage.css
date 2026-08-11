@@ -4,6 +4,10 @@
   padding: 2rem 1rem;
 }
 
+.repo-list-error {
+  color: var(--danger);
+}
+
 .repo-list-header {
   display: flex;
   flex-direction: column;
@@ -14,16 +18,6 @@
 
 .repo-list-header h1 {
   margin: 0;
-}
-
-.repo-list-message {
-  text-align: center;
-  color: var(--text);
-  padding: 2rem 0;
-}
-
-.repo-list-error {
-  color: var(--danger);
 }
 
 .repo-cards {

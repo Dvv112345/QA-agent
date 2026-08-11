@@ -1,4 +1,5 @@
 import { useCallback } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import ExportSummary from '../components/ExportSummary'
 import OutdatedBadge from '../components/OutdatedBadge'
@@ -46,9 +47,9 @@ export default function ExploratoryRunDetailPage() {
 
   useCrumb('run', run ? `Exploratory Run #${run.id}` : null)
 
-  if (loading) return <p className="exp-run-message">Loading exploratory run&hellip;</p>
-  if (loadError) return <p className="exp-run-message exp-run-error">{loadError}</p>
-  if (!run) return <p className="exp-run-message">Exploratory run not found.</p>
+  if (loading) return <PageState kind="loading">Loading exploratory run&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!run) return <PageState kind="empty">Exploratory run not found.</PageState>
 
   return (
     <div className="exp-run">

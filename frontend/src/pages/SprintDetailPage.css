@@ -4,12 +4,6 @@
   padding: 2rem 1rem;
 }
 
-.sprint-detail-message {
-  text-align: center;
-  padding: 2rem;
-  color: var(--text);
-}
-
 .sprint-detail-error {
   color: var(--danger);
 }

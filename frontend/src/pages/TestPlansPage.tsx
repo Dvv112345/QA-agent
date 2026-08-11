@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import FinishSprintModal from '../components/FinishSprintModal'
 import StageNav from '../components/StageNav'
@@ -118,9 +119,9 @@ export default function TestPlansPage() {
     })
   }
 
-  if (loading) return <p className="test-plans-message">Loading test plans&hellip;</p>
-  if (loadError) return <p className="test-plans-message test-plans-error">{loadError}</p>
-  if (!sprint) return <p className="test-plans-message">Sprint not found.</p>
+  if (loading) return <PageState kind="loading">Loading test plans&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const active = sprint.active
   // Plans can outlive the lock state (finished sprint stays readable).
