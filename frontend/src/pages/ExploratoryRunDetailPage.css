@@ -48,19 +48,27 @@
   color: var(--text);
 }
 
-.exp-session-list {
+.exp-run-session-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
-.exp-session-row {
+/*
+ * The session rows in this run's list. Prefixed `exp-run-` because they belong
+ * to this page — they were `exp-session-*`, the prefix `ExploratorySessionPage`
+ * uses for the session sheet itself, and the two files had both defined
+ * `.exp-session-charter` with different properties. Nothing is code-split, so
+ * both rules loaded on both pages and each charter silently picked up the
+ * other's styling.
+ */
+.exp-run-session-row {
   border: 1px solid var(--border);
   border-radius: 6px;
   margin-bottom: 0.6rem;
 }
 
-.exp-session-link {
+.exp-run-session-link {
   transition: background-color 0.15s;
   display: block;
   padding: 0.8rem 1rem;
@@ -68,23 +76,23 @@
   color: inherit;
 }
 
-.exp-session-link:hover {
+.exp-run-session-link:hover {
   background: var(--surface-hover);
 }
 
-.exp-session-main {
+.exp-run-session-main {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
   align-items: center;
 }
 
-.exp-session-charter {
+.exp-run-session-charter {
   max-width: var(--prose-width);
   font-weight: 500;
 }
 
-.exp-session-meta {
+.exp-run-session-meta {
   display: flex;
   gap: 1rem;
   font-size: 0.82rem;

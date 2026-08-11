@@ -13,6 +13,10 @@ export default function SprintListPage() {
   const [error, setError] = useState<string | null>(null)
   const [finishing, setFinishing] = useState<number | null>(null)
   const [confirmingFinish, setConfirmingFinish] = useState<SprintResponse | null>(null)
+  // Kept apart from `error`, which means "the list would not load" and blanks
+  // the page. A finish that is refused should report inside the dialog the user
+  // is looking at, not destroy the list behind it.
+  const [finishError, setFinishError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -36,6 +40,7 @@ export default function SprintListPage() {
 
   const handleFinish = (sprintId: number) => {
     setFinishing(sprintId)
+    setFinishError(null)
     finishSprint(sprintId)
       // The response is the updated sprint — every other caller uses it.
       // Refetching the list instead re-downloaded every sprint to learn
@@ -44,7 +49,7 @@ export default function SprintListPage() {
         setSprints((prev) => prev.map((s) => (s.id === updated.id ? updated : s)))
         setConfirmingFinish(null)
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err: Error) => setFinishError(err.message))
       .finally(() => setFinishing(null))
   }
 
@@ -114,8 +119,12 @@ export default function SprintListPage() {
         <FinishSprintModal
           sprintName={confirmingFinish.name}
           busy={finishing === confirmingFinish.id}
+          error={finishError}
           onConfirm={() => handleFinish(confirmingFinish.id)}
-          onCancel={() => setConfirmingFinish(null)}
+          onCancel={() => {
+            setConfirmingFinish(null)
+            setFinishError(null)
+          }}
         />
       )}
     </div>

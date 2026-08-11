@@ -33,6 +33,10 @@ export default function SprintDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [finishing, setFinishing] = useState(false)
   const [confirmingFinish, setConfirmingFinish] = useState(false)
+  // Kept apart from `error`, which means "the sprint would not load" and blanks
+  // the page. A finish that is refused should report inside the dialog the user
+  // is looking at, not replace the page behind it.
+  const [finishError, setFinishError] = useState<string | null>(null)
   const [requirements, setRequirements] = useState<RequirementResponse[]>([])
   const [requirementsError, setRequirementsError] = useState<string | null>(null)
   const [continuing, setContinuing] = useState(false)
@@ -79,12 +83,13 @@ export default function SprintDetailPage() {
 
   const handleFinish = () => {
     setFinishing(true)
+    setFinishError(null)
     finishSprint(sprintId)
       .then((updated) => {
         setSprint(updated)
         setConfirmingFinish(false)
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err: Error) => setFinishError(err.message))
       .finally(() => setFinishing(false))
   }
 
@@ -286,8 +291,12 @@ export default function SprintDetailPage() {
         <FinishSprintModal
           sprintName={sprint.name}
           busy={finishing}
+          error={finishError}
           onConfirm={handleFinish}
-          onCancel={() => setConfirmingFinish(false)}
+          onCancel={() => {
+            setConfirmingFinish(false)
+            setFinishError(null)
+          }}
         />
       )}
     </div>

@@ -64,7 +64,8 @@
 }
 
 /* A full-row link with no hover state read as static text. The structurally
-   identical `.exp-session-link` on the run detail page had one; this did not. */
+   identical `.exp-run-session-link` on the run detail page had one; this did
+   not. */
 .test-run-link:hover {
   background: var(--surface-hover);
 }

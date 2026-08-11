@@ -6,12 +6,8 @@
   margin-bottom: 1.5rem;
 }
 
-/* A span, not a disabled button: there is nothing to activate, and the reason
-   beside it carries the explanation a tooltip would have hidden. */
-.stage-nav-disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
+/* The shut state needs no rule of its own — it is a real `<button disabled>`,
+   so `.btn:disabled` in `controls.css` already dims it. */
 
 .stage-nav-reason {
   margin: 0;

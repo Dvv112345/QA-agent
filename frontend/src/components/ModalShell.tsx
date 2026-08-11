@@ -23,7 +23,17 @@ interface Props {
   busy?: boolean
   /** Widen the card for content-heavy dialogs (charters, tracker config). */
   wide?: boolean
-  onClose: () => void
+  /**
+   * Extra class on the card, for a dialog that owns its own sizing. Pair it
+   * with `.modal-card` in the selector — `.modal-card.login-card` — so the
+   * override wins on specificity rather than on stylesheet import order.
+   */
+  cardClassName?: string
+  /**
+   * Omit for a dialog that must not be dismissed. The login gate has nothing
+   * behind it to return to, so Escape and the backdrop do nothing there.
+   */
+  onClose?: () => void
   children: ReactNode
 }
 
@@ -31,6 +41,7 @@ export default function ModalShell({
   title,
   busy = false,
   wide = false,
+  cardClassName,
   onClose,
   children,
 }: Props) {
@@ -60,7 +71,7 @@ export default function ModalShell({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (!busyRef.current) closeRef.current()
+        if (!busyRef.current) closeRef.current?.()
         return
       }
       if (event.key !== 'Tab') return
@@ -91,12 +102,14 @@ export default function ModalShell({
       className="modal-overlay"
       onClick={(event) => {
         // Only a click on the backdrop itself — not one bubbling out of the card.
-        if (event.target === event.currentTarget && !busy) onClose()
+        if (event.target === event.currentTarget && !busy) onClose?.()
       }}
     >
       <div
         ref={cardRef}
-        className={wide ? 'modal-card modal-card-wide' : 'modal-card'}
+        className={['modal-card', wide && 'modal-card-wide', cardClassName]
+          .filter(Boolean)
+          .join(' ')}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

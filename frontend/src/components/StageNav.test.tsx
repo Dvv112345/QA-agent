@@ -34,8 +34,12 @@ describe('StageNav', () => {
 
     // Always rendered, so the user can see where they are headed and why they
     // cannot go yet — the old pages hid the control entirely until it worked.
-    expect(screen.getByText(/Test Plans/)).toBeInTheDocument()
+    const button = screen.getByRole('button', { name: /Test Plans/ })
+    expect(button).toBeDisabled()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
-    expect(screen.getByText('Confirm the test environment to continue.')).toBeInTheDocument()
+
+    // The reason is attached to the control, not merely printed beside it: a
+    // disabled control that cannot say why is the defect this replaced.
+    expect(button).toHaveAccessibleDescription('Confirm the test environment to continue.')
   })
 })

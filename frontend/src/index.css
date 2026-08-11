@@ -61,6 +61,22 @@
   --status-locked-fg: #fff;
 
   /*
+   * Complexity is an estimate, not a status, so it gets its own ramp rather
+   * than borrowing the scale above. Sharing it made a high-complexity test plan
+   * the same red as a failed one, which reads as "something went wrong" about a
+   * plan that is merely large.
+   *
+   * A single hue getting heavier is the point: the three steps rank against
+   * each other and against nothing else on the page.
+   */
+  --complexity-low-bg: #eef2f7;
+  --complexity-low-fg: #475569;
+  --complexity-medium-bg: #dbe2ea;
+  --complexity-medium-fg: #334155;
+  --complexity-high-bg: #c7d2de;
+  --complexity-high-fg: #1e293b;
+
+  /*
    * Controls. Each carries its own foreground, because `--accent` inverts
    * between schemes — it is dark purple on white here and light purple on
    * near-black in dark mode, so a hardcoded white label would fail contrast
@@ -154,6 +170,14 @@
     --status-locked-bg: #15803d;
     --status-locked-fg: #f0fdf4;
 
+    /* Same ramp, inverted: the heaviest step is the lightest chip here. */
+    --complexity-low-bg: #23262e;
+    --complexity-low-fg: #94a3b8;
+    --complexity-medium-bg: #2c313b;
+    --complexity-medium-fg: #b0bcca;
+    --complexity-high-bg: #39404d;
+    --complexity-high-fg: #cbd5e1;
+
     /*
      * `--btn-primary-bg` needs no override: it substitutes `--accent`, which
      * is redefined just above, and custom properties resolve at computed-value
@@ -225,7 +249,10 @@ code {
 
 code {
   font-size: 15px;
-  line-height: 135%;
+  /* Unitless, like the two rules above. Behaviourally identical to the `135%`
+     it replaces, since it is declared on `code` itself — the file just stops
+     teaching a pattern that broke the `h1`. */
+  line-height: 1.35;
   padding: 4px 8px;
   background: var(--code-bg);
 }

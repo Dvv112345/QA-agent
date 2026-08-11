@@ -48,11 +48,14 @@ export default function RepoListPage() {
 
   return (
     <div className="repo-list">
-      <header className="repo-list-header">
-        <h1>Repositories</h1>
+      <nav className="page-back">
         <Link to="/" className="back-link">
           &larr; Back to Sprints
         </Link>
+      </nav>
+
+      <header className="repo-list-header">
+        <h1>Repositories</h1>
       </header>
 
       {deactivateError && <p className="repo-list-error">{deactivateError}</p>}

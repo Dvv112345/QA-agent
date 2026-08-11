@@ -43,9 +43,12 @@
   color: var(--status-good-fg);
 }
 
+/* Locked, like a confirmed requirement and an approved plan — not `active`.
+   Blue is this scale's "work is happening" colour, so a confirmed environment
+   painted blue read as still in progress. */
 .env-badge-confirmed {
-  background: var(--status-active-bg);
-  color: var(--status-active-fg);
+  background: var(--status-locked-bg);
+  color: var(--status-locked-fg);
 }
 
 .test-env-notice {

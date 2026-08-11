@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { Link } from 'react-router-dom'
 import './StageNav.css'
 
@@ -25,6 +26,8 @@ interface Props {
 }
 
 export default function StageNav({ to, label, ready, blockedReason }: Props) {
+  const reasonId = useId()
+
   return (
     <div className="stage-nav">
       {ready ? (
@@ -33,10 +36,17 @@ export default function StageNav({ to, label, ready, blockedReason }: Props) {
         </Link>
       ) : (
         <>
-          <span className="btn btn-primary stage-nav-disabled" aria-disabled="true">
+          {/* A real disabled button, not a styled span. The whole point of this
+              control is that its *shut* state carries information, and a span
+              with `aria-disabled` announces as plain text — neither "link" nor
+              "disabled". `aria-describedby` attaches the reason, so it is read
+              as part of the control rather than as unrelated prose nearby. */}
+          <button type="button" className="btn btn-primary" disabled aria-describedby={reasonId}>
             {label} &rarr;
-          </span>
-          <p className="stage-nav-reason">{blockedReason}</p>
+          </button>
+          <p className="stage-nav-reason" id={reasonId}>
+            {blockedReason}
+          </p>
         </>
       )}
     </div>

@@ -19,6 +19,11 @@
   border: none;
   border-radius: 6px;
   cursor: pointer;
+  /* `font-family` does not inherit into a `<button>` — it takes the UA's own.
+     `.btn` is worn by both `<button>` and `<Link>`, and `StageNav` swaps one
+     for the other in the same slot as its gate opens, so without this the
+     control changes typeface when it becomes clickable. */
+  font-family: inherit;
   font-size: 0.9rem;
   text-decoration: none;
   display: inline-block;

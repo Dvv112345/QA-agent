@@ -33,6 +33,9 @@ export default function TestPlansPage() {
   const [generating, setGenerating] = useState(false)
   const [finishing, setFinishing] = useState(false)
   const [confirmingFinish, setConfirmingFinish] = useState(false)
+  // Kept apart from `actionError`, which renders in the page body — behind the
+  // dialog's overlay, where a user waiting on the dialog cannot see it.
+  const [finishError, setFinishError] = useState<string | null>(null)
   const [approvingAll, setApprovingAll] = useState(false)
 
   // The sprint carries the flags that decide what this page offers
@@ -86,13 +89,13 @@ export default function TestPlansPage() {
 
   const handleFinish = () => {
     setFinishing(true)
-    setActionError(null)
+    setFinishError(null)
     finishSprint(sprintId)
       .then((updated) => {
         setSprint(updated)
         setConfirmingFinish(false)
       })
-      .catch((err: Error) => setActionError(err.message))
+      .catch((err: Error) => setFinishError(err.message))
       .finally(() => setFinishing(false))
   }
 
@@ -262,8 +265,12 @@ export default function TestPlansPage() {
         <FinishSprintModal
           sprintName={sprint.name}
           busy={finishing}
+          error={finishError}
           onConfirm={handleFinish}
-          onCancel={() => setConfirmingFinish(false)}
+          onCancel={() => {
+            setConfirmingFinish(false)
+            setFinishError(null)
+          }}
         />
       )}
     </div>

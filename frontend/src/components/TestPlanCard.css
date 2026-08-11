@@ -61,19 +61,21 @@
   color: var(--status-bad-fg);
 }
 
+/* Complexity is not status — see the ramp's note in `index.css`. On the status
+   scale a high-complexity plan was the same red as a failed one. */
 .plan-badge-complexity-low {
-  background: var(--status-good-bg);
-  color: var(--status-good-fg);
+  background: var(--complexity-low-bg);
+  color: var(--complexity-low-fg);
 }
 
 .plan-badge-complexity-medium {
-  background: var(--status-waiting-bg);
-  color: var(--status-waiting-fg);
+  background: var(--complexity-medium-bg);
+  color: var(--complexity-medium-fg);
 }
 
 .plan-badge-complexity-high {
-  background: var(--status-bad-bg);
-  color: var(--status-bad-fg);
+  background: var(--complexity-high-bg);
+  color: var(--complexity-high-fg);
 }
 
 .test-plan-card-requirement {

@@ -34,6 +34,9 @@ export default function TestEnvironmentPage() {
   const [busy, setBusy] = useState(false)
   const [finishing, setFinishing] = useState(false)
   const [confirmingFinish, setConfirmingFinish] = useState(false)
+  // Kept apart from `actionError`, which renders in the page body — behind the
+  // dialog's overlay, where a user waiting on the dialog cannot see it.
+  const [finishError, setFinishError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [answer, setAnswer] = useState('')
@@ -60,6 +63,22 @@ export default function TestEnvironmentPage() {
     }
   }, [sprintId])
 
+  /*
+   * `environment_confirmed` gates the control at the top of this page, and all
+   * three actions below can move it — in both directions. Confirming opens the
+   * gate; resubmitting or answering against an already-confirmed description
+   * sends the environment back for re-checking, which also deletes every test
+   * plan in the sprint. Without this re-read the page would keep offering an
+   * enabled "Test Plans →" pointing at a stage that had just been reopened and
+   * emptied.
+   */
+  const refreshSprint = () =>
+    fetchSprint(sprintId)
+      .then(setSprint)
+      .catch(() => {
+        /* the environment row already updated — the flag catches up on the next read */
+      })
+
   // The check is synchronous and can take up to a minute; keep the typed
   // text in state so a failure never loses the user's draft.
   const handleSubmit = (content: string) => {
@@ -72,6 +91,7 @@ export default function TestEnvironmentPage() {
         setTestEnv(updated)
         setEditing(false)
         setDraft('')
+        return refreshSprint()
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
@@ -87,6 +107,7 @@ export default function TestEnvironmentPage() {
       .then((updated) => {
         setTestEnv(updated)
         setAnswer('')
+        return refreshSprint()
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
@@ -99,10 +120,7 @@ export default function TestEnvironmentPage() {
     confirmTestEnvironment(testEnv.id)
       .then((updated) => {
         setTestEnv(updated)
-        // `environment_confirmed` gates the control at the top of the page and
-        // has just moved — re-read it, or the gate stays shut after the user
-        // has opened it.
-        return fetchSprint(sprintId).then(setSprint)
+        return refreshSprint()
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
@@ -112,13 +130,13 @@ export default function TestEnvironmentPage() {
 
   const handleFinish = () => {
     setFinishing(true)
-    setActionError(null)
+    setFinishError(null)
     finishSprint(sprintId)
       .then((updated) => {
         setSprint(updated)
         setConfirmingFinish(false)
       })
-      .catch((err: Error) => setActionError(err.message))
+      .catch((err: Error) => setFinishError(err.message))
       .finally(() => setFinishing(false))
   }
 
@@ -345,8 +363,12 @@ export default function TestEnvironmentPage() {
         <FinishSprintModal
           sprintName={sprint.name}
           busy={finishing}
+          error={finishError}
           onConfirm={handleFinish}
-          onCancel={() => setConfirmingFinish(false)}
+          onCancel={() => {
+            setConfirmingFinish(false)
+            setFinishError(null)
+          }}
         />
       )}
     </div>

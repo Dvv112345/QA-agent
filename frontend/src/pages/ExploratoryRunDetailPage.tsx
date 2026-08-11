@@ -124,20 +124,20 @@ export default function ExploratoryRunDetailPage() {
 
       <section>
         <h2>Sessions</h2>
-        <ul className="exp-session-list">
+        <ul className="exp-run-session-list">
           {run.sessions.map((session) => (
-            <li key={session.id} className="exp-session-row">
+            <li key={session.id} className="exp-run-session-row">
               <Link
                 to={`/sprints/${sprintId}/exploratory-sessions/${session.id}`}
-                className="exp-session-link"
+                className="exp-run-session-link"
               >
-                <div className="exp-session-main">
-                  <span className="exp-session-charter">{session.charter}</span>
+                <div className="exp-run-session-main">
+                  <span className="exp-run-session-charter">{session.charter}</span>
                   <span className={`session-badge session-badge-${session.status}`}>
                     {SESSION_STATUS_LABELS[session.status]}
                   </span>
                 </div>
-                <div className="exp-session-meta">
+                <div className="exp-run-session-meta">
                   <span>{session.sfdipot_areas.join(', ') || 'No areas tagged'}</span>
                   <span>{session.actions_used} actions</span>
                   <span>{plural(session.finding_count, 'finding')}</span>
