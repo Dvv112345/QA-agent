@@ -293,7 +293,9 @@ export default function TestEnvironmentPage() {
             </div>
           )}
           {confirmed && active && (
-            <p className="test-env-cascade-notice">
+            // `.test-env-cascade-notice` had no rule in any stylesheet, so this
+            // has been rendering as unstyled body text since it was added.
+            <p className="cascade-notice">
               Editing this description will delete every test plan in the sprint and require
               re-confirming. Existing test runs are kept, but marked as out of date.
             </p>

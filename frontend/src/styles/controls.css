@@ -182,3 +182,23 @@
   background: var(--status-bad-bg);
   color: var(--status-bad-fg);
 }
+
+/* ── Cascade notices ─────────────────────────────────────────────── */
+
+/*
+ * States, before the click, what editing a confirmed artifact will destroy.
+ * The confirmation dialog on the edit itself stays — this is what makes the
+ * consequence visible while deciding, rather than only once committed.
+ *
+ * Shared by the requirement card, the plan card and the environment page, so
+ * it lives here rather than in any one of them (Convention #13).
+ */
+.cascade-notice {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--status-waiting-fg);
+  background: var(--status-waiting-bg);
+  border: 1px solid var(--status-waiting-border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+}

@@ -172,6 +172,12 @@ export default function TestPlanCard({ plan, sprintActive, onUpdated }: Props) {
                   </>
                 )}
               </div>
+              {status === 'approved' && (
+                <p className="cascade-notice">
+                  Editing this plan returns it to draft and requires re-approval before it can be
+                  run again.
+                </p>
+              )}
               <div className="test-plan-card-actions">
                 {status === 'draft' && (
                   <button className="btn btn-primary" onClick={handleApprove} disabled={busy}>
