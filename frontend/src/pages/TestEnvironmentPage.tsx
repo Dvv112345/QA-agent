@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import FinishSprintModal from '../components/FinishSprintModal'
+import StageNav from '../components/StageNav'
 import EnvVarsEditor from '../components/EnvVarsEditor'
 import {
   answerTestEnvironment,
@@ -95,7 +96,13 @@ export default function TestEnvironmentPage() {
     setBusy(true)
     setActionError(null)
     confirmTestEnvironment(testEnv.id)
-      .then(setTestEnv)
+      .then((updated) => {
+        setTestEnv(updated)
+        // `environment_confirmed` gates the control at the top of the page and
+        // has just moved — re-read it, or the gate stays shut after the user
+        // has opened it.
+        return fetchSprint(sprintId).then(setSprint)
+      })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
   }
@@ -153,6 +160,13 @@ export default function TestEnvironmentPage() {
           &larr; Back to Requirements
         </Link>
       </nav>
+
+      <StageNav
+        to={`/sprints/${sprintId}/test-plans`}
+        label="Test Plans"
+        ready={sprint.environment_confirmed}
+        blockedReason="Confirm the test environment to continue."
+      />
 
       <header className="test-env-header">
         <h1>Test Environment Access</h1>

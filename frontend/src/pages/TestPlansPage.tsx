@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import FinishSprintModal from '../components/FinishSprintModal'
+import StageNav from '../components/StageNav'
 import TestPlanCard from '../components/TestPlanCard'
 import {
   approveAllTestPlans,
@@ -140,6 +141,13 @@ export default function TestPlansPage() {
           &larr; Back to Test Environment
         </Link>
       </nav>
+
+      <StageNav
+        to={`/sprints/${sprintId}/test-runs`}
+        label="Test Runs"
+        ready={sprint.test_plans_complete}
+        blockedReason="Approve every test plan to continue."
+      />
 
       <header className="test-plans-header">
         <h1>Test Plans</h1>

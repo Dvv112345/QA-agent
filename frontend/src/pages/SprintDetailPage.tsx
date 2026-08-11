@@ -4,6 +4,7 @@ import FinishSprintModal from '../components/FinishSprintModal'
 import PrdUploadForm from '../components/PrdUploadForm'
 import RequirementCard from '../components/RequirementCard'
 import RequirementForm from '../components/RequirementForm'
+import StageNav from '../components/StageNav'
 import {
   confirmAllRequirements,
   fetchRequirements,
@@ -104,6 +105,16 @@ export default function SprintDetailPage() {
       .finally(() => setContinuing(false))
   }
 
+  // `requirements_complete` gates the control at the top of the page, and it
+  // moves as the user works here. Every action that can move it refreshes the
+  // sprint, or the gate would sit shut after the user had opened it.
+  const refreshSprint = () =>
+    fetchSprint(sprintId)
+      .then(setSprint)
+      .catch(() => {
+        /* the rows already updated — the flag catches up on the next read */
+      })
+
   // No confirmation: confirming is no longer final. A confirmed requirement
   // stays editable, and the cascade that an edit triggers is warned about at
   // the point of editing, which is where the consequence actually lives.
@@ -111,27 +122,34 @@ export default function SprintDetailPage() {
     setConfirmingAll(true)
     setConfirmAllError(null)
     confirmAllRequirements(sprintId)
-      .then(setRequirements)
+      .then((rows) => {
+        setRequirements(rows)
+        return refreshSprint()
+      })
       .catch((err: Error) => setConfirmAllError(err.message))
       .finally(() => setConfirmingAll(false))
   }
 
   const handleSubmitted = (created: RequirementResponse[]) => {
     setRequirements((prev) => [...prev, ...created])
+    void refreshSprint()
   }
 
   // A PRD upload replaces the previous upload's rows server-side — mirror
   // that locally: drop old from_prd rows, keep manual ones, append the new.
   const handlePrdUploaded = (created: RequirementResponse[]) => {
     setRequirements((prev) => [...prev.filter((req) => !req.from_prd), ...created])
+    void refreshSprint()
   }
 
   const handleUpdated = (updated: RequirementResponse) => {
     setRequirements((prev) => prev.map((req) => (req.id === updated.id ? updated : req)))
+    void refreshSprint()
   }
 
   const handleRemoved = (removedId: number) => {
     setRequirements((prev) => prev.filter((req) => req.id !== removedId))
+    void refreshSprint()
   }
 
   if (loading) return <p className="sprint-detail-message">Loading sprint&hellip;</p>
@@ -153,6 +171,13 @@ export default function SprintDetailPage() {
           &larr; Back to Sprints
         </Link>
       </nav>
+
+      <StageNav
+        to={`/sprints/${sprintId}/test-environment`}
+        label="Test Environment"
+        ready={sprint.requirements_complete}
+        blockedReason="Confirm every requirement to continue."
+      />
 
       <header className="sprint-detail-header">
         <h1>{sprint.name}</h1>
