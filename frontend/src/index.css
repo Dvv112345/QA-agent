@@ -27,6 +27,40 @@
   --danger: #c00;
 
   /*
+   * One status scale for all five badge vocabularies — requirement, plan, run,
+   * session, environment — plus the notice blocks that share their meaning.
+   * They previously each carried their own palette, so the same word was a
+   * different colour depending on the page: `pending` was blue on requirements
+   * and amber on runs, `running` amber on runs and blue on sessions, and
+   * "locked in" solid green for a requirement but pale blue for an environment.
+   *
+   * `waiting` and `active` stay distinct rather than collapsing into one
+   * "in progress" colour. `pending` means no worker has claimed the row, which
+   * is what a stopped worker or an unreachable Redis looks like; `active` means
+   * work is happening. Merging them would hide the failure mode the run pages
+   * exist to surface.
+   */
+  --status-waiting-bg: #fef3c7;
+  --status-waiting-fg: #92400e;
+  --status-waiting-border: #fde68a;
+
+  --status-active-bg: #dbeafe;
+  --status-active-fg: #1d4ed8;
+  --status-active-border: #bfdbfe;
+
+  --status-good-bg: #dcfce7;
+  --status-good-fg: #15803d;
+  --status-good-border: #86efac;
+
+  --status-bad-bg: #fee2e2;
+  --status-bad-fg: #991b1b;
+  --status-bad-border: #fecaca;
+
+  /* Terminal and deliberate — confirmed, approved. Solid, not tinted. */
+  --status-locked-bg: #16a34a;
+  --status-locked-fg: #fff;
+
+  /*
    * Controls. Each carries its own foreground, because `--accent` inverts
    * between schemes — it is dark purple on white here and light purple on
    * near-black in dark mode, so a hardcoded white label would fail contrast
@@ -90,6 +124,27 @@
 
     /* #c00 is unreadable on a near-black page. */
     --danger: #f87171;
+
+    /* The light scale is pastel-on-dark-text; dark inverts it to dark-on-light,
+       since a pastel chip on a near-black page glares. */
+    --status-waiting-bg: #3a2e12;
+    --status-waiting-fg: #fcd34d;
+    --status-waiting-border: #59460f;
+
+    --status-active-bg: #1c2a4a;
+    --status-active-fg: #93c5fd;
+    --status-active-border: #2d4372;
+
+    --status-good-bg: #12301f;
+    --status-good-fg: #86efac;
+    --status-good-border: #1d5233;
+
+    --status-bad-bg: #3d1a1a;
+    --status-bad-fg: #fca5a5;
+    --status-bad-border: #5f2626;
+
+    --status-locked-bg: #15803d;
+    --status-locked-fg: #f0fdf4;
 
     /*
      * `--btn-primary-bg` needs no override: it substitutes `--accent`, which

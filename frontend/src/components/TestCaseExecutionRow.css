@@ -48,35 +48,35 @@
 }
 
 .case-badge-pending {
-  background: #f3f4f6;
-  color: #4b5563;
+  background: var(--border);
+  color: var(--text);
 }
 
 .case-badge-running {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
 .case-badge-passed {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .case-badge-failed {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
 }
 
 .case-badge-error {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
 /* Grey like "Queued" — a case nobody ran carries no verdict, so it must
    not read as a result either way. */
 .case-badge-skipped {
-  background: #f3f4f6;
-  color: #4b5563;
+  background: var(--border);
+  color: var(--text);
 }
 
 .case-execution-skipped-reason {
@@ -107,7 +107,7 @@
 }
 
 .case-execution-error {
-  color: #991b1b;
+  color: var(--status-bad-fg);
 }
 
 .case-execution-download {

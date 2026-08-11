@@ -40,18 +40,18 @@
 }
 
 .env-badge-needs_info {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
 .env-badge-ready {
-  background: #d1fae5;
-  color: #065f46;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .env-badge-confirmed {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--status-active-bg);
+  color: var(--status-active-fg);
 }
 
 .test-env-notice {
@@ -100,8 +100,8 @@
 }
 
 .test-env-question {
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  background: var(--status-waiting-bg);
+  border: 1px solid var(--status-waiting-border);
   border-radius: 8px;
   padding: 1rem 1.5rem;
   margin: 1rem 0;
@@ -113,7 +113,7 @@
 }
 
 .test-env-cap-notice {
-  color: #92400e;
+  color: var(--status-waiting-fg);
   font-size: 0.9rem;
   margin: 0;
 }
@@ -129,8 +129,8 @@
   display: flex;
   align-items: center;
   gap: 1rem;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: var(--status-bad-bg);
+  border: 1px solid var(--status-bad-border);
   border-radius: 8px;
   padding: 0.75rem 1.5rem;
   margin: 1rem 0;
@@ -138,7 +138,7 @@
 
 .test-env-stale-notice p {
   margin: 0;
-  color: #991b1b;
+  color: var(--status-bad-fg);
 }
 
 .test-env-actions {

@@ -69,10 +69,10 @@
 }
 
 .test-plans-complete {
-  background: #dcfce7;
-  border: 1px solid #86efac;
+  background: var(--status-good-bg);
+  border: 1px solid var(--status-good-border);
   border-radius: 8px;
-  color: #15803d;
+  color: var(--status-good-fg);
   font-weight: 600;
   padding: 0.75rem 1.5rem;
   margin: 0 0 1rem;

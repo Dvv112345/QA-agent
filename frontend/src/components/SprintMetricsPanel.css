@@ -55,7 +55,7 @@
 .sprint-metrics-excluded {
   margin: 0.9rem 0 0;
   font-size: 0.85rem;
-  color: var(--color-warning-text, #8a6100);
+  color: var(--status-waiting-fg);
 }
 
 .sprint-metrics-table-wrapper {

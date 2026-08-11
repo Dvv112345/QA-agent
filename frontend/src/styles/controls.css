@@ -91,13 +91,14 @@
 }
 
 .badge-active {
-  background: #d4edda;
-  color: #155724;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
+/* Neutral by design — a finished sprint is neither good nor bad news. */
 .badge-finished {
-  background: #e2e3e5;
-  color: #383d41;
+  background: var(--border);
+  color: var(--text);
 }
 
 /* ── Run and execution status ────────────────────────────────────── */
@@ -111,26 +112,34 @@
 }
 
 /*
- * `pending` shares `running`'s amber. The two copies of this file disagreed
- * — the run list painted it inert grey, the detail page amber — so the
- * colour of a queued run was decided by CSS import order. Amber is the
- * resolution: a queued run is work that is going to happen, which is what
- * the reader needs to know, and grey read as "nothing here".
+ * `pending` is amber, not grey. The two copies of this file disagreed — the
+ * run list painted it inert grey, the detail page amber — so the colour of a
+ * queued run was decided by CSS import order. Amber is the resolution: a
+ * queued run is work that is going to happen, and grey read as "nothing here".
+ *
+ * It no longer shares `running`'s colour, though. A run sitting at `pending`
+ * is one no worker has claimed, which is exactly what a stopped worker looks
+ * like; `running` means the work is under way. That is worth telling apart at
+ * a glance, so the two now take `waiting` and `active`.
  */
-.run-badge-pending,
+.run-badge-pending {
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
+}
+
 .run-badge-running {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--status-active-bg);
+  color: var(--status-active-fg);
 }
 
 .run-badge-completed {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .run-badge-failed {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
 }
 
 /* ── Charter session status ──────────────────────────────────────── */
@@ -147,19 +156,30 @@
   letter-spacing: 0.04em;
   padding: 0.15rem 0.45rem;
   border-radius: 3px;
-  background: #e0e4ea;
-  color: #333;
+  background: var(--border);
+  color: var(--text);
   white-space: nowrap;
 }
 
+/* Each sets its foreground too. Previously only the background was overridden,
+   which left every state on the base `#333` — fine on pastels, unreadable once
+   the scale inverts for dark mode. */
+.session-badge-pending {
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
+}
+
 .session-badge-completed {
-  background: #d7ecd9;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .session-badge-running {
-  background: #d8e6f7;
+  background: var(--status-active-bg);
+  color: var(--status-active-fg);
 }
 
 .session-badge-error {
-  background: #f7d9d7;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
 }

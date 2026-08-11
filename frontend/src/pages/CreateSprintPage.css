@@ -40,13 +40,13 @@
 }
 
 .readme-found {
-  background: #d4edda;
-  color: #155724;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .readme-required {
-  background: #fff3cd;
-  color: #856404;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
 .form-error {

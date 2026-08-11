@@ -27,8 +27,8 @@
 .prd-upload-confirm {
   margin-top: 0.75rem;
   padding: 0.75rem 1rem;
-  background: #fef3c7;
-  border: 1px solid #f59e0b;
+  background: var(--status-waiting-bg);
+  border: 1px solid var(--status-waiting-border);
   border-radius: 6px;
   font-size: 0.9rem;
 }

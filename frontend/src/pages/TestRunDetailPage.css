@@ -58,7 +58,7 @@
 }
 
 .test-execution-error {
-  color: #991b1b;
+  color: var(--status-bad-fg);
   font-size: 0.9rem;
 }
 
