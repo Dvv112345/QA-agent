@@ -279,4 +279,18 @@ describe('RequirementCard', () => {
       })
     })
   })
+
+  it('warns inline before the click when an edit would cascade', () => {
+    renderCard(makeRequirement({ status: 'confirmed' }), { cascades: true })
+
+    // Additive: the notice makes the consequence visible while deciding, and
+    // the confirmation on the Edit click itself still fires.
+    expect(screen.getByText(/deletes its test plan/i)).toBeInTheDocument()
+  })
+
+  it('shows no inline warning when nothing downstream exists yet', () => {
+    renderCard(makeRequirement({ status: 'confirmed' }), { cascades: false })
+
+    expect(screen.queryByText(/deletes its test plan/i)).not.toBeInTheDocument()
+  })
 })

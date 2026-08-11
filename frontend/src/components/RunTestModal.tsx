@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import ModalShell from './ModalShell'
 import { createTestRun } from '../services/api'
 import type { IssueTrackerConfig, TestPlanResponse } from '../types'
 import './RunTestModal.css'
@@ -52,57 +53,53 @@ export default function RunTestModal({ sprintId, plans, tracker, onClose }: Prop
   }
 
   return (
-    <div className="run-test-overlay" role="dialog" aria-modal="true">
-      <div className="run-test-card">
-        <h2>Run new test</h2>
+    <ModalShell title="Run new test" busy={busy} onClose={onClose}>
+      {plans.length === 0 ? (
+        <p className="run-test-message">No requirements have an approved test plan yet.</p>
+      ) : (
+        <ul className="run-test-list">
+          {plans.map((plan) => (
+            <li key={plan.requirement_id} className="run-test-item">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={selected.has(plan.requirement_id)}
+                  onChange={() => toggle(plan.requirement_id)}
+                  disabled={busy}
+                />
+                {plan.requirement_name}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
 
-        {plans.length === 0 ? (
-          <p className="run-test-message">No requirements have an approved test plan yet.</p>
-        ) : (
-          <ul className="run-test-list">
-            {plans.map((plan) => (
-              <li key={plan.requirement_id} className="run-test-item">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(plan.requirement_id)}
-                    onChange={() => toggle(plan.requirement_id)}
-                    disabled={busy}
-                  />
-                  {plan.requirement_name}
-                </label>
-              </li>
-            ))}
-          </ul>
-        )}
+      <label className="run-test-export">
+        <input
+          type="checkbox"
+          checked={exportFindings}
+          onChange={(e) => setExportFindings(e.target.checked)}
+          disabled={busy || !tracker}
+        />
+        {tracker
+          ? `File bug findings to ${tracker.target_label}`
+          : 'File bug findings to an issue tracker (none connected)'}
+      </label>
 
-        <label className="run-test-export">
-          <input
-            type="checkbox"
-            checked={exportFindings}
-            onChange={(e) => setExportFindings(e.target.checked)}
-            disabled={busy || !tracker}
-          />
-          {tracker
-            ? `File bug findings to ${tracker.target_label}`
-            : 'File bug findings to an issue tracker (none connected)'}
-        </label>
+      {error && <p className="run-test-error">{error}</p>}
 
-        {error && <p className="run-test-error">{error}</p>}
-
-        <div className="run-test-actions">
-          <button
-            className="btn btn-primary"
-            onClick={handleStart}
-            disabled={busy || selected.size === 0}
-          >
-            {busy ? 'Starting…' : 'Start run'}
-          </button>
-          <button className="btn btn-secondary" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-        </div>
+      <div className="run-test-actions">
+        <button
+          className="btn btn-primary"
+          onClick={handleStart}
+          disabled={busy || selected.size === 0}
+        >
+          {busy ? 'Starting…' : 'Start run'}
+        </button>
+        <button className="btn btn-secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
       </div>
-    </div>
+    </ModalShell>
   )
 }

@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
+import FinishSprintControl from '../components/FinishSprintControl'
+import StageNav from '../components/StageNav'
 import TestPlanCard from '../components/TestPlanCard'
 import {
   approveAllTestPlans,
   fetchSprint,
   fetchTestPlans,
-  finishSprint,
   generateTestPlans,
 } from '../services/api'
 import type { SprintResponse, TestPlanResponse } from '../types'
+import { useCrumb, useCrumbGates } from '../BreadcrumbContext'
 import { usePolling } from '../hooks/usePolling'
 import './TestPlansPage.css'
 
@@ -27,7 +30,6 @@ export default function TestPlansPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
-  const [finishing, setFinishing] = useState(false)
   const [approvingAll, setApprovingAll] = useState(false)
 
   // The sprint carries the flags that decide what this page offers
@@ -77,17 +79,12 @@ export default function TestPlansPage() {
       .finally(() => setGenerating(false))
   }
 
-  const handleFinish = () => {
-    setFinishing(true)
-    setActionError(null)
-    finishSprint(sprintId)
-      .then(setSprint)
-      .catch((err: Error) => setActionError(err.message))
-      .finally(() => setFinishing(false))
-  }
+  useCrumb('sprint', sprint?.name)
+  useCrumbGates(sprint)
 
+  // No confirmation: approval is not final. It gates running, not editing —
+  // an edit returns the plan to draft, and that edit warns for itself.
   const handleApproveAll = () => {
-    if (!window.confirm(`Approve all ${approvableCount} draft test plan(s)? This is final.`)) return
     setApprovingAll(true)
     setActionError(null)
     approveAllTestPlans(sprintId)
@@ -108,31 +105,33 @@ export default function TestPlansPage() {
     })
   }
 
-  if (loading) return <p className="test-plans-message">Loading test plans&hellip;</p>
-  if (loadError) return <p className="test-plans-message test-plans-error">{loadError}</p>
-  if (!sprint) return <p className="test-plans-message">Sprint not found.</p>
+  if (loading) return <PageState kind="loading">Loading test plans&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const active = sprint.active
   // Plans can outlive the lock state (finished sprint stays readable).
   const guarded = plans.length === 0 && (!active || !sprint.environment_confirmed)
   const draftedCount = plans.filter((plan) => !isInProgress(plan)).length
   const approvedCount = plans.filter((plan) => plan.status === 'approved').length
-  // Both backend-computed (Convention #10). `allApproved` used to be derived
-  // from `plans` alone, which reported "All test plans approved" for a sprint
-  // whose edited requirement had no plan at all: a requirement without a plan
-  // contributes no row, so there was nothing in the array to fall short.
-  const allApproved = sprint.test_plans_complete
+  // Backend-computed (Convention #10), not derived from `plans`: a requirement
+  // without a plan contributes no row, so the array alone cannot tell a
+  // complete sprint from one whose edited requirement lost its plan.
   const missingPlans = sprint.test_plans_missing
 
   return (
     <div className="test-plans">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
+        <Link
+          to={`/sprints/${sprintId}/test-environment`}
+          className="btn btn-secondary"
+          aria-label="Back to Test Environment"
+        >
+          &larr; Back
         </Link>
-        <Link to={`/sprints/${sprintId}/test-environment`} className="back-link">
-          &larr; Back to Test Environment
-        </Link>
+        <StageNav stage="test-runs" sprintId={sprintId} sprint={sprint} />
       </nav>
 
       <header className="test-plans-header">
@@ -148,8 +147,7 @@ export default function TestPlansPage() {
       ) : plans.length === 0 ? (
         <div className="test-plans-generate">
           <p className="test-plans-hint">
-            Generate a test plan for each confirmed requirement. The AI reads the repository to
-            ground test cases in the real code — this can take a few minutes.
+            Generate a test plan for each confirmed requirement. This can take a few minutes.
           </p>
           <button className="btn btn-primary" onClick={handleGenerate} disabled={generating}>
             {generating ? 'Starting…' : 'Generate test plans'}
@@ -207,17 +205,6 @@ export default function TestPlansPage() {
             </div>
           )}
 
-          {allApproved && (
-            <>
-              <p className="test-plans-complete">All test plans approved.</p>
-              <div className="test-plans-continue">
-                <Link to={`/sprints/${sprintId}/test-runs`} className="btn btn-primary">
-                  Continue to Test Runs
-                </Link>
-              </div>
-            </>
-          )}
-
           {plans.map((plan) => (
             <TestPlanCard
               key={plan.id}
@@ -230,14 +217,6 @@ export default function TestPlansPage() {
       )}
 
       {actionError && <p className="test-plans-error">{actionError}</p>}
-
-      {active && (
-        <div className="test-plans-footer">
-          <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>
-            {finishing ? 'Finishing…' : 'Finish Sprint'}
-          </button>
-        </div>
-      )}
     </div>
   )
 }

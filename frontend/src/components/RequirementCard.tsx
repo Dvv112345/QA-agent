@@ -200,6 +200,15 @@ export default function RequirementCard({
           already gated on `status`, and an in-progress card is `pending` or
           `analyzing` — matching none of them — so an in-progress card gets
           Remove and nothing else without a second copy of the block. */}
+      {/* Says what an edit costs while the user is deciding, not only once
+          they have clicked Edit. The dialog on that click stays. */}
+      {sprintActive && cascades && status === 'confirmed' && !editing && (
+        <p className="cascade-notice">
+          Editing this requirement deletes its test plan and sends the test environment back for
+          re-checking.
+        </p>
+      )}
+
       {sprintActive && (
         <div className="requirement-card-actions">
           {status === 'needs_clarification' && (

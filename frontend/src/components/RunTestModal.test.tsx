@@ -199,4 +199,16 @@ describe('RunTestModal', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('is a labelled dialog that Escape closes', () => {
+    const onClose = vi.fn()
+    renderModal(onClose)
+
+    // The shared shell supplies this; its full keyboard contract is covered
+    // once in ConfirmModal.test.tsx rather than repeated for each modal.
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Run new test')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
 })

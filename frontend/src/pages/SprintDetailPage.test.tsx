@@ -155,6 +155,10 @@ describe('SprintDetailPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Finish Sprint' }))
 
+    // The dialog gates the call — nothing is sent until it is confirmed.
+    expect(mockFinishSprint).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Finish sprint' }))
+
     await waitFor(() => {
       expect(mockFinishSprint).toHaveBeenCalledWith(1)
     })
@@ -303,7 +307,6 @@ describe('SprintDetailPage', () => {
     })
 
     it('confirms all eligible requirements and replaces the list', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
       mockFetchSprint.mockResolvedValue(fakeSprint)
       mockFetchRequirements.mockResolvedValue([
         makeRequirement({ id: 1, status: 'ready' }),
@@ -326,19 +329,7 @@ describe('SprintDetailPage', () => {
       expect(await screen.findByRole('button', { name: 'Confirm all (0)' })).toBeDisabled()
     })
 
-    it('does not call the API when the confirmation dialog is declined', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(false)
-      mockFetchSprint.mockResolvedValue(fakeSprint)
-      mockFetchRequirements.mockResolvedValue([makeRequirement({ id: 1, status: 'ready' })])
-      renderPage()
-
-      fireEvent.click(await screen.findByRole('button', { name: 'Confirm all (1)' }))
-
-      expect(mockConfirmAllRequirements).not.toHaveBeenCalled()
-    })
-
     it('surfaces errors from a rejected confirm-all call', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
       mockFetchSprint.mockResolvedValue(fakeSprint)
       mockFetchRequirements.mockResolvedValue([makeRequirement({ id: 1, status: 'ready' })])
       mockConfirmAllRequirements.mockRejectedValue(new Error('Confirm-all failed'))

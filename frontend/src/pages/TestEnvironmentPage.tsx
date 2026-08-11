@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
+import FinishSprintControl from '../components/FinishSprintControl'
+import StageNav from '../components/StageNav'
 import EnvVarsEditor from '../components/EnvVarsEditor'
 import {
   answerTestEnvironment,
   confirmTestEnvironment,
   fetchSprint,
   fetchTestEnvironment,
-  finishSprint,
   submitTestEnvironment,
 } from '../services/api'
+import { useCrumb, useCrumbGates } from '../BreadcrumbContext'
 import type { SprintResponse, TestEnvironmentResponse, TestEnvironmentStatus } from '../types'
 import './TestEnvironmentPage.css'
 
@@ -28,7 +31,6 @@ export default function TestEnvironmentPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [finishing, setFinishing] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [answer, setAnswer] = useState('')
@@ -55,6 +57,22 @@ export default function TestEnvironmentPage() {
     }
   }, [sprintId])
 
+  /*
+   * `environment_confirmed` gates the control at the top of this page, and all
+   * three actions below can move it — in both directions. Confirming opens the
+   * gate; resubmitting or answering against an already-confirmed description
+   * sends the environment back for re-checking, which also deletes every test
+   * plan in the sprint. Without this re-read the page would keep offering an
+   * enabled "Test Plans →" pointing at a stage that had just been reopened and
+   * emptied.
+   */
+  const refreshSprint = () =>
+    fetchSprint(sprintId)
+      .then(setSprint)
+      .catch(() => {
+        /* the environment row already updated — the flag catches up on the next read */
+      })
+
   // The check is synchronous and can take up to a minute; keep the typed
   // text in state so a failure never loses the user's draft.
   const handleSubmit = (content: string) => {
@@ -67,6 +85,7 @@ export default function TestEnvironmentPage() {
         setTestEnv(updated)
         setEditing(false)
         setDraft('')
+        return refreshSprint()
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
@@ -82,6 +101,7 @@ export default function TestEnvironmentPage() {
       .then((updated) => {
         setTestEnv(updated)
         setAnswer('')
+        return refreshSprint()
       })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
@@ -92,19 +112,16 @@ export default function TestEnvironmentPage() {
     setBusy(true)
     setActionError(null)
     confirmTestEnvironment(testEnv.id)
-      .then(setTestEnv)
+      .then((updated) => {
+        setTestEnv(updated)
+        return refreshSprint()
+      })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setBusy(false))
   }
 
-  const handleFinish = () => {
-    setFinishing(true)
-    setActionError(null)
-    finishSprint(sprintId)
-      .then(setSprint)
-      .catch((err: Error) => setActionError(err.message))
-      .finally(() => setFinishing(false))
-  }
+  useCrumb('sprint', sprint?.name)
+  useCrumbGates(sprint)
 
   const startEditing = () => {
     if (!testEnv) return
@@ -125,9 +142,9 @@ export default function TestEnvironmentPage() {
     setEditing(true)
   }
 
-  if (loading) return <p className="test-env-message">Loading test environment&hellip;</p>
-  if (loadError) return <p className="test-env-message test-env-error">{loadError}</p>
-  if (!sprint) return <p className="test-env-message">Sprint not found.</p>
+  if (loading) return <PageState kind="loading">Loading test environment&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const active = sprint.active
   const guarded = !testEnv && (!active || !sprint.requirements_complete)
@@ -140,13 +157,17 @@ export default function TestEnvironmentPage() {
 
   return (
     <div className="test-env">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
+        <Link
+          to={`/sprints/${sprintId}`}
+          className="btn btn-secondary"
+          aria-label="Back to Requirements"
+        >
+          &larr; Back
         </Link>
-        <Link to={`/sprints/${sprintId}`} className="back-link">
-          &larr; Back to Requirements
-        </Link>
+        <StageNav stage="test-plans" sprintId={sprintId} sprint={sprint} />
       </nav>
 
       <header className="test-env-header">
@@ -274,7 +295,9 @@ export default function TestEnvironmentPage() {
             </div>
           )}
           {confirmed && active && (
-            <p className="test-env-cascade-notice">
+            // `.test-env-cascade-notice` had no rule in any stylesheet, so this
+            // has been rendering as unstyled body text since it was added.
+            <p className="cascade-notice">
               Editing this description will delete every test plan in the sprint and require
               re-confirming. Existing test runs are kept, but marked as out of date.
             </p>
@@ -306,14 +329,6 @@ export default function TestEnvironmentPage() {
       )}
 
       {actionError && <p className="test-env-error">{actionError}</p>}
-
-      {active && (
-        <div className="test-env-footer">
-          <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>
-            {finishing ? 'Finishing…' : 'Finish Sprint'}
-          </button>
-        </div>
-      )}
     </div>
   )
 }

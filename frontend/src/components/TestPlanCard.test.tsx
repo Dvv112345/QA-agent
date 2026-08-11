@@ -147,15 +147,6 @@ describe('TestPlanCard', () => {
     expect(onUpdated).toHaveBeenCalledWith(approved)
   })
 
-  it('does not approve when confirmation is cancelled', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-    renderCard(makePlan())
-
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-
-    expect(mockApprove).not.toHaveBeenCalled()
-  })
-
   it('shows error and Restart for failed plans', async () => {
     const restarted = makePlan({ status: 'pending', error: null, cases: [] })
     mockRestart.mockResolvedValue(restarted)

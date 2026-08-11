@@ -1,7 +1,5 @@
-.exp-run {
-  max-width: 60rem;
-  margin: 0 auto;
-  padding: 1.5rem;
+.exp-run-error {
+  color: var(--danger);
 }
 
 .exp-run-header {
@@ -18,18 +16,18 @@
 /* The run's identifier, quoted by any ticket filed from it. Muted and
    monospaced: it is something to match against, not to read. */
 .exp-run-id {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--mono);
   font-size: 0.85rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .exp-run-counts {
-  color: #555;
+  color: var(--text);
   font-size: 0.9rem;
 }
 
 .exp-run-summary {
-  background: #f5f7fa;
+  background: var(--surface-recessed);
   border-radius: 6px;
   padding: 1rem;
   margin: 1rem 0 1.5rem;
@@ -41,57 +39,58 @@
 }
 
 .exp-run-muted {
-  color: #777;
+  color: var(--text);
 }
 
-.exp-run-message {
-  padding: 1.5rem;
-  color: #555;
-}
-
-.exp-run-error {
-  color: #b3261e;
-}
-
-.exp-session-list {
+.exp-run-session-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
-.exp-session-row {
-  border: 1px solid #e0e4ea;
+/*
+ * The session rows in this run's list. Prefixed `exp-run-` because they belong
+ * to this page — they were `exp-session-*`, the prefix `ExploratorySessionPage`
+ * uses for the session sheet itself, and the two files had both defined
+ * `.exp-session-charter` with different properties. Nothing is code-split, so
+ * both rules loaded on both pages and each charter silently picked up the
+ * other's styling.
+ */
+.exp-run-session-row {
+  border: 1px solid var(--border);
   border-radius: 6px;
   margin-bottom: 0.6rem;
 }
 
-.exp-session-link {
+.exp-run-session-link {
+  transition: background-color 0.15s;
   display: block;
   padding: 0.8rem 1rem;
   text-decoration: none;
   color: inherit;
 }
 
-.exp-session-link:hover {
-  background: #f5f7fa;
+.exp-run-session-link:hover {
+  background: var(--surface-hover);
 }
 
-.exp-session-main {
+.exp-run-session-main {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
   align-items: center;
 }
 
-.exp-session-charter {
+.exp-run-session-charter {
+  max-width: var(--prose-width);
   font-weight: 500;
 }
 
-.exp-session-meta {
+.exp-run-session-meta {
   display: flex;
   gap: 1rem;
   font-size: 0.82rem;
-  color: #666;
+  color: var(--text);
   margin-top: 0.35rem;
   flex-wrap: wrap;
 }

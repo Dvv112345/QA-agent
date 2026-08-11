@@ -1,17 +1,5 @@
-.test-runs {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
-
-.test-runs-message {
-  text-align: center;
-  padding: 2rem;
-  color: var(--color-text-secondary, #666);
-}
-
 .test-runs-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
 }
 
 .test-runs-header {
@@ -26,17 +14,17 @@
 }
 
 .test-runs-sprint-name {
-  color: var(--color-text-secondary, #888);
+  color: var(--text);
   font-size: 0.9rem;
   margin: 0 0 2rem;
 }
 
 .test-runs-notice {
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.5rem;
-  color: var(--color-text-secondary, #555);
+  color: var(--text);
 }
 
 .test-runs-actions {
@@ -44,7 +32,7 @@
 }
 
 .test-runs-empty {
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .test-runs-list {
@@ -57,7 +45,7 @@
 }
 
 .test-run-row {
-  border: 1px solid var(--color-border, #ddd);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -66,6 +54,14 @@
   padding: 1rem 1.25rem;
   text-decoration: none;
   color: inherit;
+  transition: background-color 0.15s;
+}
+
+/* A full-row link with no hover state read as static text. The structurally
+   identical `.exp-run-session-link` on the run detail page had one; this did
+   not. */
+.test-run-link:hover {
+  background: var(--surface-hover);
 }
 
 .test-run-row-main {
@@ -82,14 +78,14 @@
 /* The run's identifier, quoted by any ticket filed from it. Monospaced so
    it reads as something to match against rather than to read. */
 .test-run-id {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--mono);
 }
 
 .test-run-row-meta {
   display: flex;
   gap: 1rem;
   margin-top: 0.35rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
   font-size: 0.85rem;
 }
 
@@ -103,7 +99,7 @@
   justify-content: space-between;
   gap: 1rem;
   flex-wrap: wrap;
-  border-bottom: 1px solid #e0e4ea;
+  border-bottom: 1px solid var(--border);
   padding-bottom: 0.5rem;
   margin-bottom: 0.75rem;
 }

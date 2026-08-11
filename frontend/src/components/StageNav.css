@@ -1,0 +1,23 @@
+/*
+ * The right-hand half of `.page-nav`. A column, so a shut gate's reason sits
+ * under its button instead of beside it: inline, a long reason would push
+ * leftward into the Back button and crowd the row below 1024px.
+ *
+ * No bottom margin — `.page-nav` owns the spacing for the whole row now.
+ */
+.stage-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+/* The shut state needs no rule of its own — it is a real `<button disabled>`,
+   so `.btn:disabled` in `controls.css` already dims it. */
+
+.stage-nav-reason {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text);
+  text-align: right;
+}

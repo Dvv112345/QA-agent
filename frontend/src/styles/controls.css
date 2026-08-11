@@ -1,5 +1,5 @@
 /*
- * The app's shared control layer: buttons, badges, and the back-link row.
+ * The app's shared control layer: buttons, badges, and the page nav row.
  *
  * These are global class names, and they were previously defined inside
  * page-scoped stylesheets — `.btn` in `SprintListPage.css`, `.run-badge` in
@@ -19,24 +19,29 @@
   border: none;
   border-radius: 6px;
   cursor: pointer;
+  /* `font-family` does not inherit into a `<button>` — it takes the UA's own.
+     `.btn` is worn by both `<button>` and `<Link>`, and `StageNav` swaps one
+     for the other in the same slot as its gate opens, so without this the
+     control changes typeface when it becomes clickable. */
+  font-family: inherit;
   font-size: 0.9rem;
   text-decoration: none;
   display: inline-block;
 }
 
 .btn-primary {
-  background: var(--color-primary, #2563eb);
-  color: #fff;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
 }
 
 .btn-secondary {
-  background: var(--color-secondary, #6b7280);
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--btn-secondary-fg);
 }
 
 .btn-danger {
-  background: var(--color-danger, #dc3545);
-  color: #fff;
+  background: var(--btn-danger-bg);
+  color: var(--btn-danger-fg);
 }
 
 .btn-small {
@@ -54,7 +59,7 @@
   background: none;
   border: none;
   padding: 0;
-  color: var(--color-primary, #2563eb);
+  color: var(--accent);
   cursor: pointer;
   font-size: 0.85rem;
   text-decoration: underline;
@@ -62,24 +67,45 @@
 
 /* ── Navigation ──────────────────────────────────────────────────── */
 
-.back-link {
-  display: inline-block;
-  color: var(--color-primary, #2563eb);
-  text-decoration: none;
-  font-size: 0.9rem;
+/*
+ * The page's nav row, on its own line beneath the breadcrumb: one step back on
+ * the left, the next stage on the right. Both wear `.btn`, so the pair reads as
+ * a matched set rather than a text link sitting beside a button.
+ *
+ * `space-between` does the placement, which means a page with nothing ahead of
+ * it — every run detail page, and the terminal Test Runs — just leaves Back on
+ * the left with nothing opposite. No modifier class, no second layout.
+ *
+ * `flex-start` rather than centre: the right-hand side is a column whose second
+ * line explains a shut gate, and it should grow downward from the button rather
+ * than dragging the button up.
+ *
+ * One link back, not the two or three each page used to list — the breadcrumb
+ * above covers jumping anywhere, and this covers the common one-step case.
+ *
+ * The visible label is just "← Back"; each page names the destination in an
+ * `aria-label` instead. Eight pages carrying an identically-named link would
+ * otherwise be indistinguishable in a screen reader's link list, and the
+ * breadcrumb directly above already shows sighted users where back leads. The
+ * accessible name still contains the visible word, so the two do not disagree.
+ */
+.page-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
 }
 
 /*
- * The row wrapper. It carries the bottom margin rather than `.back-link`
- * doing so: the two definitions of `.back-link` disagreed on exactly that,
- * and the one that happened to win by import order applied a 1.5rem margin
- * to links inside this flex row, where it was never intended. Pages with a
- * standalone link keep their own spacing rule, scoped to their container.
+ * Finish Sprint, above the nav row on every page inside a sprint. Right-aligned
+ * and small: it is always reachable, but it is not the thing the page is for,
+ * and it must not compete with the forward control directly below it.
  */
-.back-links {
+.sprint-actions {
   display: flex;
-  gap: 1.25rem;
-  margin-bottom: 1.5rem;
+  justify-content: flex-end;
+  margin-bottom: 0.75rem;
 }
 
 /* ── Sprint status ───────────────────────────────────────────────── */
@@ -91,13 +117,14 @@
 }
 
 .badge-active {
-  background: #d4edda;
-  color: #155724;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
+/* Neutral by design — a finished sprint is neither good nor bad news. */
 .badge-finished {
-  background: #e2e3e5;
-  color: #383d41;
+  background: var(--border);
+  color: var(--text);
 }
 
 /* ── Run and execution status ────────────────────────────────────── */
@@ -111,26 +138,34 @@
 }
 
 /*
- * `pending` shares `running`'s amber. The two copies of this file disagreed
- * — the run list painted it inert grey, the detail page amber — so the
- * colour of a queued run was decided by CSS import order. Amber is the
- * resolution: a queued run is work that is going to happen, which is what
- * the reader needs to know, and grey read as "nothing here".
+ * `pending` is amber, not grey. The two copies of this file disagreed — the
+ * run list painted it inert grey, the detail page amber — so the colour of a
+ * queued run was decided by CSS import order. Amber is the resolution: a
+ * queued run is work that is going to happen, and grey read as "nothing here".
+ *
+ * It no longer shares `running`'s colour, though. A run sitting at `pending`
+ * is one no worker has claimed, which is exactly what a stopped worker looks
+ * like; `running` means the work is under way. That is worth telling apart at
+ * a glance, so the two now take `waiting` and `active`.
  */
-.run-badge-pending,
+.run-badge-pending {
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
+}
+
 .run-badge-running {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--status-active-bg);
+  color: var(--status-active-fg);
 }
 
 .run-badge-completed {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .run-badge-failed {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
 }
 
 /* ── Charter session status ──────────────────────────────────────── */
@@ -147,19 +182,50 @@
   letter-spacing: 0.04em;
   padding: 0.15rem 0.45rem;
   border-radius: 3px;
-  background: #e0e4ea;
-  color: #333;
+  background: var(--border);
+  color: var(--text);
   white-space: nowrap;
 }
 
+/* Each sets its foreground too. Previously only the background was overridden,
+   which left every state on the base `#333` — fine on pastels, unreadable once
+   the scale inverts for dark mode. */
+.session-badge-pending {
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
+}
+
 .session-badge-completed {
-  background: #d7ecd9;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .session-badge-running {
-  background: #d8e6f7;
+  background: var(--status-active-bg);
+  color: var(--status-active-fg);
 }
 
 .session-badge-error {
-  background: #f7d9d7;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
+}
+
+/* ── Cascade notices ─────────────────────────────────────────────── */
+
+/*
+ * States, before the click, what editing a confirmed artifact will destroy.
+ * The confirmation dialog on the edit itself stays — this is what makes the
+ * consequence visible while deciding, rather than only once committed.
+ *
+ * Shared by the requirement card, the plan card and the environment page, so
+ * it lives here rather than in any one of them (Convention #13).
+ */
+.cascade-notice {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--status-waiting-fg);
+  background: var(--status-waiting-bg);
+  border: 1px solid var(--status-waiting-border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
 }

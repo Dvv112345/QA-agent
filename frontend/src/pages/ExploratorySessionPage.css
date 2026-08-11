@@ -1,7 +1,5 @@
-.exp-session {
-  max-width: 55rem;
-  margin: 0 auto;
-  padding: 1.5rem;
+.exp-session-error {
+  color: var(--danger);
 }
 
 .exp-session-header {
@@ -24,7 +22,7 @@
 
 .exp-session-meta-list dt {
   font-weight: 600;
-  color: #444;
+  color: var(--text);
 }
 
 .exp-session-meta-list dd {
@@ -32,6 +30,7 @@
 }
 
 .exp-session-charter {
+  max-width: var(--prose-width);
   font-style: italic;
 }
 
@@ -41,32 +40,23 @@
 }
 
 .exp-session-muted {
-  color: #777;
-}
-
-.exp-session-message {
-  padding: 1.5rem;
-  color: #555;
-}
-
-.exp-session-error {
-  color: #b3261e;
+  color: var(--text);
 }
 
 .exp-session-log {
   margin-top: 1.5rem;
-  border-top: 1px solid #e0e4ea;
+  border-top: 1px solid var(--border);
   padding-top: 0.75rem;
 }
 
 .exp-session-log summary {
   cursor: pointer;
-  color: #555;
+  color: var(--text);
   font-size: 0.9rem;
 }
 
 .exp-session-log pre {
-  background: #f5f7fa;
+  background: var(--surface-recessed);
   border-radius: 4px;
   padding: 0.75rem;
   overflow-x: auto;

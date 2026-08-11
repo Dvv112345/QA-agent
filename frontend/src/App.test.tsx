@@ -57,8 +57,11 @@ describe('App auth flow', () => {
     mockCheckAuthStatus.mockResolvedValue({ valid: true })
     renderApp()
 
+    // The page heading, not just the text: the breadcrumb also says "Sprints"
+    // and renders before the list has loaded, so a bare text match would pass
+    // while the outlet was still showing "Loading sprints…".
     await waitFor(() => {
-      expect(screen.getByText('Sprints')).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Sprints', level: 1 })).toBeInTheDocument()
     })
     expect(screen.getByText('Create New Sprint')).toBeInTheDocument()
   })

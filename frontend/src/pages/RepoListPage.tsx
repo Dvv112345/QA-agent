@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link } from 'react-router-dom'
 import { deactivateRepo, fetchRepos } from '../services/api'
 import type { RepoResponse } from '../types'
@@ -42,22 +43,25 @@ export default function RepoListPage() {
       .finally(() => setDeactivating(null))
   }
 
-  if (loading) return <p className="repo-list-message">Loading repos&hellip;</p>
-  if (error) return <p className="repo-list-message repo-list-error">{error}</p>
+  if (loading) return <PageState kind="loading">Loading repos&hellip;</PageState>
+  if (error) return <PageState kind="error">{error}</PageState>
 
   return (
     <div className="repo-list">
+      <nav className="page-nav">
+        <Link to="/" className="btn btn-secondary" aria-label="Back to Sprints">
+          &larr; Back
+        </Link>
+      </nav>
+
       <header className="repo-list-header">
         <h1>Repositories</h1>
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
       </header>
 
       {deactivateError && <p className="repo-list-error">{deactivateError}</p>}
 
       {repos.length === 0 ? (
-        <p className="repo-list-message">No repos stored yet.</p>
+        <PageState kind="empty">No repos stored yet.</PageState>
       ) : (
         <div className="repo-cards">
           {repos.map((repo) => (

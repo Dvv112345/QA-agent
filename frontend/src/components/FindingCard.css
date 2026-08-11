@@ -1,18 +1,18 @@
 .finding-card {
-  border: 1px solid #e0e4ea;
+  border: 1px solid var(--border);
   border-left-width: 4px;
   border-radius: 6px;
   padding: 0.9rem 1rem;
   margin-bottom: 0.9rem;
-  background: #fff;
+  background: var(--surface);
 }
 
 .finding-bug {
-  border-left-color: #b3261e;
+  border-left-color: var(--status-bad-fg);
 }
 
 .finding-issue {
-  border-left-color: #b8860b;
+  border-left-color: var(--status-waiting-fg);
 }
 
 .finding-header {
@@ -35,25 +35,30 @@
   letter-spacing: 0.04em;
   padding: 0.15rem 0.45rem;
   border-radius: 3px;
-  color: #fff;
 }
 
+/* Tinted like every other badge in the app, rather than the solid fill with a
+   white label these used to carry. The solid version only worked while the
+   background was a fixed dark red: on the dark scheme that colour becomes a
+   light red, and a white label on it is unreadable. */
 .finding-badge-bug {
-  background: #b3261e;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
 }
 
 .finding-badge-issue {
-  background: #b8860b;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
 .finding-severity {
   font-size: 0.75rem;
-  color: #555;
+  color: var(--text);
   text-transform: uppercase;
 }
 
 .finding-severity-high {
-  color: #b3261e;
+  color: var(--danger);
   font-weight: 600;
 }
 
@@ -64,7 +69,7 @@
 
 .finding-body dt {
   font-weight: 600;
-  color: #444;
+  color: var(--text);
   margin-top: 0.5rem;
 }
 
@@ -84,14 +89,14 @@
 
 .finding-screenshot {
   max-width: 100%;
-  border: 1px solid #e0e4ea;
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 
 /* Machine-ish detail (browser build, OS, URL) — de-emphasised and allowed
    to wrap, since it is reference material rather than part of the report. */
 .finding-environment {
-  color: #5b6472;
+  color: var(--text);
   font-size: 0.85rem;
   overflow-wrap: anywhere;
 }
@@ -107,11 +112,11 @@
 }
 
 .finding-tracker-grouped {
-  color: #5b6472;
+  color: var(--text);
   font-weight: 400;
 }
 
 .finding-tracker-error {
-  color: #b3261e;
+  color: var(--danger);
   overflow-wrap: anywhere;
 }

@@ -1,5 +1,16 @@
-import { useRef, useEffect, type FormEvent } from 'react'
+import { useRef, type FormEvent } from 'react'
+import ModalShell from './ModalShell'
 import './LoginModal.css'
+
+/**
+ * The shared-password gate. `RootLayout` renders this *instead of* the outlet,
+ * so there is no page behind it — which is why it passes no `onClose`: Escape
+ * and the backdrop have nowhere to dismiss to.
+ *
+ * It is on `ModalShell` like every other dialog. The shell supplies the focus
+ * trap and the initial focus (the first focusable child is the password input,
+ * which is what this used to arrange for itself).
+ */
 
 interface LoginModalProps {
   onLogin: (password: string) => Promise<void>
@@ -10,10 +21,6 @@ interface LoginModalProps {
 export default function LoginModal({ onLogin, error, loading }: LoginModalProps) {
   const inputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
-
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (loading) return
@@ -23,10 +30,8 @@ export default function LoginModal({ onLogin, error, loading }: LoginModalProps)
   }
 
   return (
-    <div className="login-overlay" role="dialog" aria-modal="true">
-      <form className="login-card" onSubmit={handleSubmit}>
-        <h1 className="login-title">QA Agent</h1>
-
+    <ModalShell title="QA Agent" cardClassName="login-card">
+      <form className="login-form" onSubmit={handleSubmit}>
         <label htmlFor="login-password" className="login-label">
           Access Code
         </label>
@@ -37,11 +42,6 @@ export default function LoginModal({ onLogin, error, loading }: LoginModalProps)
           className="login-input"
           placeholder="Enter access code"
           autoComplete="off"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.preventDefault()
-            }
-          }}
         />
 
         {error && (
@@ -54,6 +54,6 @@ export default function LoginModal({ onLogin, error, loading }: LoginModalProps)
           {loading ? 'Verifying…' : 'Submit'}
         </button>
       </form>
-    </div>
+    </ModalShell>
   )
 }

@@ -1,8 +1,8 @@
 .sprint-metrics {
   margin: 0 0 1.75rem;
   padding: 1rem 1.25rem 1.25rem;
-  background: var(--color-surface-alt, #f7f7f8);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -22,8 +22,8 @@
   flex-direction: column;
   gap: 0.1rem;
   padding: 0.75rem 0.9rem;
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 5px;
 }
 
@@ -32,7 +32,7 @@
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .sprint-metrics-tile-value {
@@ -43,19 +43,19 @@
 
 .sprint-metrics-tile-unit {
   font-size: 0.85rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .sprint-metrics-tile-detail {
   margin-top: 0.15rem;
   font-size: 0.8rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .sprint-metrics-excluded {
   margin: 0.9rem 0 0;
   font-size: 0.85rem;
-  color: var(--color-warning-text, #8a6100);
+  color: var(--status-waiting-fg);
 }
 
 .sprint-metrics-table-wrapper {
@@ -73,7 +73,7 @@
 .sprint-metrics-table td {
   padding: 0.4rem 0.6rem;
   text-align: left;
-  border-bottom: 1px solid var(--color-border, #ddd);
+  border-bottom: 1px solid var(--border);
 }
 
 .sprint-metrics-table th {
@@ -81,7 +81,7 @@
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .sprint-metrics-table td:not(:first-child),
@@ -91,12 +91,12 @@
 }
 
 .sprint-metrics-deleted {
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
   font-style: italic;
 }
 
 .sprint-metrics-footnote {
   margin: 0.75rem 0 0;
   font-size: 0.8rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }

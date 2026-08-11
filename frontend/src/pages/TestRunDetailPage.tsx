@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import ExportSummary from '../components/ExportSummary'
+import FinishSprintControl from '../components/FinishSprintControl'
 import OutdatedBadge from '../components/OutdatedBadge'
 import RestartControl from '../components/RestartControl'
 import TestCaseExecutionRow from '../components/TestCaseExecutionRow'
@@ -14,6 +16,7 @@ import type { SprintResponse, TestExecutionResponse, TestRunDetailResponse } fro
 import { awaitingExport } from '../exportState'
 import { formatDateTime } from '../format'
 import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
+import { useCrumb } from '../BreadcrumbContext'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { RUN_STATUS_LABELS } from '../statusLabels'
 import './TestRunDetailPage.css'
@@ -48,6 +51,9 @@ export default function TestRunDetailPage() {
   const setRun = (updater: (prev: TestRunDetailResponse) => TestRunDetailResponse) =>
     setData((prev) => (prev ? { ...prev, run: updater(prev.run) } : prev))
 
+  const setSprint = (updated: SprintResponse) =>
+    setData((prev) => (prev ? { ...prev, sprint: updated } : prev))
+
   const inProgress = run?.status === 'running'
   const exportPending = run !== null && awaitingExport(run)
 
@@ -57,6 +63,9 @@ export default function TestRunDetailPage() {
     // when that ends. Bounded once only the export is outstanding.
     maxTicks: inProgress ? undefined : EXPORT_GRACE_TICKS,
   })
+
+  useCrumb('sprint', sprint?.name)
+  useCrumb('run', run ? `Run #${run.id}` : null)
 
   const handleRestart = (execution: TestExecutionResponse) => {
     setRestarting(execution.id)
@@ -72,18 +81,21 @@ export default function TestRunDetailPage() {
       .finally(() => setRestarting(null))
   }
 
-  if (loading) return <p className="test-run-detail-message">Loading test run&hellip;</p>
-  if (loadError) return <p className="test-run-detail-message test-run-detail-error">{loadError}</p>
-  if (!run || !sprint) return <p className="test-run-detail-message">Test run not found.</p>
+  if (loading) return <PageState kind="loading">Loading test run&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!run || !sprint) return <PageState kind="empty">Test run not found.</PageState>
 
   return (
     <div className="test-run-detail">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
-        <Link to={`/sprints/${sprintId}/test-runs`} className="back-link">
-          &larr; Back to Test Runs
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
+        <Link
+          to={`/sprints/${sprintId}/test-runs`}
+          className="btn btn-secondary"
+          aria-label="Back to Test Runs"
+        >
+          &larr; Back
         </Link>
       </nav>
 

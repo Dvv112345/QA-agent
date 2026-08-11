@@ -1,8 +1,9 @@
 .prd-upload-form {
+  max-width: var(--form-width);
   margin-top: 1.5rem;
   padding: 1rem 1.5rem;
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -14,7 +15,7 @@
 .prd-upload-hint {
   margin: 0 0 0.75rem;
   font-size: 0.9rem;
-  color: var(--color-text-secondary, #555);
+  color: var(--text);
 }
 
 .prd-upload-controls {
@@ -27,8 +28,8 @@
 .prd-upload-confirm {
   margin-top: 0.75rem;
   padding: 0.75rem 1rem;
-  background: #fef3c7;
-  border: 1px solid #f59e0b;
+  background: var(--status-waiting-bg);
+  border: 1px solid var(--status-waiting-border);
   border-radius: 6px;
   font-size: 0.9rem;
 }
@@ -43,7 +44,7 @@
 }
 
 .prd-upload-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
   font-size: 0.9rem;
   margin: 0.5rem 0 0;
 }

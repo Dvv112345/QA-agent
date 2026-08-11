@@ -25,6 +25,22 @@ describe('LoginModal', () => {
     expect(document.activeElement).toBe(input)
   })
 
+  it('is a labelled dialog that cannot be dismissed', () => {
+    render(<LoginModal {...makeProps()} />)
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toHaveAccessibleName('QA Agent')
+
+    // There is no page behind the gate, so the shell's usual dismissal paths
+    // must do nothing — Escape here would leave a blank screen.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(dialog.parentElement as HTMLElement)
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByLabelText('Access Code')).toBeInTheDocument()
+  })
+
   it('calls onLogin with entered password when submit button is clicked', () => {
     const onLogin = vi.fn().mockResolvedValue(undefined)
     render(<LoginModal {...makeProps({ onLogin })} />)

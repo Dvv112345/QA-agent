@@ -1,78 +1,81 @@
-.create-sprint {
-  max-width: 600px;
-  margin: 0 auto;
-  padding: 2rem 1rem;
-}
+/*
+ * Every selector here is prefixed with the page that owns it. `.form-field`,
+ * `.form-actions`, `.form-error`, `.readme-note` and `.inline-repo-form` were
+ * not — generic names sitting in a page stylesheet that is always loaded, so
+ * any component adopting the obvious name for its own form would have silently
+ * inherited these rules (Convention #13).
+ */
 
 .create-sprint h1 {
   margin: 0 0 1.5rem;
 }
 
 .create-sprint-form {
+  max-width: var(--form-width);
   display: flex;
   flex-direction: column;
   gap: 1rem;
 }
 
-.form-field {
+.create-sprint-field {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
 }
 
-.form-field span {
+.create-sprint-field span {
   font-weight: 600;
   font-size: 0.9rem;
 }
 
-.form-field input,
-.form-field select {
+.create-sprint-field input,
+.create-sprint-field select {
   padding: 0.5rem;
-  border: 1px solid var(--color-border, #ddd);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 1rem;
 }
 
-.readme-note {
+.create-sprint-readme {
   padding: 0.75rem;
   border-radius: 6px;
   font-size: 0.9rem;
 }
 
-.readme-found {
-  background: #d4edda;
-  color: #155724;
+.create-sprint-readme-found {
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
-.readme-required {
-  background: #fff3cd;
-  color: #856404;
+.create-sprint-readme-required {
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
-.form-error {
-  color: var(--color-error, #c00);
+.create-sprint-error {
+  color: var(--danger);
   font-size: 0.9rem;
 }
 
-.form-actions {
+.create-sprint-actions {
   display: flex;
   gap: 0.5rem;
   margin-top: 0.5rem;
 }
 
-.inline-repo-form {
+.create-sprint-repo-form {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.75rem;
-  border: 1px solid var(--color-border, #ddd);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--color-surface, #f9f9f9);
+  background: var(--surface-recessed);
 }
 
-.inline-repo-form input {
+.create-sprint-repo-form input {
   padding: 0.5rem;
-  border: 1px solid var(--color-border, #ddd);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 1rem;
 }

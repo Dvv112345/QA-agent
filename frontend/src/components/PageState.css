@@ -1,0 +1,10 @@
+/* Width comes from `.page-frame`; this only needs its own breathing room. */
+.page-state {
+  padding: 2rem 0;
+  text-align: center;
+  color: var(--text);
+}
+
+.page-state-error {
+  color: var(--danger);
+}

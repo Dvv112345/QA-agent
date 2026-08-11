@@ -8,11 +8,115 @@
   --accent-bg: rgba(170, 59, 255, 0.1);
   --accent-border: rgba(170, 59, 255, 0.5);
 
+  /*
+   * Surfaces. Two roles, deliberately two names: `--surface` is a raised card
+   * sitting on the page background, `--surface-recessed` an inset panel within
+   * one. The stylesheets previously spelled both `var(--color-surface, …)` —
+   * one undefined name with two different fallbacks, `#fff` in the card files
+   * and `#f9fafb` in the panel files. Defining that single name would have
+   * moved half of ~25 sites to a colour their author never chose.
+   *
+   * In dark mode the ordering inverts the way real light does: a raised card
+   * is lighter than the page, a recessed panel darker than the card.
+   */
+  --surface: #fff;
+  --surface-recessed: #f9fafb;
+  --surface-hover: #f5f5f5;
+
+  /* Error text. Distinct from `--btn-danger-bg`: this is read, that is sat on. */
+  --danger: #c00;
+
+  /*
+   * One status scale for all five badge vocabularies — requirement, plan, run,
+   * session, environment — plus the notice blocks that share their meaning.
+   * They previously each carried their own palette, so the same word was a
+   * different colour depending on the page: `pending` was blue on requirements
+   * and amber on runs, `running` amber on runs and blue on sessions, and
+   * "locked in" solid green for a requirement but pale blue for an environment.
+   *
+   * `waiting` and `active` stay distinct rather than collapsing into one
+   * "in progress" colour. `pending` means no worker has claimed the row, which
+   * is what a stopped worker or an unreachable Redis looks like; `active` means
+   * work is happening. Merging them would hide the failure mode the run pages
+   * exist to surface.
+   */
+  --status-waiting-bg: #fef3c7;
+  --status-waiting-fg: #92400e;
+  --status-waiting-border: #fde68a;
+
+  --status-active-bg: #dbeafe;
+  --status-active-fg: #1d4ed8;
+  --status-active-border: #bfdbfe;
+
+  --status-good-bg: #dcfce7;
+  --status-good-fg: #15803d;
+  --status-good-border: #86efac;
+
+  --status-bad-bg: #fee2e2;
+  --status-bad-fg: #991b1b;
+  --status-bad-border: #fecaca;
+
+  /* Terminal and deliberate — confirmed, approved. Solid, not tinted. */
+  --status-locked-bg: #16a34a;
+  --status-locked-fg: #fff;
+
+  /*
+   * Complexity is an estimate, not a status, so it gets its own ramp rather
+   * than borrowing the scale above. Sharing it made a high-complexity test plan
+   * the same red as a failed one, which reads as "something went wrong" about a
+   * plan that is merely large.
+   *
+   * A single hue getting heavier is the point: the three steps rank against
+   * each other and against nothing else on the page.
+   */
+  --complexity-low-bg: #eef2f7;
+  --complexity-low-fg: #475569;
+  --complexity-medium-bg: #dbe2ea;
+  --complexity-medium-fg: #334155;
+  --complexity-high-bg: #c7d2de;
+  --complexity-high-fg: #1e293b;
+
+  /*
+   * Controls. Each carries its own foreground, because `--accent` inverts
+   * between schemes — it is dark purple on white here and light purple on
+   * near-black in dark mode, so a hardcoded white label would fail contrast
+   * there. The buttons currently hardcode `color: #fff`; Phase 2b points them
+   * at these.
+   */
+  --btn-primary-bg: var(--accent);
+  --btn-primary-fg: #fff;
+  --btn-secondary-bg: #6b7280;
+  --btn-secondary-fg: #fff;
+  --btn-danger-bg: #dc3545;
+  --btn-danger-fg: #fff;
+
+  /*
+   * One content width for every page, replacing seven different values that
+   * made the column jump on nearly every navigation. In `rem` so it tracks the
+   * breakpoint below rather than only the two pages that happened to use rem.
+   * Pages are uniform; forms and prose blocks constrain themselves further.
+   */
+  --content-width: 60rem;
+
+  /*
+   * The page is uniform; the content inside it is not. A single-column form
+   * stretched to the full column gives unusable input fields, and continuous
+   * prose becomes a ~100-character measure. Both constrain themselves further.
+   */
+  --form-width: 40rem;
+  --prose-width: 70ch;
+
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
-  font: 18px/145% var(--sans);
+  /* Unitless, deliberately. A percentage line-height computes to an absolute
+     length at the element declaring it and inherits as that fixed value, so
+     `145%` here meant every descendant inherited a flat 26.1px regardless of
+     its own size — which put the 56px h1 below in a 26.1px line box and made
+     it overlap the line beneath it. Unitless inherits the ratio instead, and
+     each element computes its own. */
+  font: 18px/1.45 var(--sans);
   letter-spacing: 0.18px;
   color-scheme: light dark;
   color: var(--text);
@@ -37,6 +141,52 @@
     --accent: #c084fc;
     --accent-bg: rgba(192, 132, 252, 0.15);
     --accent-border: rgba(192, 132, 252, 0.5);
+
+    --surface: #1e1f27;
+    --surface-recessed: #191a21;
+    --surface-hover: #262832;
+
+    /* #c00 is unreadable on a near-black page. */
+    --danger: #f87171;
+
+    /* The light scale is pastel-on-dark-text; dark inverts it to dark-on-light,
+       since a pastel chip on a near-black page glares. */
+    --status-waiting-bg: #3a2e12;
+    --status-waiting-fg: #fcd34d;
+    --status-waiting-border: #59460f;
+
+    --status-active-bg: #1c2a4a;
+    --status-active-fg: #93c5fd;
+    --status-active-border: #2d4372;
+
+    --status-good-bg: #12301f;
+    --status-good-fg: #86efac;
+    --status-good-border: #1d5233;
+
+    --status-bad-bg: #3d1a1a;
+    --status-bad-fg: #fca5a5;
+    --status-bad-border: #5f2626;
+
+    --status-locked-bg: #15803d;
+    --status-locked-fg: #f0fdf4;
+
+    /* Same ramp, inverted: the heaviest step is the lightest chip here. */
+    --complexity-low-bg: #23262e;
+    --complexity-low-fg: #94a3b8;
+    --complexity-medium-bg: #2c313b;
+    --complexity-medium-fg: #b0bcca;
+    --complexity-high-bg: #39404d;
+    --complexity-high-fg: #cbd5e1;
+
+    /*
+     * `--btn-primary-bg` needs no override: it substitutes `--accent`, which
+     * is redefined just above, and custom properties resolve at computed-value
+     * time. Its foreground does flip — the dark-mode accent is a light purple,
+     * so a white label on it would be roughly 2:1.
+     */
+    --btn-primary-fg: #16171d;
+    --btn-secondary-bg: #3a3d47;
+    --btn-danger-bg: #e5484d;
   }
 }
 
@@ -48,6 +198,30 @@
   min-height: 100svh;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
+}
+
+/*
+ * The content column — the one place a page's width and gutters are decided.
+ * `RootLayout` puts the breadcrumb and the outlet inside it together, so the
+ * breadcrumb, the nav row and the page body cannot disagree about where the
+ * left edge is.
+ *
+ * They used to. Every page restated `max-width` / `margin` / `padding` in its
+ * own stylesheet, and the copies had drifted into three different alignments:
+ * eight pages padded `2rem 1rem`, the two exploratory pages `1.5rem`, and none
+ * of them set `box-sizing`, so their padding fell *outside* the 60rem cap while
+ * the breadcrumb's fell inside it. The nav row therefore started at a different
+ * offset on almost every page.
+ *
+ * `box-sizing: border-box` is the load-bearing line: without it the column is
+ * 60rem *plus* its gutters, and no sibling that includes them can line up.
+ */
+.page-frame {
+  width: 100%;
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding: 1rem 1rem 2rem;
   box-sizing: border-box;
 }
 
@@ -64,6 +238,9 @@ h2 {
 
 h1 {
   font-size: 56px;
+  /* Display sizes need their own tight leading — the inherited 1.45 would
+     give an 81px line box. */
+  line-height: 1.05;
   letter-spacing: -1.68px;
   margin: 32px 0;
   @media (max-width: 1024px) {
@@ -73,7 +250,10 @@ h1 {
 }
 h2 {
   font-size: 24px;
-  line-height: 118%;
+  /* Unitless for consistency with the rule above. Behaviourally identical to
+     the `118%` this replaces, since it is declared on h2 itself and so always
+     recomputed against 24px. */
+  line-height: 1.18;
   letter-spacing: -0.24px;
   margin: 0 0 8px;
   @media (max-width: 1024px) {
@@ -93,7 +273,10 @@ code {
 
 code {
   font-size: 15px;
-  line-height: 135%;
+  /* Unitless, like the two rules above. Behaviourally identical to the `135%`
+     it replaces, since it is declared on `code` itself — the file just stops
+     teaching a pattern that broke the `h1`. */
+  line-height: 1.35;
   padding: 4px 8px;
   background: var(--code-bg);
 }

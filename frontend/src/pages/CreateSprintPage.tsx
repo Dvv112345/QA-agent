@@ -92,7 +92,7 @@ export default function CreateSprintPage() {
     <div className="create-sprint">
       <h1>Create Sprint</h1>
       <form onSubmit={handleSubmit} className="create-sprint-form">
-        <label className="form-field">
+        <label className="create-sprint-field">
           <span>Sprint Name</span>
           <input
             type="text"
@@ -104,12 +104,12 @@ export default function CreateSprintPage() {
           />
         </label>
 
-        <label className="form-field">
+        <label className="create-sprint-field">
           <span>Repository</span>
           {reposLoading ? (
             <p>Loading repos&hellip;</p>
           ) : showNewRepoForm ? (
-            <div className="inline-repo-form">
+            <div className="create-sprint-repo-form">
               <input
                 type="url"
                 value={newRepoUrl}
@@ -125,8 +125,8 @@ export default function CreateSprintPage() {
                 placeholder="GitHub token (optional, for private repos)"
                 disabled={creatingRepo}
               />
-              {createRepoError && <p className="form-error">{createRepoError}</p>}
-              <div className="form-actions">
+              {createRepoError && <p className="create-sprint-error">{createRepoError}</p>}
+              <div className="create-sprint-actions">
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -171,9 +171,9 @@ export default function CreateSprintPage() {
         {readmeLoading && <p>Checking for README&hellip;</p>}
 
         {hasReadme === true && (
-          <div className="readme-note readme-found">
+          <div className="create-sprint-readme create-sprint-readme-found">
             <p>README found in repository — it will be downloaded automatically.</p>
-            <label className="form-field">
+            <label className="create-sprint-field">
               <span>Or upload your own README to replace it</span>
               <input
                 type="file"
@@ -186,9 +186,9 @@ export default function CreateSprintPage() {
         )}
 
         {hasReadme === false && (
-          <div className="readme-note readme-required">
+          <div className="create-sprint-readme create-sprint-readme-required">
             <p>This repository has no README. Please upload one.</p>
-            <label className="form-field">
+            <label className="create-sprint-field">
               <span>README file (required)</span>
               <input
                 type="file"
@@ -201,9 +201,9 @@ export default function CreateSprintPage() {
           </div>
         )}
 
-        {error && <p className="form-error">{error}</p>}
+        {error && <p className="create-sprint-error">{error}</p>}
 
-        <div className="form-actions">
+        <div className="create-sprint-actions">
           <button
             type="submit"
             className="btn btn-primary"

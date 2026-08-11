@@ -1,0 +1,38 @@
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.modal-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 1rem;
+  padding: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modal-card-wide {
+  max-width: 640px;
+}
+
+.modal-card h2 {
+  margin: 0;
+}
+
+/* The card takes focus on open when it holds no focusable child; suppress the
+   ring in that case, since the dialog itself is not an interactive target. */
+.modal-card:focus {
+  outline: none;
+}

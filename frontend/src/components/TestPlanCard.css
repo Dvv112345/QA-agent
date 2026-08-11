@@ -1,6 +1,6 @@
 .test-plan-card {
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.25rem;
   margin-bottom: 0.75rem;
@@ -31,44 +31,51 @@
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
   white-space: nowrap;
-  background: var(--color-border, #eee);
-  color: var(--color-text-secondary, #555);
+  background: var(--border);
+  color: var(--text);
 }
 
-.plan-badge-generating,
+/* Split for the same reason as the requirement badges: queued is not running. */
 .plan-badge-pending {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
+}
+
+.plan-badge-generating {
+  background: var(--status-active-bg);
+  color: var(--status-active-fg);
 }
 
 .plan-badge-draft {
-  background: #fef3c7;
-  color: #b45309;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
 .plan-badge-approved {
-  background: #16a34a;
-  color: #fff;
+  background: var(--status-locked-bg);
+  color: var(--status-locked-fg);
 }
 
 .plan-badge-failed {
-  background: #fee2e2;
-  color: #b91c1c;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
 }
 
+/* Complexity is not status — see the ramp's note in `index.css`. On the status
+   scale a high-complexity plan was the same red as a failed one. */
 .plan-badge-complexity-low {
-  background: #f0fdf4;
-  color: #15803d;
+  background: var(--complexity-low-bg);
+  color: var(--complexity-low-fg);
 }
 
 .plan-badge-complexity-medium {
-  background: #fefce8;
-  color: #a16207;
+  background: var(--complexity-medium-bg);
+  color: var(--complexity-medium-fg);
 }
 
 .plan-badge-complexity-high {
-  background: #fef2f2;
-  color: #b91c1c;
+  background: var(--complexity-high-bg);
+  color: var(--complexity-high-fg);
 }
 
 .test-plan-card-requirement {
@@ -79,9 +86,9 @@
 .test-plan-card-requirement p {
   margin: 0.4rem 0 0;
   padding: 0.5rem 0.75rem;
-  background: var(--color-surface, #f9fafb);
-  border-left: 3px solid var(--color-border, #ddd);
-  color: var(--color-text-secondary, #666);
+  background: var(--surface-recessed);
+  border-left: 3px solid var(--border);
+  color: var(--text);
   white-space: pre-wrap;
 }
 
@@ -93,15 +100,15 @@
 
 .test-plan-card-progress p {
   margin: 0;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .test-plan-spinner {
   width: 1rem;
   height: 1rem;
   flex-shrink: 0;
-  border: 2px solid var(--color-border, #ddd);
-  border-top-color: var(--color-primary, #2563eb);
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: test-plan-spin 0.8s linear infinite;
 }
@@ -113,6 +120,7 @@
 }
 
 .test-plan-card-summary {
+  max-width: var(--prose-width);
   margin: 0.25rem 0 0.75rem;
   white-space: pre-wrap;
 }
@@ -126,8 +134,8 @@
 }
 
 .test-plan-case {
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #eee);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.6rem 0.8rem;
 }
@@ -156,23 +164,23 @@
   padding: 0.15rem 0.5rem;
   border-radius: 999px;
   white-space: nowrap;
-  background: var(--color-border, #e5e7eb);
-  color: var(--color-text-secondary, #555);
+  background: var(--border);
+  color: var(--text);
 }
 
 .case-chip-priority-high {
-  background: #fee2e2;
-  color: #b91c1c;
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
 }
 
 .case-chip-priority-medium {
-  background: #fef3c7;
-  color: #b45309;
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
 }
 
 .case-chip-priority-low {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
 }
 
 .test-plan-case-preconditions,
@@ -191,8 +199,8 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  background: var(--status-waiting-bg);
+  border: 1px solid var(--status-waiting-border);
   border-radius: 6px;
   padding: 0.6rem 0.8rem;
   margin-bottom: 0.75rem;
@@ -200,7 +208,7 @@
 
 .test-plan-card-feedback textarea {
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--color-border, #ccc);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font: inherit;
   resize: vertical;
@@ -213,7 +221,7 @@
 .test-plan-card-cap-notice {
   margin: 0;
   font-size: 0.85rem;
-  color: var(--color-text-secondary, #777);
+  color: var(--text);
 }
 
 .test-plan-card-actions {
@@ -223,9 +231,9 @@
 }
 
 .test-plan-card-failure {
-  color: var(--color-error, #b91c1c);
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  color: var(--danger);
+  background: var(--status-bad-bg);
+  border: 1px solid var(--status-bad-border);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
   margin: 0 0 0.75rem;
@@ -233,7 +241,7 @@
 }
 
 .test-plan-card-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
   font-size: 0.85rem;
   margin: 0.5rem 0 0;
 }

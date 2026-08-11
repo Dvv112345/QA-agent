@@ -1,15 +1,14 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import FinishSprintControl from '../components/FinishSprintControl'
 import PrdUploadForm from '../components/PrdUploadForm'
 import RequirementCard from '../components/RequirementCard'
 import RequirementForm from '../components/RequirementForm'
-import {
-  confirmAllRequirements,
-  fetchRequirements,
-  fetchSprint,
-  finishSprint,
-} from '../services/api'
+import StageNav from '../components/StageNav'
+import { confirmAllRequirements, fetchRequirements, fetchSprint } from '../services/api'
 import type { RequirementResponse, SprintResponse } from '../types'
+import { useCrumb, useCrumbGates } from '../BreadcrumbContext'
 import { usePolling } from '../hooks/usePolling'
 import { formatDate } from '../format'
 import './SprintDetailPage.css'
@@ -27,7 +26,6 @@ export default function SprintDetailPage() {
   const [sprint, setSprint] = useState<SprintResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [finishing, setFinishing] = useState(false)
   const [requirements, setRequirements] = useState<RequirementResponse[]>([])
   const [requirementsError, setRequirementsError] = useState<string | null>(null)
   const [continuing, setContinuing] = useState(false)
@@ -70,13 +68,8 @@ export default function SprintDetailPage() {
 
   usePolling(() => fetchRequirements(sprintId).then(setRequirements), { enabled: shouldPoll })
 
-  const handleFinish = () => {
-    setFinishing(true)
-    finishSprint(sprintId)
-      .then(setSprint)
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setFinishing(false))
-  }
+  useCrumb('sprint', sprint?.name)
+  useCrumbGates(sprint)
 
   // The mount-time requirements_complete flag goes stale as the user
   // confirms requirements on this page — re-fetch before navigating.
@@ -96,42 +89,56 @@ export default function SprintDetailPage() {
       .finally(() => setContinuing(false))
   }
 
+  // `requirements_complete` gates the control at the top of the page, and it
+  // moves as the user works here. Every action that can move it refreshes the
+  // sprint, or the gate would sit shut after the user had opened it.
+  const refreshSprint = () =>
+    fetchSprint(sprintId)
+      .then(setSprint)
+      .catch(() => {
+        /* the rows already updated — the flag catches up on the next read */
+      })
+
+  // No confirmation: confirming is no longer final. A confirmed requirement
+  // stays editable, and the cascade that an edit triggers is warned about at
+  // the point of editing, which is where the consequence actually lives.
   const handleConfirmAll = () => {
-    if (
-      !window.confirm(
-        `Confirm all ${confirmableCount} requirement(s)? This includes any still awaiting clarification. This is final.`,
-      )
-    )
-      return
     setConfirmingAll(true)
     setConfirmAllError(null)
     confirmAllRequirements(sprintId)
-      .then(setRequirements)
+      .then((rows) => {
+        setRequirements(rows)
+        return refreshSprint()
+      })
       .catch((err: Error) => setConfirmAllError(err.message))
       .finally(() => setConfirmingAll(false))
   }
 
   const handleSubmitted = (created: RequirementResponse[]) => {
     setRequirements((prev) => [...prev, ...created])
+    void refreshSprint()
   }
 
   // A PRD upload replaces the previous upload's rows server-side — mirror
   // that locally: drop old from_prd rows, keep manual ones, append the new.
   const handlePrdUploaded = (created: RequirementResponse[]) => {
     setRequirements((prev) => [...prev.filter((req) => !req.from_prd), ...created])
+    void refreshSprint()
   }
 
   const handleUpdated = (updated: RequirementResponse) => {
     setRequirements((prev) => prev.map((req) => (req.id === updated.id ? updated : req)))
+    void refreshSprint()
   }
 
   const handleRemoved = (removedId: number) => {
     setRequirements((prev) => prev.filter((req) => req.id !== removedId))
+    void refreshSprint()
   }
 
-  if (loading) return <p className="sprint-detail-message">Loading sprint&hellip;</p>
-  if (error) return <p className="sprint-detail-message sprint-detail-error">{error}</p>
-  if (!sprint) return <p className="sprint-detail-message">Sprint not found.</p>
+  if (loading) return <PageState kind="loading">Loading sprint&hellip;</PageState>
+  if (error) return <PageState kind="error">{error}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const repo = sprint.repo
   const analyzedCount = requirements.filter((req) => !isInProgress(req)).length
@@ -143,9 +150,14 @@ export default function SprintDetailPage() {
 
   return (
     <div className="sprint-detail">
-      <Link to="/" className="back-link">
-        &larr; Back to Sprints
-      </Link>
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
+        <Link to="/" className="btn btn-secondary" aria-label="Back to Sprints">
+          &larr; Back
+        </Link>
+        <StageNav stage="test-environment" sprintId={sprintId} sprint={sprint} />
+      </nav>
 
       <header className="sprint-detail-header">
         <h1>{sprint.name}</h1>
@@ -237,12 +249,6 @@ export default function SprintDetailPage() {
           </button>
           {continueError && <p className="sprint-detail-error">{continueError}</p>}
         </div>
-      )}
-
-      {sprint.active && (
-        <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>
-          {finishing ? 'Finishing…' : 'Finish Sprint'}
-        </button>
       )}
     </div>
   )

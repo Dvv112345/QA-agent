@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import PageState from '../components/PageState'
 import { Link, useParams } from 'react-router-dom'
 import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
+import FinishSprintControl from '../components/FinishSprintControl'
 import IssueTrackerModal from '../components/IssueTrackerModal'
 import OutdatedBadge from '../components/OutdatedBadge'
 import RunTestModal from '../components/RunTestModal'
@@ -22,6 +24,7 @@ import type {
   TestRunResponse,
 } from '../types'
 import { awaitingExport } from '../exportState'
+import { useCrumb } from '../BreadcrumbContext'
 import { formatDateTime, plural } from '../format'
 import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
 import { EXPLORATORY_RUN_STATUS_LABELS, RUN_STATUS_LABELS } from '../statusLabels'
@@ -135,9 +138,11 @@ export default function TestRunsPage() {
     },
   )
 
-  if (loading) return <p className="test-runs-message">Loading test runs&hellip;</p>
-  if (loadError) return <p className="test-runs-message test-runs-error">{loadError}</p>
-  if (!sprint) return <p className="test-runs-message">Sprint not found.</p>
+  useCrumb('sprint', sprint?.name)
+
+  if (loading) return <PageState kind="loading">Loading test runs&hellip;</PageState>
+  if (loadError) return <PageState kind="error">{loadError}</PageState>
+  if (!sprint) return <PageState kind="empty">Sprint not found.</PageState>
 
   const active = sprint.active
   // Runs can outlive test_plans_complete becoming false again — guard on
@@ -148,12 +153,15 @@ export default function TestRunsPage() {
 
   return (
     <div className="test-runs">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
-        <Link to={`/sprints/${sprintId}/test-plans`} className="back-link">
-          &larr; Back to Test Plans
+      <FinishSprintControl sprint={sprint} onFinished={setSprint} />
+
+      <nav className="page-nav">
+        <Link
+          to={`/sprints/${sprintId}/test-plans`}
+          className="btn btn-secondary"
+          aria-label="Back to Test Plans"
+        >
+          &larr; Back
         </Link>
       </nav>
 
