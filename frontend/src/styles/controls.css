@@ -70,15 +70,14 @@
 }
 
 /*
- * The row wrapper. It carries the bottom margin rather than `.back-link`
- * doing so: the two definitions of `.back-link` disagreed on exactly that,
- * and the one that happened to win by import order applied a 1.5rem margin
- * to links inside this flex row, where it was never intended. Pages with a
- * standalone link keep their own spacing rule, scoped to their container.
+ * The row that holds it, on its own line beneath the breadcrumb. It carries the
+ * bottom margin rather than `.back-link` doing so — the two old definitions of
+ * `.back-link` disagreed on exactly that, and import order decided which won.
+ *
+ * One link, not the two or three each page used to list: the breadcrumb above
+ * covers jumping anywhere, and this covers the common one-step case.
  */
-.back-links {
-  display: flex;
-  gap: 1.25rem;
+.page-back {
   margin-bottom: 1.5rem;
 }
 

@@ -304,7 +304,9 @@ describe('TestEnvironmentPage', () => {
 
     const back = await screen.findByRole('link', { name: /back to requirements/i })
     expect(back).toHaveAttribute('href', '/sprints/1')
-    expect(screen.getByRole('link', { name: /back to sprints/i })).toHaveAttribute('href', '/')
+    // Only one back link now — the second ("Back to Sprints") was removed when
+    // the breadcrumb took over jumping to arbitrary ancestors.
+    expect(screen.queryByRole('link', { name: /back to sprints/i })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Finish Sprint' }))
 

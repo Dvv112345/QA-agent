@@ -10,6 +10,7 @@ import {
   finishSprint,
   submitTestEnvironment,
 } from '../services/api'
+import { useCrumb } from '../BreadcrumbContext'
 import type { SprintResponse, TestEnvironmentResponse, TestEnvironmentStatus } from '../types'
 import './TestEnvironmentPage.css'
 
@@ -99,6 +100,8 @@ export default function TestEnvironmentPage() {
       .finally(() => setBusy(false))
   }
 
+  useCrumb('sprint', sprint?.name)
+
   const handleFinish = () => {
     setFinishing(true)
     setActionError(null)
@@ -145,10 +148,7 @@ export default function TestEnvironmentPage() {
 
   return (
     <div className="test-env">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
+      <nav className="page-back">
         <Link to={`/sprints/${sprintId}`} className="back-link">
           &larr; Back to Requirements
         </Link>

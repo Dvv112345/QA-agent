@@ -22,6 +22,7 @@ import type {
   TestRunResponse,
 } from '../types'
 import { awaitingExport } from '../exportState'
+import { useCrumb } from '../BreadcrumbContext'
 import { formatDateTime, plural } from '../format'
 import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
 import { EXPLORATORY_RUN_STATUS_LABELS, RUN_STATUS_LABELS } from '../statusLabels'
@@ -135,6 +136,8 @@ export default function TestRunsPage() {
     },
   )
 
+  useCrumb('sprint', sprint?.name)
+
   if (loading) return <p className="test-runs-message">Loading test runs&hellip;</p>
   if (loadError) return <p className="test-runs-message test-runs-error">{loadError}</p>
   if (!sprint) return <p className="test-runs-message">Sprint not found.</p>
@@ -148,10 +151,7 @@ export default function TestRunsPage() {
 
   return (
     <div className="test-runs">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
+      <nav className="page-back">
         <Link to={`/sprints/${sprintId}/test-plans`} className="back-link">
           &larr; Back to Test Plans
         </Link>

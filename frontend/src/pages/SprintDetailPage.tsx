@@ -11,6 +11,7 @@ import {
   finishSprint,
 } from '../services/api'
 import type { RequirementResponse, SprintResponse } from '../types'
+import { useCrumb } from '../BreadcrumbContext'
 import { usePolling } from '../hooks/usePolling'
 import { formatDate } from '../format'
 import './SprintDetailPage.css'
@@ -71,6 +72,8 @@ export default function SprintDetailPage() {
   ).length
 
   usePolling(() => fetchRequirements(sprintId).then(setRequirements), { enabled: shouldPoll })
+
+  useCrumb('sprint', sprint?.name)
 
   const handleFinish = () => {
     setFinishing(true)
@@ -145,9 +148,11 @@ export default function SprintDetailPage() {
 
   return (
     <div className="sprint-detail">
-      <Link to="/" className="back-link">
-        &larr; Back to Sprints
-      </Link>
+      <nav className="page-back">
+        <Link to="/" className="back-link">
+          &larr; Back to Sprints
+        </Link>
+      </nav>
 
       <header className="sprint-detail-header">
         <h1>{sprint.name}</h1>

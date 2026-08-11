@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom'
 import FindingCard from '../components/FindingCard'
 import { fetchExploratorySession, findingScreenshotUrl } from '../services/api'
 import { useAsyncData } from '../hooks/useAsyncData'
+import { useCrumb } from '../BreadcrumbContext'
 import { usePolling } from '../hooks/usePolling'
 import { SESSION_STATUS_LABELS, STOP_REASON_LABELS } from '../statusLabels'
 import './ExploratorySessionPage.css'
@@ -24,13 +25,20 @@ export default function ExploratorySessionPage() {
     enabled: !!inProgress,
   })
 
+  // The parent run is not in this URL — it comes from the fetched session.
+  useCrumb(
+    'run',
+    session ? `Exploratory Run #${session.exploratory_run_id}` : null,
+    session ? `/sprints/${sprintId}/exploratory-runs/${session.exploratory_run_id}` : undefined,
+  )
+
   if (loading) return <p className="exp-session-message">Loading session sheet&hellip;</p>
   if (loadError) return <p className="exp-session-message exp-session-error">{loadError}</p>
   if (!session) return <p className="exp-session-message">Session not found.</p>
 
   return (
     <div className="exp-session">
-      <nav className="back-links">
+      <nav className="page-back">
         <Link
           to={`/sprints/${sprintId}/exploratory-runs/${session.exploratory_run_id}`}
           className="back-link"

@@ -14,6 +14,7 @@ import type { SprintResponse, TestExecutionResponse, TestRunDetailResponse } fro
 import { awaitingExport } from '../exportState'
 import { formatDateTime } from '../format'
 import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
+import { useCrumb } from '../BreadcrumbContext'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { RUN_STATUS_LABELS } from '../statusLabels'
 import './TestRunDetailPage.css'
@@ -58,6 +59,9 @@ export default function TestRunDetailPage() {
     maxTicks: inProgress ? undefined : EXPORT_GRACE_TICKS,
   })
 
+  useCrumb('sprint', sprint?.name)
+  useCrumb('run', run ? `Run #${run.id}` : null)
+
   const handleRestart = (execution: TestExecutionResponse) => {
     setRestarting(execution.id)
     setActionError(null)
@@ -78,10 +82,7 @@ export default function TestRunDetailPage() {
 
   return (
     <div className="test-run-detail">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
+      <nav className="page-back">
         <Link to={`/sprints/${sprintId}/test-runs`} className="back-link">
           &larr; Back to Test Runs
         </Link>

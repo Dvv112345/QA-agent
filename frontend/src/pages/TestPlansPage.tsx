@@ -10,6 +10,7 @@ import {
   generateTestPlans,
 } from '../services/api'
 import type { SprintResponse, TestPlanResponse } from '../types'
+import { useCrumb } from '../BreadcrumbContext'
 import { usePolling } from '../hooks/usePolling'
 import './TestPlansPage.css'
 
@@ -79,6 +80,8 @@ export default function TestPlansPage() {
       .finally(() => setGenerating(false))
   }
 
+  useCrumb('sprint', sprint?.name)
+
   const handleFinish = () => {
     setFinishing(true)
     setActionError(null)
@@ -132,10 +135,7 @@ export default function TestPlansPage() {
 
   return (
     <div className="test-plans">
-      <nav className="back-links">
-        <Link to="/" className="back-link">
-          &larr; Back to Sprints
-        </Link>
+      <nav className="page-back">
         <Link to={`/sprints/${sprintId}/test-environment`} className="back-link">
           &larr; Back to Test Environment
         </Link>

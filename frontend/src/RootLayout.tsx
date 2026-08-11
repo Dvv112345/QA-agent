@@ -1,5 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import { useAuth } from './AuthContext'
+import { BreadcrumbProvider } from './BreadcrumbContext'
+import Breadcrumb from './components/Breadcrumb'
 import LoginModal from './components/LoginModal'
 
 export default function RootLayout() {
@@ -13,5 +15,13 @@ export default function RootLayout() {
     return <LoginModal onLogin={handleLogin} error={authError} loading={authLoading} />
   }
 
-  return <Outlet />
+  // Chrome renders only inside the authenticated branch — above the outlet, so
+  // it survives each page's loading and not-found early returns, and never
+  // appears over the login modal.
+  return (
+    <BreadcrumbProvider>
+      <Breadcrumb />
+      <Outlet />
+    </BreadcrumbProvider>
+  )
 }

@@ -13,6 +13,7 @@ import type { ExploratoryRunDetailResponse } from '../types'
 import { awaitingExport } from '../exportState'
 import { plural } from '../format'
 import { useAction } from '../hooks/useAction'
+import { useCrumb } from '../BreadcrumbContext'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
 import { EXPLORATORY_RUN_STATUS_LABELS, SESSION_STATUS_LABELS } from '../statusLabels'
@@ -43,13 +44,15 @@ export default function ExploratoryRunDetailPage() {
     maxTicks: inProgress ? undefined : EXPORT_GRACE_TICKS,
   })
 
+  useCrumb('run', run ? `Exploratory Run #${run.id}` : null)
+
   if (loading) return <p className="exp-run-message">Loading exploratory run&hellip;</p>
   if (loadError) return <p className="exp-run-message exp-run-error">{loadError}</p>
   if (!run) return <p className="exp-run-message">Exploratory run not found.</p>
 
   return (
     <div className="exp-run">
-      <nav className="back-links">
+      <nav className="page-back">
         <Link to={`/sprints/${sprintId}/test-runs`} className="back-link">
           &larr; Back to Test Runs
         </Link>
