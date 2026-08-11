@@ -1,32 +1,3 @@
-.run-test-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
-}
-
-.run-test-card {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  width: 100%;
-  max-width: 420px;
-  margin: 0 1rem;
-  padding: 1.5rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  max-height: 80vh;
-  overflow-y: auto;
-}
-
-.run-test-card h2 {
-  margin: 0;
-}
-
 .run-test-message {
   color: var(--text);
 }

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import ModalShell from './ModalShell'
 import { deleteIssueTracker, saveIssueTracker } from '../services/api'
 import type { IssueTrackerConfig, IssueTrackerProvider, RepoResponse } from '../types'
 import './IssueTrackerModal.css'
@@ -93,159 +94,161 @@ export default function IssueTrackerModal({ sprintId, config, repo, onSaved, onC
   }
 
   return (
-    <div className="issue-tracker-overlay" role="dialog" aria-modal="true">
-      <div className="issue-tracker-card">
-        <h2>{config ? 'Issue tracker' : 'Connect an issue tracker'}</h2>
-        <p className="issue-tracker-hint">
-          Bug findings from a run can be filed here automatically. Credentials are checked against
-          the tracker before anything is saved — though a token that can only read saves fine and
-          fails at the first ticket, so it needs permission to write issues.
-        </p>
+    <ModalShell
+      title={config ? 'Issue tracker' : 'Connect an issue tracker'}
+      busy={busy}
+      wide
+      onClose={onClose}
+    >
+      <p className="issue-tracker-hint">
+        Bug findings from a run can be filed here automatically. Credentials are checked against the
+        tracker before anything is saved — though a token that can only read saves fine and fails at
+        the first ticket, so it needs permission to write issues.
+      </p>
 
-        <fieldset className="issue-tracker-providers">
-          <legend>Provider</legend>
-          <label>
+      <fieldset className="issue-tracker-providers">
+        <legend>Provider</legend>
+        <label>
+          <input
+            type="radio"
+            name="provider"
+            value="jira"
+            checked={provider === 'jira'}
+            onChange={() => switchProvider('jira')}
+            disabled={busy}
+          />
+          Jira
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="provider"
+            value="github"
+            checked={provider === 'github'}
+            onChange={() => switchProvider('github')}
+            disabled={busy}
+          />
+          GitHub Issues
+        </label>
+      </fieldset>
+
+      {provider === 'jira' ? (
+        <>
+          <label className="issue-tracker-field">
+            Jira site URL
             <input
-              type="radio"
-              name="provider"
-              value="jira"
-              checked={provider === 'jira'}
-              onChange={() => switchProvider('jira')}
+              type="url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://your-team.atlassian.net"
               disabled={busy}
             />
-            Jira
+            <span className="issue-tracker-field-note">
+              The site root only — for example <code>https://your-team.atlassian.net</code>. A URL
+              with a path (<code>/jira</code>, a project page) is not the API root and will not
+              verify.
+            </span>
           </label>
-          <label>
+          <label className="issue-tracker-field">
+            Account email
             <input
-              type="radio"
-              name="provider"
-              value="github"
-              checked={provider === 'github'}
-              onChange={() => switchProvider('github')}
+              type="email"
+              value={accountEmail}
+              onChange={(e) => setAccountEmail(e.target.value)}
+              placeholder="you@example.com"
               disabled={busy}
             />
-            GitHub Issues
           </label>
-        </fieldset>
-
-        {provider === 'jira' ? (
-          <>
+          <label className="issue-tracker-field">
+            Project key
+            <input
+              type="text"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="QA"
+              disabled={busy}
+            />
+          </label>
+          <label className="issue-tracker-field">
+            Issue type
+            <input
+              type="text"
+              value={issueType}
+              onChange={(e) => setIssueType(e.target.value)}
+              placeholder="Bug"
+              disabled={busy}
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          {sprintRepo && (
+            <div className="issue-tracker-sprint-repo">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={useSprintRepo}
+                  onChange={(e) => setUseSprintRepo(e.target.checked)}
+                  disabled={busy}
+                />
+                Use this sprint's repository — {sprintRepo.name}
+              </label>
+              <p className="issue-tracker-sprint-repo-note">
+                {sprintRepo.has_access_token
+                  ? 'Its stored access token is used unless you enter one below.'
+                  : 'This repository was registered without an access token — enter one below.'}
+              </p>
+            </div>
+          )}
+          {!usingSprintRepo && (
             <label className="issue-tracker-field">
-              Jira site URL
-              <input
-                type="url"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="https://your-team.atlassian.net"
-                disabled={busy}
-              />
-              <span className="issue-tracker-field-note">
-                The site root only — for example <code>https://your-team.atlassian.net</code>. A URL
-                with a path (<code>/jira</code>, a project page) is not the API root and will not
-                verify.
-              </span>
-            </label>
-            <label className="issue-tracker-field">
-              Account email
-              <input
-                type="email"
-                value={accountEmail}
-                onChange={(e) => setAccountEmail(e.target.value)}
-                placeholder="you@example.com"
-                disabled={busy}
-              />
-            </label>
-            <label className="issue-tracker-field">
-              Project key
+              Repository
               <input
                 type="text"
                 value={target}
                 onChange={(e) => setTarget(e.target.value)}
-                placeholder="QA"
+                placeholder="owner/repo"
                 disabled={busy}
               />
             </label>
-            <label className="issue-tracker-field">
-              Issue type
-              <input
-                type="text"
-                value={issueType}
-                onChange={(e) => setIssueType(e.target.value)}
-                placeholder="Bug"
-                disabled={busy}
-              />
-            </label>
-          </>
-        ) : (
-          <>
-            {sprintRepo && (
-              <div className="issue-tracker-sprint-repo">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={useSprintRepo}
-                    onChange={(e) => setUseSprintRepo(e.target.checked)}
-                    disabled={busy}
-                  />
-                  Use this sprint's repository — {sprintRepo.name}
-                </label>
-                <p className="issue-tracker-sprint-repo-note">
-                  {sprintRepo.has_access_token
-                    ? 'Its stored access token is used unless you enter one below.'
-                    : 'This repository was registered without an access token — enter one below.'}
-                </p>
-              </div>
-            )}
-            {!usingSprintRepo && (
-              <label className="issue-tracker-field">
-                Repository
-                <input
-                  type="text"
-                  value={target}
-                  onChange={(e) => setTarget(e.target.value)}
-                  placeholder="owner/repo"
-                  disabled={busy}
-                />
-              </label>
-            )}
-          </>
-        )}
-
-        <label className="issue-tracker-field">
-          API token
-          <input
-            type="password"
-            value={apiToken}
-            onChange={(e) => setApiToken(e.target.value)}
-            placeholder={
-              usingSprintRepo && sprintRepo?.has_access_token
-                ? "Leave blank to use the repository's access token"
-                : canKeepStoredToken
-                  ? 'Leave blank to keep the current token'
-                  : config
-                    ? 'Required when changing provider'
-                    : ''
-            }
-            disabled={busy}
-          />
-        </label>
-
-        {error && <p className="issue-tracker-error">{error}</p>}
-
-        <div className="issue-tracker-actions">
-          <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
-            {busy ? 'Checking…' : 'Save'}
-          </button>
-          <button className="btn btn-secondary" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          {config && (
-            <button className="btn btn-danger" onClick={handleDisconnect} disabled={busy}>
-              Disconnect
-            </button>
           )}
-        </div>
+        </>
+      )}
+
+      <label className="issue-tracker-field">
+        API token
+        <input
+          type="password"
+          value={apiToken}
+          onChange={(e) => setApiToken(e.target.value)}
+          placeholder={
+            usingSprintRepo && sprintRepo?.has_access_token
+              ? "Leave blank to use the repository's access token"
+              : canKeepStoredToken
+                ? 'Leave blank to keep the current token'
+                : config
+                  ? 'Required when changing provider'
+                  : ''
+          }
+          disabled={busy}
+        />
+      </label>
+
+      {error && <p className="issue-tracker-error">{error}</p>}
+
+      <div className="issue-tracker-actions">
+        <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
+          {busy ? 'Checking…' : 'Save'}
+        </button>
+        <button className="btn btn-secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        {config && (
+          <button className="btn btn-danger" onClick={handleDisconnect} disabled={busy}>
+            Disconnect
+          </button>
+        )}
       </div>
-    </div>
+    </ModalShell>
   )
 }
