@@ -12,7 +12,13 @@
   --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
-  font: 18px/145% var(--sans);
+  /* Unitless, deliberately. A percentage line-height computes to an absolute
+     length at the element declaring it and inherits as that fixed value, so
+     `145%` here meant every descendant inherited a flat 26.1px regardless of
+     its own size — which put the 56px h1 below in a 26.1px line box and made
+     it overlap the line beneath it. Unitless inherits the ratio instead, and
+     each element computes its own. */
+  font: 18px/1.45 var(--sans);
   letter-spacing: 0.18px;
   color-scheme: light dark;
   color: var(--text);
@@ -64,6 +70,9 @@ h2 {
 
 h1 {
   font-size: 56px;
+  /* Display sizes need their own tight leading — the inherited 1.45 would
+     give an 81px line box. */
+  line-height: 1.05;
   letter-spacing: -1.68px;
   margin: 32px 0;
   @media (max-width: 1024px) {
@@ -73,7 +82,10 @@ h1 {
 }
 h2 {
   font-size: 24px;
-  line-height: 118%;
+  /* Unitless for consistency with the rule above. Behaviourally identical to
+     the `118%` this replaces, since it is declared on h2 itself and so always
+     recomputed against 24px. */
+  line-height: 1.18;
   letter-spacing: -0.24px;
   margin: 0 0 8px;
   @media (max-width: 1024px) {
