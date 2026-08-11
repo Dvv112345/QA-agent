@@ -24,7 +24,7 @@
 
 .exp-session-meta-list dt {
   font-weight: 600;
-  color: #444;
+  color: var(--text);
 }
 
 .exp-session-meta-list dd {
@@ -41,32 +41,32 @@
 }
 
 .exp-session-muted {
-  color: #777;
+  color: var(--text);
 }
 
 .exp-session-message {
   padding: 1.5rem;
-  color: #555;
+  color: var(--text);
 }
 
 .exp-session-error {
-  color: #b3261e;
+  color: var(--danger);
 }
 
 .exp-session-log {
   margin-top: 1.5rem;
-  border-top: 1px solid #e0e4ea;
+  border-top: 1px solid var(--border);
   padding-top: 0.75rem;
 }
 
 .exp-session-log summary {
   cursor: pointer;
-  color: #555;
+  color: var(--text);
   font-size: 0.9rem;
 }
 
 .exp-session-log pre {
-  background: #f5f7fa;
+  background: var(--surface-recessed);
   border-radius: 4px;
   padding: 0.75rem;
   overflow-x: auto;

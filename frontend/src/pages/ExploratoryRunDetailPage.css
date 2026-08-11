@@ -18,18 +18,18 @@
 /* The run's identifier, quoted by any ticket filed from it. Muted and
    monospaced: it is something to match against, not to read. */
 .exp-run-id {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--mono);
   font-size: 0.85rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .exp-run-counts {
-  color: #555;
+  color: var(--text);
   font-size: 0.9rem;
 }
 
 .exp-run-summary {
-  background: #f5f7fa;
+  background: var(--surface-recessed);
   border-radius: 6px;
   padding: 1rem;
   margin: 1rem 0 1.5rem;
@@ -41,16 +41,16 @@
 }
 
 .exp-run-muted {
-  color: #777;
+  color: var(--text);
 }
 
 .exp-run-message {
   padding: 1.5rem;
-  color: #555;
+  color: var(--text);
 }
 
 .exp-run-error {
-  color: #b3261e;
+  color: var(--danger);
 }
 
 .exp-session-list {
@@ -60,7 +60,7 @@
 }
 
 .exp-session-row {
-  border: 1px solid #e0e4ea;
+  border: 1px solid var(--border);
   border-radius: 6px;
   margin-bottom: 0.6rem;
 }
@@ -73,7 +73,7 @@
 }
 
 .exp-session-link:hover {
-  background: #f5f7fa;
+  background: var(--surface-recessed);
 }
 
 .exp-session-main {
@@ -91,7 +91,7 @@
   display: flex;
   gap: 1rem;
   font-size: 0.82rem;
-  color: #666;
+  color: var(--text);
   margin-top: 0.35rem;
   flex-wrap: wrap;
 }

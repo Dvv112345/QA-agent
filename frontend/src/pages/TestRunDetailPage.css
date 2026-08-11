@@ -7,11 +7,11 @@
 .test-run-detail-message {
   text-align: center;
   padding: 2rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .test-run-detail-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
 }
 
 .test-run-detail-header {
@@ -26,13 +26,13 @@
 }
 
 .test-run-detail-meta {
-  color: var(--color-text-secondary, #888);
+  color: var(--text);
   font-size: 0.9rem;
   margin: 0 0 2rem;
 }
 
 .test-execution-section {
-  border: 1px solid var(--color-border, #ddd);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.25rem;
   margin-bottom: 1.25rem;

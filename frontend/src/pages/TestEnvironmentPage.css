@@ -7,11 +7,11 @@
 .test-env-message {
   text-align: center;
   padding: 2rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .test-env-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
 }
 
 .test-env-header {
@@ -26,7 +26,7 @@
 }
 
 .test-env-sprint-name {
-  color: var(--color-text-secondary, #888);
+  color: var(--text);
   font-size: 0.9rem;
   margin: 0 0 2rem;
 }
@@ -55,15 +55,15 @@
 }
 
 .test-env-notice {
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.5rem;
-  color: var(--color-text-secondary, #555);
+  color: var(--text);
 }
 
 .test-env-hint {
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
   font-size: 0.9rem;
   margin: 0 0 0.75rem;
 }
@@ -73,15 +73,15 @@
   width: 100%;
   box-sizing: border-box;
   padding: 0.6rem;
-  border: 1px solid var(--color-border, #ccc);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font: inherit;
   resize: vertical;
 }
 
 .test-env-content {
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.5rem;
   white-space: pre-wrap;
@@ -92,10 +92,10 @@
 }
 
 .test-env-original p {
-  background: var(--color-surface, #f9fafb);
-  border-left: 3px solid var(--color-border, #ccc);
+  background: var(--surface-recessed);
+  border-left: 3px solid var(--border);
   padding: 0.5rem 1rem;
-  color: var(--color-text-secondary, #555);
+  color: var(--text);
   white-space: pre-wrap;
 }
 
@@ -154,5 +154,5 @@
 .test-env-footer {
   margin-top: 2rem;
   padding-top: 1.5rem;
-  border-top: 1px solid var(--color-border, #eee);
+  border-top: 1px solid var(--border);
 }

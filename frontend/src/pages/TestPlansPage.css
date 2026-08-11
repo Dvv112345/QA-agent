@@ -7,11 +7,11 @@
 .test-plans-message {
   text-align: center;
   padding: 2rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .test-plans-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
 }
 
 .test-plans-header {
@@ -26,34 +26,34 @@
 }
 
 .test-plans-sprint-name {
-  color: var(--color-text-secondary, #888);
+  color: var(--text);
   font-size: 0.9rem;
   margin: 0 0 2rem;
 }
 
 .test-plans-notice {
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.5rem;
-  color: var(--color-text-secondary, #555);
+  color: var(--text);
 }
 
 .test-plans-generate {
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1.5rem;
 }
 
 .test-plans-hint {
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
   font-size: 0.9rem;
   margin: 0 0 1rem;
 }
 
 .test-plans-summary {
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
   font-size: 0.9rem;
   margin: 0 0 1rem;
 }
@@ -63,7 +63,7 @@
 }
 
 .test-plans-approve-all-hint {
-  color: var(--color-text-secondary, #888);
+  color: var(--text);
   font-size: 0.85rem;
   margin: 0.35rem 0 0;
 }
@@ -85,5 +85,5 @@
 .test-plans-footer {
   margin-top: 2rem;
   padding-top: 1.5rem;
-  border-top: 1px solid var(--color-border, #eee);
+  border-top: 1px solid var(--border);
 }
