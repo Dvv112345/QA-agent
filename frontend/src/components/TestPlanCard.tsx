@@ -35,11 +35,9 @@ export default function TestPlanCard({ plan, sprintActive, onUpdated }: Props) {
     runAction(submitTestPlanFeedback(plan.id, trimmed), () => setFeedback(''))
   }
 
-  const handleApprove = () => {
-    if (!window.confirm(`Approve the test plan for "${plan.requirement_name}"? This is final.`))
-      return
-    runAction(approveTestPlan(plan.id))
-  }
+  // No confirmation: approval gates running, not editing. Editing an approved
+  // plan returns it to draft, and that path keeps its own warning.
+  const handleApprove = () => runAction(approveTestPlan(plan.id))
 
   const handleRestart = () => runAction(restartTestPlan(plan.id))
 

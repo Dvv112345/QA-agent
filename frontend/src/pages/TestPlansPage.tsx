@@ -86,8 +86,9 @@ export default function TestPlansPage() {
       .finally(() => setFinishing(false))
   }
 
+  // No confirmation: approval is not final. It gates running, not editing —
+  // an edit returns the plan to draft, and that edit warns for itself.
   const handleApproveAll = () => {
-    if (!window.confirm(`Approve all ${approvableCount} draft test plan(s)? This is final.`)) return
     setApprovingAll(true)
     setActionError(null)
     approveAllTestPlans(sprintId)

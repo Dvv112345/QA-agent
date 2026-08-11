@@ -194,7 +194,6 @@ describe('TestPlansPage', () => {
     })
 
     it('approves all draft plans and replaces the list', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
       // The completion banner reads the sprint's own flag, so the mock has
       // to move the way the server does: incomplete on load, complete once
       // the approval has landed.
@@ -222,19 +221,7 @@ describe('TestPlansPage', () => {
       expect(await screen.findByText('All test plans approved.')).toBeInTheDocument()
     })
 
-    it('does not call the API when the confirmation dialog is declined', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(false)
-      mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
-      mockFetchTestPlans.mockResolvedValue([makePlan({ status: 'draft' })])
-      renderPage()
-
-      fireEvent.click(await screen.findByRole('button', { name: 'Approve all (1)' }))
-
-      expect(mockApproveAllTestPlans).not.toHaveBeenCalled()
-    })
-
     it('surfaces errors from a rejected approve-all call', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
       mockFetchSprint.mockResolvedValue(makeSprint({ has_test_plans: true }))
       mockFetchTestPlans.mockResolvedValue([makePlan({ status: 'draft' })])
       mockApproveAllTestPlans.mockRejectedValue(new Error('Approve-all failed'))

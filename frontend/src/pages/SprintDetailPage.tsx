@@ -96,13 +96,10 @@ export default function SprintDetailPage() {
       .finally(() => setContinuing(false))
   }
 
+  // No confirmation: confirming is no longer final. A confirmed requirement
+  // stays editable, and the cascade that an edit triggers is warned about at
+  // the point of editing, which is where the consequence actually lives.
   const handleConfirmAll = () => {
-    if (
-      !window.confirm(
-        `Confirm all ${confirmableCount} requirement(s)? This includes any still awaiting clarification. This is final.`,
-      )
-    )
-      return
     setConfirmingAll(true)
     setConfirmAllError(null)
     confirmAllRequirements(sprintId)
