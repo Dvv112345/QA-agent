@@ -3,6 +3,7 @@ import { useAuth } from './AuthContext'
 import { BreadcrumbProvider } from './BreadcrumbContext'
 import Breadcrumb from './components/Breadcrumb'
 import LoginModal from './components/LoginModal'
+import ScrollToTop from './components/ScrollToTop'
 
 export default function RootLayout() {
   const { authStatus, authError, authLoading, handleLogin } = useAuth()
@@ -22,6 +23,7 @@ export default function RootLayout() {
     <BreadcrumbProvider>
       <Breadcrumb />
       <Outlet />
+      <ScrollToTop />
     </BreadcrumbProvider>
   )
 }

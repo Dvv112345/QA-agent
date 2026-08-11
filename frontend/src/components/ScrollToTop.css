@@ -1,0 +1,44 @@
+/*
+ * Positioned against the content column rather than the viewport edge: `#root`
+ * is a centred 1126px box with a visible border, so hugging the far right of a
+ * wide screen would leave the button floating outside the frame.
+ *
+ * `z-index` stays below the modal overlays' 999, so an open dialog covers it.
+ */
+.scroll-to-top {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  translate: calc(1126px / 2 - 100%) 0;
+  z-index: 10;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin-left: -1rem;
+
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--text-h);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.scroll-to-top:hover {
+  background: var(--surface-hover);
+}
+
+/* Below the frame's own width, fall back to the viewport edge. */
+@media (max-width: 1126px) {
+  .scroll-to-top {
+    left: auto;
+    right: 1.5rem;
+    translate: none;
+    margin-left: 0;
+  }
+}
