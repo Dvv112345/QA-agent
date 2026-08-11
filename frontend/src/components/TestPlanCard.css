@@ -1,6 +1,6 @@
 .test-plan-card {
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.25rem;
   margin-bottom: 0.75rem;
@@ -31,8 +31,8 @@
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
   white-space: nowrap;
-  background: var(--color-border, #eee);
-  color: var(--color-text-secondary, #555);
+  background: var(--border);
+  color: var(--text);
 }
 
 .plan-badge-generating,
@@ -79,9 +79,9 @@
 .test-plan-card-requirement p {
   margin: 0.4rem 0 0;
   padding: 0.5rem 0.75rem;
-  background: var(--color-surface, #f9fafb);
-  border-left: 3px solid var(--color-border, #ddd);
-  color: var(--color-text-secondary, #666);
+  background: var(--surface-recessed);
+  border-left: 3px solid var(--border);
+  color: var(--text);
   white-space: pre-wrap;
 }
 
@@ -93,15 +93,15 @@
 
 .test-plan-card-progress p {
   margin: 0;
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .test-plan-spinner {
   width: 1rem;
   height: 1rem;
   flex-shrink: 0;
-  border: 2px solid var(--color-border, #ddd);
-  border-top-color: var(--color-primary, #2563eb);
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: test-plan-spin 0.8s linear infinite;
 }
@@ -126,8 +126,8 @@
 }
 
 .test-plan-case {
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #eee);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.6rem 0.8rem;
 }
@@ -156,8 +156,8 @@
   padding: 0.15rem 0.5rem;
   border-radius: 999px;
   white-space: nowrap;
-  background: var(--color-border, #e5e7eb);
-  color: var(--color-text-secondary, #555);
+  background: var(--border);
+  color: var(--text);
 }
 
 .case-chip-priority-high {
@@ -200,7 +200,7 @@
 
 .test-plan-card-feedback textarea {
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--color-border, #ccc);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font: inherit;
   resize: vertical;
@@ -213,7 +213,7 @@
 .test-plan-card-cap-notice {
   margin: 0;
   font-size: 0.85rem;
-  color: var(--color-text-secondary, #777);
+  color: var(--text);
 }
 
 .test-plan-card-actions {
@@ -223,7 +223,7 @@
 }
 
 .test-plan-card-failure {
-  color: var(--color-error, #b91c1c);
+  color: var(--danger);
   background: #fef2f2;
   border: 1px solid #fecaca;
   border-radius: 6px;
@@ -233,7 +233,7 @@
 }
 
 .test-plan-card-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
   font-size: 0.85rem;
   margin: 0.5rem 0 0;
 }

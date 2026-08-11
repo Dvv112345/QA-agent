@@ -52,7 +52,7 @@
 .login-error {
   margin: 0;
   font-size: 14px;
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .login-submit {
@@ -60,7 +60,7 @@
   padding: 12px 28px;
   font-size: 16px;
   font-weight: 600;
-  color: #fff;
+  color: var(--btn-primary-fg);
   background: var(--accent);
   border: none;
   border-radius: 6px;

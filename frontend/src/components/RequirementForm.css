@@ -1,8 +1,8 @@
 .requirement-form {
   margin-top: 1.5rem;
   padding: 1rem 1.5rem;
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -22,7 +22,7 @@
 .requirement-form-row input,
 .requirement-form-row textarea {
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--color-border, #ccc);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font: inherit;
   resize: vertical;
@@ -35,7 +35,7 @@
 }
 
 .requirement-form-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
   font-size: 0.9rem;
   margin: 0.5rem 0;
 }

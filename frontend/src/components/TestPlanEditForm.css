@@ -14,21 +14,21 @@
 .test-plan-edit-field label {
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--color-text-secondary, #555);
+  color: var(--text);
 }
 
 .test-plan-edit-field input,
 .test-plan-edit-field textarea,
 .test-plan-edit-field select {
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--color-border, #ccc);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font: inherit;
   resize: vertical;
 }
 
 .test-plan-edit-case {
-  border: 1px solid var(--color-border, #ddd);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.75rem;
   display: flex;
@@ -60,7 +60,7 @@
 }
 
 .test-plan-edit-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
   font-size: 0.85rem;
   margin: 0;
 }

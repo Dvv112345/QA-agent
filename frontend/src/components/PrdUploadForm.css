@@ -1,8 +1,8 @@
 .prd-upload-form {
   margin-top: 1.5rem;
   padding: 1rem 1.5rem;
-  background: var(--color-surface, #f9fafb);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -14,7 +14,7 @@
 .prd-upload-hint {
   margin: 0 0 0.75rem;
   font-size: 0.9rem;
-  color: var(--color-text-secondary, #555);
+  color: var(--text);
 }
 
 .prd-upload-controls {
@@ -43,7 +43,7 @@
 }
 
 .prd-upload-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
   font-size: 0.9rem;
   margin: 0.5rem 0 0;
 }

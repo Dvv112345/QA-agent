@@ -16,8 +16,8 @@
   max-width: 420px;
   margin: 0 1rem;
   padding: 1.5rem;
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #ddd);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   max-height: 80vh;
   overflow-y: auto;
@@ -28,11 +28,11 @@
 }
 
 .run-test-message {
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
 
 .run-test-error {
-  color: var(--color-error, #c00);
+  color: var(--danger);
 }
 
 .run-test-list {
@@ -62,11 +62,11 @@
   align-items: center;
   gap: 0.5rem;
   padding-top: 0.5rem;
-  border-top: 1px solid var(--color-border, #ddd);
+  border-top: 1px solid var(--border);
   font-size: 0.875rem;
 }
 
 .run-test-export input:disabled + *,
 .run-test-export:has(input:disabled) {
-  color: var(--color-text-secondary, #666);
+  color: var(--text);
 }
