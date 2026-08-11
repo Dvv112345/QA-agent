@@ -8,6 +8,46 @@
   --accent-bg: rgba(170, 59, 255, 0.1);
   --accent-border: rgba(170, 59, 255, 0.5);
 
+  /*
+   * Surfaces. Two roles, deliberately two names: `--surface` is a raised card
+   * sitting on the page background, `--surface-recessed` an inset panel within
+   * one. The stylesheets previously spelled both `var(--color-surface, …)` —
+   * one undefined name with two different fallbacks, `#fff` in the card files
+   * and `#f9fafb` in the panel files. Defining that single name would have
+   * moved half of ~25 sites to a colour their author never chose.
+   *
+   * In dark mode the ordering inverts the way real light does: a raised card
+   * is lighter than the page, a recessed panel darker than the card.
+   */
+  --surface: #fff;
+  --surface-recessed: #f9fafb;
+  --surface-hover: #f5f5f5;
+
+  /* Error text. Distinct from `--btn-danger-bg`: this is read, that is sat on. */
+  --danger: #c00;
+
+  /*
+   * Controls. Each carries its own foreground, because `--accent` inverts
+   * between schemes — it is dark purple on white here and light purple on
+   * near-black in dark mode, so a hardcoded white label would fail contrast
+   * there. The buttons currently hardcode `color: #fff`; Phase 2b points them
+   * at these.
+   */
+  --btn-primary-bg: var(--accent);
+  --btn-primary-fg: #fff;
+  --btn-secondary-bg: #6b7280;
+  --btn-secondary-fg: #fff;
+  --btn-danger-bg: #dc3545;
+  --btn-danger-fg: #fff;
+
+  /*
+   * One content width for every page, replacing seven different values that
+   * made the column jump on nearly every navigation. In `rem` so it tracks the
+   * breakpoint below rather than only the two pages that happened to use rem.
+   * Pages are uniform; forms and prose blocks constrain themselves further.
+   */
+  --content-width: 60rem;
+
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -43,6 +83,23 @@
     --accent: #c084fc;
     --accent-bg: rgba(192, 132, 252, 0.15);
     --accent-border: rgba(192, 132, 252, 0.5);
+
+    --surface: #1e1f27;
+    --surface-recessed: #191a21;
+    --surface-hover: #262832;
+
+    /* #c00 is unreadable on a near-black page. */
+    --danger: #f87171;
+
+    /*
+     * `--btn-primary-bg` needs no override: it substitutes `--accent`, which
+     * is redefined just above, and custom properties resolve at computed-value
+     * time. Its foreground does flip — the dark-mode accent is a light purple,
+     * so a white label on it would be roughly 2:1.
+     */
+    --btn-primary-fg: #16171d;
+    --btn-secondary-bg: #3a3d47;
+    --btn-danger-bg: #e5484d;
   }
 }
 
