@@ -31,18 +31,32 @@ Routes defined in `src/router.tsx`, all under `RootLayout` (the auth gate):
 
 Behaviour every page needs lives in one place rather than per page. Reach for these before writing a new copy:
 
-| Module                  | What it owns                                                                                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hooks/usePolling.ts`   | The 2.5 s refresh interval, the in-flight guard, and `EXPORT_GRACE_TICKS` — the bounded extra polling that covers findings being filed after a run reads terminal |
-| `hooks/useAsyncData.ts` | Load-on-mount with the cancellation guard; returns `{ data, loading, error, setData }`                                                                            |
-| `hooks/useAction.ts`    | One-shot mutations: `busy`, `error`, and a `run(promise, also?)` that clears the error when a new attempt starts                                                  |
-| `outdated.ts`           | `isOutdated(run)` — staleness derived client-side from `outdated_reasons`                                                                                         |
-| `exportState.ts`        | `awaitingExport(run)` — whether a completed run's findings are probably still being filed                                                                         |
-| `statusLabels.ts`       | How each status reads, keyed by its status union so a missing label is a type error                                                                               |
-| `format.ts`             | `plural`, `formatDate`, `formatDateTime`                                                                                                                          |
-| `styles/controls.css`   | `.btn*`, `.badge*`, `.run-badge*`, `.session-badge*`, `.back-link(s)` — imported once from `App.tsx`; colocated `.css` files stay page-local                      |
+| Module                  | What it owns                                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `hooks/usePolling.ts`   | The 2.5 s refresh interval, the in-flight guard, and `EXPORT_GRACE_TICKS` — the bounded extra polling that covers findings being filed after a run reads terminal  |
+| `hooks/useAsyncData.ts` | Load-on-mount with the cancellation guard; returns `{ data, loading, error, setData }`                                                                             |
+| `hooks/useAction.ts`    | One-shot mutations: `busy`, `error`, and a `run(promise, also?)` that clears the error when a new attempt starts                                                   |
+| `outdated.ts`           | `isOutdated(run)` — staleness derived client-side from `outdated_reasons`                                                                                          |
+| `exportState.ts`        | `awaitingExport(run)` — whether a completed run's findings are probably still being filed                                                                          |
+| `statusLabels.ts`       | How each status reads, keyed by its status union so a missing label is a type error                                                                                |
+| `format.ts`             | `plural`, `formatDate`, `formatDateTime`                                                                                                                           |
+| `stages.ts`             | One definition per pipeline stage — label, route pattern, gate, blocking reason — read by the route table, the breadcrumb and `StageNav` alike                     |
+| `BreadcrumbContext.tsx` | `useCrumb` (publish a better label once data lands) and `useCrumbGates` (publish why a forward stage is shut). No-ops without a provider, so page tests mount bare |
+| `components/PageState`  | The one loading / error / empty state; the error kind carries `role="alert"`                                                                                       |
+| `components/ModalShell` | Escape, focus trap, focus restore, `aria-labelledby`, overlay dismiss, and a `busy` flag that blocks both dismissal paths. Every modal goes through it             |
+| `index.css`             | Every colour, width and font token, light and dark, plus `.page-frame` — the one content column. No literal colour lives anywhere else                             |
+| `styles/controls.css`   | `.btn*`, `.badge*`, `.run-badge*`, `.session-badge*`, `.page-nav`, `.cascade-notice` — imported once from `App.tsx`; colocated `.css` files stay page-local        |
 
 `FindingCard`, `ExportSummary`, `OutdatedBadge` and `RestartControl` are source-agnostic: scripted and exploratory results render through the same components.
+
+## Navigation and confirmation
+
+The chrome is layout-level, rendered by `RootLayout` above every page rather than inside it — a per-page copy would sit below `if (loading) …` and vanish exactly when the user is stuck. Each page inside a sprint shows, in order: the breadcrumb, `FinishSprintControl`, and the `.page-nav` row with one step Back on the left and `StageNav`'s next-stage control on the right.
+
+- **The breadcrumb shows the whole pipeline**, not just where you are: the trail behind the page, then the stages ahead of it, dimmed with the reason they are shut ("Confirm the test environment to continue"). Structure comes from each route's `handle`; a page enriches a label once its data lands (`Sprint` → the sprint's name).
+- **A blocked control is still a control** — a real disabled `<button>` with `aria-describedby`, never a missing one. Gates read `SprintResponse` flags, and any mutation that can move a gate re-reads the sprint.
+- **Confirmation follows what is actually irreversible.** Finishing a sprint asks, from any page in it. Confirming a requirement, approving a plan and editing an approved plan do not — approval gates _running_, not editing. Edits that cascade (a confirmed requirement, the environment) say what they will destroy inline, before the click, and keep their blocking dialog.
+- **Scroll-to-top** appears on long pages, honours `prefers-reduced-motion`, and sits below any open modal.
 
 ## QA metrics
 
