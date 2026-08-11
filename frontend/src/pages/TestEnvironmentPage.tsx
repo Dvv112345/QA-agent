@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import FinishSprintModal from '../components/FinishSprintModal'
 import EnvVarsEditor from '../components/EnvVarsEditor'
 import {
   answerTestEnvironment,
@@ -29,6 +30,7 @@ export default function TestEnvironmentPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [finishing, setFinishing] = useState(false)
+  const [confirmingFinish, setConfirmingFinish] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [answer, setAnswer] = useState('')
@@ -101,7 +103,10 @@ export default function TestEnvironmentPage() {
     setFinishing(true)
     setActionError(null)
     finishSprint(sprintId)
-      .then(setSprint)
+      .then((updated) => {
+        setSprint(updated)
+        setConfirmingFinish(false)
+      })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setFinishing(false))
   }
@@ -309,10 +314,23 @@ export default function TestEnvironmentPage() {
 
       {active && (
         <div className="test-env-footer">
-          <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>
-            {finishing ? 'Finishing…' : 'Finish Sprint'}
+          <button
+            className="btn btn-danger"
+            disabled={finishing}
+            onClick={() => setConfirmingFinish(true)}
+          >
+            Finish Sprint
           </button>
         </div>
+      )}
+
+      {confirmingFinish && (
+        <FinishSprintModal
+          sprintName={sprint.name}
+          busy={finishing}
+          onConfirm={handleFinish}
+          onCancel={() => setConfirmingFinish(false)}
+        />
       )}
     </div>
   )

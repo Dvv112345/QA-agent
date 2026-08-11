@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import FinishSprintModal from '../components/FinishSprintModal'
 import PrdUploadForm from '../components/PrdUploadForm'
 import RequirementCard from '../components/RequirementCard'
 import RequirementForm from '../components/RequirementForm'
@@ -28,6 +29,7 @@ export default function SprintDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [finishing, setFinishing] = useState(false)
+  const [confirmingFinish, setConfirmingFinish] = useState(false)
   const [requirements, setRequirements] = useState<RequirementResponse[]>([])
   const [requirementsError, setRequirementsError] = useState<string | null>(null)
   const [continuing, setContinuing] = useState(false)
@@ -73,7 +75,10 @@ export default function SprintDetailPage() {
   const handleFinish = () => {
     setFinishing(true)
     finishSprint(sprintId)
-      .then(setSprint)
+      .then((updated) => {
+        setSprint(updated)
+        setConfirmingFinish(false)
+      })
       .catch((err: Error) => setError(err.message))
       .finally(() => setFinishing(false))
   }
@@ -237,9 +242,22 @@ export default function SprintDetailPage() {
       )}
 
       {sprint.active && (
-        <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>
-          {finishing ? 'Finishing…' : 'Finish Sprint'}
+        <button
+          className="btn btn-danger"
+          disabled={finishing}
+          onClick={() => setConfirmingFinish(true)}
+        >
+          Finish Sprint
         </button>
+      )}
+
+      {confirmingFinish && (
+        <FinishSprintModal
+          sprintName={sprint.name}
+          busy={finishing}
+          onConfirm={handleFinish}
+          onCancel={() => setConfirmingFinish(false)}
+        />
       )}
     </div>
   )

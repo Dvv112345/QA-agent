@@ -100,6 +100,10 @@ describe('SprintListPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Finish Sprint' }))
 
+    // The dialog gates the call — nothing is sent until it is confirmed.
+    expect(mockFinishSprint).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Finish sprint' }))
+
     await waitFor(() => {
       expect(mockFinishSprint).toHaveBeenCalledWith(1)
     })

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import FinishSprintModal from '../components/FinishSprintModal'
 import { fetchSprints, finishSprint } from '../services/api'
 import type { SprintResponse } from '../types'
 import { formatDate } from '../format'
@@ -10,6 +11,7 @@ export default function SprintListPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [finishing, setFinishing] = useState<number | null>(null)
+  const [confirmingFinish, setConfirmingFinish] = useState<SprintResponse | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -37,7 +39,10 @@ export default function SprintListPage() {
       // The response is the updated sprint — every other caller uses it.
       // Refetching the list instead re-downloaded every sprint to learn
       // what this one call already returned.
-      .then((updated) => setSprints((prev) => prev.map((s) => (s.id === updated.id ? updated : s))))
+      .then((updated) => {
+        setSprints((prev) => prev.map((s) => (s.id === updated.id ? updated : s)))
+        setConfirmingFinish(null)
+      })
       .catch((err: Error) => setError(err.message))
       .finally(() => setFinishing(null))
   }
@@ -93,18 +98,24 @@ export default function SprintListPage() {
                   <button
                     className="btn btn-small btn-danger"
                     disabled={finishing === sprint.id}
-                    onClick={(e) => {
-                      e.preventDefault()
-                      handleFinish(sprint.id)
-                    }}
+                    onClick={() => setConfirmingFinish(sprint)}
                   >
-                    {finishing === sprint.id ? 'Finishing…' : 'Finish Sprint'}
+                    Finish Sprint
                   </button>
                 )}
               </div>
             </div>
           ))}
         </div>
+      )}
+
+      {confirmingFinish && (
+        <FinishSprintModal
+          sprintName={confirmingFinish.name}
+          busy={finishing === confirmingFinish.id}
+          onConfirm={() => handleFinish(confirmingFinish.id)}
+          onCancel={() => setConfirmingFinish(null)}
+        />
       )}
     </div>
   )

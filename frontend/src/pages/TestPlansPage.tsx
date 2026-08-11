@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import FinishSprintModal from '../components/FinishSprintModal'
 import TestPlanCard from '../components/TestPlanCard'
 import {
   approveAllTestPlans,
@@ -28,6 +29,7 @@ export default function TestPlansPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const [finishing, setFinishing] = useState(false)
+  const [confirmingFinish, setConfirmingFinish] = useState(false)
   const [approvingAll, setApprovingAll] = useState(false)
 
   // The sprint carries the flags that decide what this page offers
@@ -81,7 +83,10 @@ export default function TestPlansPage() {
     setFinishing(true)
     setActionError(null)
     finishSprint(sprintId)
-      .then(setSprint)
+      .then((updated) => {
+        setSprint(updated)
+        setConfirmingFinish(false)
+      })
       .catch((err: Error) => setActionError(err.message))
       .finally(() => setFinishing(false))
   }
@@ -234,10 +239,23 @@ export default function TestPlansPage() {
 
       {active && (
         <div className="test-plans-footer">
-          <button className="btn btn-danger" disabled={finishing} onClick={handleFinish}>
-            {finishing ? 'Finishing…' : 'Finish Sprint'}
+          <button
+            className="btn btn-danger"
+            disabled={finishing}
+            onClick={() => setConfirmingFinish(true)}
+          >
+            Finish Sprint
           </button>
         </div>
+      )}
+
+      {confirmingFinish && (
+        <FinishSprintModal
+          sprintName={sprint.name}
+          busy={finishing}
+          onConfirm={handleFinish}
+          onCancel={() => setConfirmingFinish(false)}
+        />
       )}
     </div>
   )
