@@ -1,5 +1,5 @@
 .test-runs {
-  max-width: 800px;
+  max-width: var(--content-width);
   margin: 0 auto;
   padding: 2rem 1rem;
 }
@@ -66,6 +66,13 @@
   padding: 1rem 1.25rem;
   text-decoration: none;
   color: inherit;
+  transition: background-color 0.15s;
+}
+
+/* A full-row link with no hover state read as static text. The structurally
+   identical `.exp-session-link` on the run detail page had one; this did not. */
+.test-run-link:hover {
+  background: var(--surface-hover);
 }
 
 .test-run-row-main {

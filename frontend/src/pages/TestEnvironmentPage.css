@@ -1,5 +1,5 @@
 .test-env {
-  max-width: 700px;
+  max-width: var(--content-width);
   margin: 0 auto;
   padding: 2rem 1rem;
 }

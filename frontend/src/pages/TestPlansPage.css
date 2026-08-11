@@ -1,5 +1,5 @@
 .test-plans {
-  max-width: 800px;
+  max-width: var(--content-width);
   margin: 0 auto;
   padding: 2rem 1rem;
 }

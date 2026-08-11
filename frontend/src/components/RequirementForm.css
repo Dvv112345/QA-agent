@@ -1,4 +1,5 @@
 .requirement-form {
+  max-width: var(--form-width);
   margin-top: 1.5rem;
   padding: 1rem 1.5rem;
   background: var(--surface-recessed);

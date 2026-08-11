@@ -73,6 +73,7 @@
 }
 
 .requirement-card-description {
+  max-width: var(--prose-width);
   margin: 0.25rem 0 0.75rem;
   white-space: pre-wrap;
 }

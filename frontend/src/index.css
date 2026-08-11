@@ -82,6 +82,14 @@
    */
   --content-width: 60rem;
 
+  /*
+   * The page is uniform; the content inside it is not. A single-column form
+   * stretched to the full column gives unusable input fields, and continuous
+   * prose becomes a ~100-character measure. Both constrain themselves further.
+   */
+  --form-width: 40rem;
+  --prose-width: 70ch;
+
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
