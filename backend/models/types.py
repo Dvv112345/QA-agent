@@ -576,3 +576,119 @@ class SprintMetricsResponse(SQLModel):
     # silently short.
     excluded_runs_running: int = 0
     excluded_runs_failed: int = 0
+
+
+# ── CI/CD export ──────────────────────────────────────────────────────
+
+
+class CicdConfigRequest(SQLModel):
+    """Create-or-edit payload for a sprint's CI/CD export connection.
+
+    No ``target``: the destination is always the sprint's own repository,
+    derived server-side from ``Repo.github_link``.
+    """
+
+    provider: str  # CicdProvider value
+    # Blank or absent means "keep the credential we already have". Unlike the
+    # issue tracker, a **provider switch keeps it too**: Jenkins still ships
+    # as a GitHub pull request, so both providers use a GitHub token, and
+    # re-typing one to change the environment hint would be friction with no
+    # security benefit.
+    access_token: str | None = None
+    ci_environment_hint: str | None = None
+
+
+class CicdConfigResponse(SQLModel):
+    """The connection as the UI sees it — never the token."""
+
+    id: int
+    sprint_id: int
+    provider: str
+    ci_environment_hint: str | None = None
+    verified_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class CicdCaseEntry(SQLModel):
+    """One test case's export eligibility.
+
+    Ineligible cases are **listed**, not filtered out: a missing row is
+    indistinguishable from a bug, and the two reasons imply different user
+    actions ("run this case at all" vs "re-run it").
+    """
+
+    __test__ = False  # tell pytest this "Test*"-adjacent name is not a test class
+
+    test_case_id: int
+    case_title: str
+    requirement_id: int
+    requirement_name: str
+    eligible: bool
+    # None when eligible; "no_script" | "stale" otherwise.
+    reason: str | None = None
+    # Which upstream artifacts moved since the script was cached — the same
+    # vocabulary the run badges use, plus "unknown" for a script cached
+    # before revisions were stamped.
+    stale_reasons: list[str] = []
+    # Whether a COMPLETED export already shipped this case, and where to.
+    # Drives the default selection: already-exported cases start unchecked.
+    previously_exported: bool = False
+    last_export_pr_url: str | None = None
+
+
+class CicdEligibilityResponse(SQLModel):
+    """Everything the export page needs before a selection is made."""
+
+    sprint_id: int
+    entries: list[CicdCaseEntry] = []
+    eligible_count: int = 0
+    stale_count: int = 0
+    no_script_count: int = 0
+    # The environment variable **names** the generated CI will reference,
+    # split by what they become in the CI system: a URL-valued variable is a
+    # plain CI variable, everything else is a secret. Values are read to sort
+    # the names and are never serialized.
+    variable_names: list[str] = []
+    secret_names: list[str] = []
+
+
+class CicdExportRequest(SQLModel):
+    """Which cases to ship. Re-validated server-side before anything is enqueued."""
+
+    test_case_ids: list[int] = []
+
+
+class CicdExportItemResponse(SQLModel):
+    """One shipped case, as recorded on the receipt."""
+
+    __test__ = False  # tell pytest this "Test*"-adjacent name is not a test class
+
+    test_case_id: int
+    case_title: str
+    requirement_name: str
+    committed_path: str
+
+
+class CicdExportResponse(SQLModel):
+    """One export attempt, coerced straight off the row."""
+
+    id: int
+    sprint_id: int
+    provider: str
+    status: str
+    branch_name: str | None = None
+    commit_sha: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    pr_title: str | None = None
+    notes: str | None = None
+    error: str | None = None
+    case_count: int = 0
+    ci_file_paths: list[str] = []
+    dropped_paths: list[str] = []
+    variable_names: list[str] = []
+    secret_names: list[str] = []
+    items: list[CicdExportItemResponse] = []
+    created_at: datetime
+    updated_at: datetime
