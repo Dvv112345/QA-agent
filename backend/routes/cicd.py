@@ -23,10 +23,16 @@ from sqlmodel import Session
 
 from backend.database import get_session
 from backend.models.database import CicdConfig, CicdProvider, Sprint
-from backend.models.types import CicdConfigRequest, CicdConfigResponse
+from backend.models.types import (
+    CicdConfigRequest,
+    CicdConfigResponse,
+    CicdEligibilityResponse,
+)
 from backend.routes._common import get_sprint_or_404
+from backend.services import cicd_eligibility
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token, encrypt_token
+from backend.utils.environment_utils import url_values
 from backend.utils.github_utils import (
     GitHubError,
     GitHubUnavailableError,
@@ -215,3 +221,53 @@ async def delete_cicd_config(sprint_id: int, session: Session = Depends(get_sess
     session.delete(sprint.cicd_config)
     session.commit()
     logger.info("Sprint id=%d: CI/CD export disconnected", sprint_id)
+
+
+# ── Eligibility ───────────────────────────────────────────────────────
+
+
+def env_var_name_split(sprint: Sprint) -> tuple[list[str], list[str]]:
+    """Environment variable **names**, split into CI variables and CI secrets.
+
+    A URL-valued variable becomes a plain CI variable; everything else
+    becomes a secret.  Values are read here only to sort the names and are
+    then discarded — nothing below this line ever sees one, and no response
+    in this module carries one.
+
+    That split is what lets the export page say up front which repository
+    secrets the team will have to create, instead of the team learning it
+    from a workflow that runs and fails.
+    """
+    test_env = sprint.test_environment
+    env_vars = test_env.env_vars if test_env is not None else None
+    if not env_vars:
+        return [], []
+    urls = url_values(env_vars)
+    variables = [name for name, value in env_vars.items() if value in urls]
+    secrets = [name for name, value in env_vars.items() if value not in urls]
+    return variables, secrets
+
+
+@router.get("/sprints/{sprint_id}/cicd-eligibility", response_model=CicdEligibilityResponse)
+async def get_cicd_eligibility(sprint_id: int, session: Session = Depends(get_session)):
+    """Every test case in the sprint, and whether it can be exported.
+
+    Ineligible cases are listed with their reason rather than filtered out:
+    "no script yet" and "out of date" imply different actions, and a case
+    that simply vanished from the list is indistinguishable from a bug.
+    """
+    sprint = cicd_eligibility.load_sprint_for_eligibility(session, sprint_id)
+    if sprint is None:
+        raise HTTPException(status_code=404, detail="Sprint not found")
+
+    entries = cicd_eligibility.case_entries(session, sprint)
+    variables, secrets = env_var_name_split(sprint)
+    return CicdEligibilityResponse(
+        sprint_id=sprint_id,
+        entries=entries,
+        eligible_count=sum(1 for entry in entries if entry.eligible),
+        stale_count=sum(1 for entry in entries if entry.reason == "stale"),
+        no_script_count=sum(1 for entry in entries if entry.reason == "no_script"),
+        variable_names=variables,
+        secret_names=secrets,
+    )

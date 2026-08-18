@@ -403,6 +403,17 @@ def execute_test_task(test_execution_id: int) -> None:
                     # Script is correct either way — worth reusing next
                     # time. Never cache on ERROR (still looks broken).
                     test_case.script = script
+                    # Stamped in the same breath as the script, and only
+                    # here, so "has a cached script" keeps meaning "ran to a
+                    # verdict" and the stamps cannot drift from the text
+                    # they describe. `services/cicd_eligibility.py` reads
+                    # them to decide whether the script still matches the
+                    # sprint it was written against.
+                    test_case.script_requirement_revision = requirement.content_revision
+                    test_case.script_plan_revision = plan.content_revision
+                    test_case.script_env_revision = (
+                        test_env.content_revision if test_env is not None else 0
+                    )
                     session.add(test_case)
 
                 session.commit()
