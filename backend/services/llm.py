@@ -24,6 +24,7 @@ import openai
 from sqlmodel import SQLModel
 
 from backend.config import (
+    CICD_TOOL_ROUNDS,
     EXPLORATORY_CONTEXT_TOKEN_LIMIT,
     EXPLORATORY_MAX_CHARTERS,
     EXPLORATORY_MAX_FINDINGS,
@@ -38,6 +39,7 @@ from backend.services.llm_prompts import (
     BROWSER_TOOLS,
     CHARTER_SYSTEM_PROMPT,
     CHECK_SYSTEM_PROMPT,
+    CICD_SYSTEM_PROMPT,
     ENV_VARS_SYSTEM_PROMPT,
     EXPLORATION_SUMMARY_SYSTEM_PROMPT,
     EXPLORATION_SYSTEM_PROMPT,
@@ -58,6 +60,7 @@ from backend.services.llm_prompts import (
     KnownDefect,
     TestCaseLike,
     charter_context,
+    cicd_context,
     context_sections,
     env_vars_context,
     exploration_context,
@@ -465,6 +468,54 @@ def revise_test_plan(
 
 class EnvVarsResult(SQLModel):
     variables: dict[str, str]
+
+
+class CicdFileItem(SQLModel):
+    """One file the model creates.
+
+    Create-only, so there is deliberately no ``action`` field: the field
+    would have exactly one value, and a ``"modify"`` branch is what let a
+    truncated rewrite of the team's own CI file read as a plausible diff.
+    Modification goes through ``HostEdit``, where the splice is ours.
+    """
+
+    path: str
+    content: str
+
+
+class HostEdit(SQLModel):
+    """One job (Actions) or stage (Jenkins) added to an existing CI file.
+
+    ``job_body`` is the fragment and nothing more — the model never
+    restates the host file, so truncating it is not expressible in this
+    schema rather than merely discouraged.
+    """
+
+    path: str
+    job_name: str
+    job_body: str
+
+
+class CicdIntegrationResult(SQLModel):
+    """What the CI/CD generation call may return.
+
+    Two absences are the design, and both are enforced by the schema rather
+    than by a sentence in a prompt:
+
+    * **no field can carry a test script.** Scripts are verified artefacts
+      read from the database; the model integrates them and never rewrites
+      one. This is the CI/CD analogue of keeping the test-planning call
+      code-blind;
+    * **no field can carry a whole host file.** The model authors a job or
+      stage body and the splice is ours, so it cannot return a truncated
+      version of a file the team wrote.
+    """
+
+    files: list[CicdFileItem] = []
+    host_edit: HostEdit | None = None
+    pr_title: str
+    pr_body: str
+    notes: str | None = None
 
 
 class TestScriptResult(SQLModel):
@@ -1279,3 +1330,75 @@ def _summarize(result: str, limit: int = 200) -> str:
     """Condense a tool result for the action log (snapshots are huge)."""
     collapsed = " ".join(result.split())
     return collapsed if len(collapsed) <= limit else collapsed[:limit] + "…"
+
+
+def _validate_cicd_result(result: CicdIntegrationResult) -> CicdIntegrationResult:
+    """Reject output that cannot become a pull request.
+
+    Only what the *schema* cannot express: emptiness, and a host edit
+    missing the pieces the splice needs.  Everything about paths,
+    structure, references and secrets belongs to ``cicd_export.validate``,
+    which runs against the repository's own files and is the one place
+    model output becomes a filesystem effect.
+    """
+    if not result.pr_title.strip():
+        raise LLMError("LLM returned a pull request with no title.")
+    if not result.files and result.host_edit is None:
+        raise LLMError("LLM returned no CI files and no host edit — nothing to commit.")
+    for item in result.files:
+        if not item.path.strip():
+            raise LLMError("LLM returned a CI file with no path.")
+        if not item.content.strip():
+            raise LLMError(f"LLM returned an empty CI file: {item.path}")
+    if result.host_edit is not None:
+        edit = result.host_edit
+        if not edit.path.strip() or not edit.job_name.strip() or not edit.job_body.strip():
+            raise LLMError("LLM returned an incomplete host edit.")
+    return result
+
+
+def generate_cicd_integration(
+    provider: str,
+    readme: str | None,
+    file_tree: str | None,
+    ci_facts: str,
+    ci_environment_hint: str | None,
+    variable_names: list[str],
+    secret_names: list[str],
+    script_paths: list[str],
+    deterministic_block: str,
+    host_candidates: list[str],
+    read_file: Callable[[str], str] | None,
+    on_round: Callable[[], None],
+) -> CicdIntegrationResult:
+    """Author the CI configuration that runs an already-verified suite.
+
+    Runs the same bounded ``read_file`` loop script generation uses.  The
+    standing "a read_file tool becomes the model's oracle" hazard does not
+    apply here: that hazard is about treating implementation code as the
+    definition of *correct* when judging a product.  This call judges
+    nothing — reading the repository **is** the task, and the repository is
+    the only possible source of truth for "how does CI here install
+    Playwright".
+    """
+    parts = cicd_context(
+        provider,
+        readme,
+        file_tree,
+        ci_facts,
+        ci_environment_hint,
+        variable_names,
+        secret_names,
+        script_paths,
+        deterministic_block,
+        host_candidates,
+    )
+    result = _complete_with_tools(
+        CICD_SYSTEM_PROMPT,
+        "\n\n".join(parts),
+        CicdIntegrationResult,
+        read_file,
+        on_round,
+        CICD_TOOL_ROUNDS,
+    )
+    return _validate_cicd_result(result)
