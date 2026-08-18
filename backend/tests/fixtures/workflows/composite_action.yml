@@ -1,0 +1,18 @@
+# A composite action, not a workflow — `.github/actions/report/action.yml`.
+name: Report results
+description: Upload the QA report
+
+inputs:
+  report-path:
+    description: Where the report was written
+    required: true
+  retention-days:
+    description: How long to keep it
+    required: false
+    default: "7"
+
+runs:
+  using: composite
+  steps:
+    - run: cat ${{ inputs.report-path }}
+      shell: bash

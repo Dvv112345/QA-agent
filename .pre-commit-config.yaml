@@ -40,6 +40,11 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
         args: [--allow-multiple]
+        # `malformed.yml` is a test fixture that exists precisely to not
+        # parse — `parse_workflow` must answer None for it rather than
+        # raise. A hook that insists every .yml is valid would reject the
+        # one file whose invalidity is the assertion.
+        exclude: ^backend/tests/fixtures/workflows/malformed\.yml$
       - id: check-toml
       - id: check-added-large-files
         args: [--maxkb=500]

@@ -1,0 +1,17 @@
+# A reusable workflow: invoked at *job* level via `uses:`, so our steps can
+# never share a job with it.
+name: Shared test workflow
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        required: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pytest
