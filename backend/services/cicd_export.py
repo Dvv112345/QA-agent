@@ -36,7 +36,7 @@ from collections.abc import Sequence
 from backend.models.database import TestCase
 from backend.services import jenkins_text
 from backend.services.ci_introspect import WorkflowEditError, _round_trip_yaml, _safe_yaml
-from backend.services.issue_tracker import _MIN_REDACTABLE_LENGTH
+from backend.utils.environment_utils import _MIN_REDACTABLE_LENGTH
 
 logger = logging.getLogger(__name__)
 

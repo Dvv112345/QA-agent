@@ -39,34 +39,77 @@ def url_values(env_vars: Mapping[str, str] | None) -> set[str]:
     }
 
 
-def redactable_values(
+# Below this length the replacement does more damage than the leak: a
+# two-character value ("80", "qa") occurs inside ordinary prose constantly,
+# and a bug report with every other word rewritten is not a bug report.
+# Real credentials comfortably clear this; ports and short usernames do
+# not, and those are not what the guard is for.
+_MIN_REDACTABLE_LENGTH = 6
+
+
+def redactable_items(
     env_vars: Mapping[str, str] | None,
     *,
     keep: Iterable[str] = (),
-) -> frozenset[str]:
-    """Environment values to blank out of outbound text, minus ``keep``.
+) -> dict[str, str]:
+    """``{name: value}`` for every environment value that must not leave, minus ``keep``.
 
-    Both exits — the exploratory action log and an outbound ticket — hold
-    the same rule: *every* environment value is a candidate credential,
-    except the ones naming the application itself.  A URL is something a
-    bug report has to be allowed to name, and redacting it would gut the
-    report while protecting nothing.
+    Every environment value is a candidate credential except the ones
+    naming the application itself.  Which ones those are is the caller's to
+    decide, because the three exits differ on **who is reading**:
 
-    The two callers differ, deliberately, on what "the application" means,
-    which is why ``keep`` is the caller's to compute rather than something
-    this function decides:
+    * ``diagnose_and_fix_script`` — a model that was already handed
+      ``env_var_names`` and is looking at a script that reads
+      ``os.environ["BASE_URL"]``.  ``$BASE_URL`` fully resolves for it, so
+      nothing is kept;
+    * ``create_issue`` — a human opening a ticket, who may have no idea
+      what ``$BASE_URL`` is set to.  A bug report about a page has to be
+      allowed to name the page, so every http(s) value is kept
+      (:func:`url_values`);
+    * the exploratory action log — same reasoning, narrowed: that run
+      knows exactly which variables its charters were pointed at, so it
+      keeps those and nothing else.
 
-    * the exploratory task keeps the run's **nominated base URLs** — it
-      knows exactly which variables the charters were pointed at;
-    * export keeps **every** http(s) value (:func:`url_values`) — it has
-      no run to ask, and a URL left unredacted is the safer error there.
-
-    Collapsing those into one rule would silently change what gets
-    redacted at one of the two exits.
+    Collapsing these into one rule would silently change what is hidden at
+    one of the three exits.
     """
     if not env_vars:
-        return frozenset()
-    return frozenset(set(env_vars.values()) - set(keep))
+        return {}
+    kept = set(keep)
+    return {name: value for name, value in env_vars.items() if value not in kept}
+
+
+def redact(text: str, secrets: Mapping[str, str]) -> str:
+    """Replace each environment value in ``text`` with ``$NAME``.
+
+    The variable's **name**, not a blanking placeholder, because redaction
+    that destroys information buys safety by making the text useless:
+    ``Connection refused to ***`` cannot be diagnosed, and it was the
+    reason the diagnosis prompt had to be handed raw URLs at all.
+    ``Connection refused to $BASE_URL`` is at least as useful — more so to
+    a reader holding the variable names, since it links the failure to the
+    line that produced it — and it keeps ``$PROD_URL`` and ``$BASE_URL``
+    distinguishable where one shared placeholder collapses them.
+
+    Substring matching, unlike the exploratory action log's exact match on
+    a whole tool argument: prose leaks a credential mid-sentence ("logged
+    in as admin/hunter2…") rather than as the entire value.  The cost is
+    false positives, which is what ``_MIN_REDACTABLE_LENGTH`` bounds.
+
+    Which values arrive here is the caller's decision — see
+    :func:`redactable_items`.
+    """
+    if not text:
+        return text
+    # Longest value first, so a value containing another does not leave the
+    # shorter one's replacement embedded in a half-rewritten string. Ties
+    # break on the name, or two variables sharing one value would redact
+    # differently between runs and the same stderr would not reproduce.
+    ordered = sorted(secrets.items(), key=lambda item: (-len(item[1]), item[0]))
+    for name, value in ordered:
+        if value and len(value) >= _MIN_REDACTABLE_LENGTH:
+            text = text.replace(value, f"${name}")
+    return text
 
 
 def os_environment() -> str:

@@ -17,9 +17,9 @@ from backend.services.issue_tracker import (
     attach_screenshot,
     create_issue,
     issue_is_open,
-    redact,
     verify,
 )
+from backend.utils.environment_utils import redact
 
 _JIRA_SITE = "https://acme.atlassian.net"
 
@@ -64,7 +64,7 @@ def _context(**overrides) -> FindingContext:
         "run_label": "Scripted run 14",
         "source_label": "Tax is applied to the order total",
         "source_kind": "scripted",
-        "secret_values": frozenset(),
+        "secrets": {},
     }
     defaults.update(overrides)
     return FindingContext(**defaults)
@@ -101,7 +101,7 @@ class TestSecretsStayOutOfRepr:
         assert "dummy-token" not in repr(_jira_config())
 
     def test_env_values_are_not_in_the_context_repr(self):
-        context = _context(secret_values=frozenset({"s3cr3t-passw0rd"}))
+        context = _context(secrets={"QA_PASSWORD": "s3cr3t-passw0rd"})
         assert "s3cr3t-passw0rd" not in repr(context)
 
 
@@ -351,25 +351,41 @@ class TestRedaction:
                 actual="Login failed for admin with password s3cr3t-passw0rd",
                 steps_to_reproduce="Sign in as admin / s3cr3t-passw0rd",
             ),
-            _context(secret_values=frozenset({"s3cr3t-passw0rd"})),
+            _context(secrets={"QA_PASSWORD": "s3cr3t-passw0rd"}),
         )
 
         body = httpx_mock.get_requests()[-1].content.decode()
         assert "s3cr3t-passw0rd" not in body
-        assert "***" in body
+        # The variable's own name, not a blanking placeholder: a reader can
+        # act on "which credential", and cannot on "something was here".
+        assert "$QA_PASSWORD" in body
 
     def test_short_values_are_left_alone(self):
-        """Blanking a two-character value would gut ordinary prose while
+        """Rewriting a two-character value would gut ordinary prose while
         protecting nothing worth protecting."""
         text = "The port 80 page returned 500"
-        assert redact(text, {"80"}) == text
+        assert redact(text, {"PORT": "80"}) == text
 
     def test_longest_value_wins_when_one_contains_another(self):
-        redacted = redact("token=abcdef123456", {"abcdef", "abcdef123456"})
+        redacted = redact("token=abcdef123456", {"SHORT": "abcdef", "LONG": "abcdef123456"})
         assert "abcdef" not in redacted
+        assert redacted == "token=$LONG"
 
     def test_empty_text_is_returned_unchanged(self):
-        assert redact("", {"s3cr3t-passw0rd"}) == ""
+        assert redact("", {"QA_PASSWORD": "s3cr3t-passw0rd"}) == ""
+
+    def test_two_names_sharing_a_value_resolve_deterministically(self):
+        """Otherwise the same stderr redacts differently between runs."""
+        secrets = {"BETA": "shared-value", "ALPHA": "shared-value"}
+
+        assert redact("x shared-value y", secrets) == "x $ALPHA y"
+
+    def test_each_value_becomes_its_own_name(self):
+        secrets = {"BASE_URL": "https://staging.example.com", "QA_PASSWORD": "hunter2secret"}
+
+        redacted = redact("GET https://staging.example.com/login as admin/hunter2secret", secrets)
+
+        assert redacted == "GET $BASE_URL/login as admin/$QA_PASSWORD"
 
 
 class TestIssueIsOpen:

@@ -1114,3 +1114,60 @@ class TestScriptRevisionStamps:
         execute_test_task(second.id)
 
         assert self._stamps(db_session, cases[0])[0] == requirement.content_revision
+
+
+class TestDiagnosisSecrets:
+    """The task hands the diagnosis call the values its subprocess injected.
+
+    Captured output is the one LLM input in this application that can carry
+    a live environment value: the script ran with the confirmed variables
+    in its environment, so a traceback or an echoed response can reproduce
+    one verbatim. The rewriting itself happens inside
+    ``llm.diagnose_and_fix_script`` — see ``TestDiagnosisRedaction`` in
+    ``test_llm.py``; this pins that the task supplies what that needs.
+    """
+
+    def _seed(self, db_session):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        sprint.test_environment.env_vars_json = json.dumps(
+            {"BASE_URL": "https://app.test", "PASSWORD": "s3cr3t-passw0rd"}
+        )
+        db_session.add(sprint.test_environment)
+        db_session.commit()
+        return sprint, requirement, plan, cases
+
+    def _failing(self, script_runner_stub, stderr="boom"):
+        script_runner_stub.default_result = ScriptRunResult(
+            exit_code=1, stdout="", stderr=stderr, timed_out=False
+        )
+
+    def test_the_task_passes_every_env_value_keyed_by_name(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        """Nothing is kept: the reader already holds the names."""
+        sprint, requirement, plan, cases = self._seed(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        self._failing(script_runner_stub)
+
+        execute_test_task(execution.id)
+
+        assert llm_stub.diagnose_calls[0]["secrets"] == {
+            "BASE_URL": "https://app.test",
+            "PASSWORD": "s3cr3t-passw0rd",
+        }
+
+    def test_the_stored_output_keeps_the_real_values(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        """Only the prompt is rewritten — the run page shows what happened."""
+        sprint, requirement, plan, cases = self._seed(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        self._failing(script_runner_stub, stderr="login failed for admin/s3cr3t-passw0rd")
+        llm_stub.diagnosis_result = ScriptDiagnosisResult(
+            classification="app_bug", fixed_script=None, explanation="Login is broken."
+        )
+
+        execute_test_task(execution.id)
+
+        results = _reload_case_execs(db_session, execution.id)
+        assert "s3cr3t-passw0rd" in results[0].output

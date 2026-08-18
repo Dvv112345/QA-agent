@@ -236,6 +236,12 @@ def execute_test_task(test_execution_id: int) -> None:
             readme = asyncio.run(resolve_readme(sprint))
             file_tree = sprint.repo.file_tree if sprint.repo else None
             env_var_names = list(env_vars.keys())
+            # Only the *names* reach script generation. The diagnosis call
+            # additionally sees the script's stdout/stderr, which the
+            # subprocess ran with these values injected — so it gets the
+            # mapping to rewrite any it reproduced. Nothing is kept: its
+            # reader already holds the names above.
+            secrets = environment_utils.redactable_items(env_vars)
 
             read_file: Callable[[str], str] | None = None
             if file_tree and sprint.repo:
@@ -378,6 +384,7 @@ def execute_test_task(test_execution_id: int) -> None:
                         exit_code=run_result.exit_code,
                         read_file=read_file,
                         on_round=on_round,
+                        secrets=secrets,
                     )
 
                     if diagnosis.classification == "app_bug":

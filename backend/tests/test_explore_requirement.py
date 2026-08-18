@@ -192,13 +192,14 @@ class TestHappyPath:
 
         assert patched["loop_calls"][0]["base_urls"] == ["https://app.test"]
 
-    def test_loop_receives_secret_values_excluding_base_urls(self, db_session, patched):
-        """Redacting the base URLs would gut the action log while protecting nothing."""
+    def test_loop_receives_secrets_excluding_base_urls(self, db_session, patched):
+        """Rewriting the base URLs would gut the action log while protecting nothing."""
         _, _, run = _seed_run_with_sessions(db_session)
 
         explore_requirement_task(run.id)
 
-        assert patched["loop_calls"][0]["secret_values"] == {"hunter2"}
+        # Name -> value, so the log can say *which* credential was typed.
+        assert patched["loop_calls"][0]["secrets"] == {"ADMIN_PASSWORD": "hunter2"}
 
     def test_writes_summary(self, db_session, patched):
         _, _, run = _seed_run_with_sessions(db_session)

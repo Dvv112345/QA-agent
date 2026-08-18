@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
@@ -70,6 +70,7 @@ from backend.services.llm_prompts import (
     test_plan_context,
     test_script_context,
 )
+from backend.utils.environment_utils import redact
 from backend.utils.http_utils import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
@@ -621,14 +622,35 @@ def diagnose_and_fix_script(
     exit_code: int,
     read_file: Callable[[str], str] | None,
     on_round: Callable[[], None],
+    secrets: Mapping[str, str] | None = None,
 ) -> ScriptDiagnosisResult:
-    """Classify a failed run as a script bug or app bug; fix script bugs in the same call."""
+    """Classify a failed run as a script bug or app bug; fix script bugs in the same call.
+
+    ``stdout``/``stderr`` are the one input to any LLM call in this
+    application that can carry a **live environment value**: the script ran
+    as a subprocess with the confirmed variables injected, so a traceback,
+    an echoed response or an assertion message can reproduce one verbatim.
+    Left alone, that value flows into ``fixed_script``, is cached on
+    ``TestCase.script``, and is served by the script-download endpoint and
+    committed by a CI/CD export.
+
+    So it is rewritten here, at the point it would enter the conversation —
+    the same treatment ``fill_secret`` gives the exploratory loop.  Values
+    become ``$NAME``, which costs the diagnosis nothing: the model is
+    handed ``env_var_names`` in the same prompt and is reading a script
+    that fetches them from ``os.environ``.
+
+    Only the prompt is affected.  ``TestCaseExecution.output`` is written
+    from the raw result, so the authenticated user still sees the real
+    output on the run page.
+    """
     parts = test_script_context(name, description, test_case, env_var_names, readme, file_tree)
+    secrets = secrets or {}
     parts.append(
         f"Script that was run:\n---\n{script}\n---\n\n"
         f"Exit code: {exit_code}\n"
-        f"stdout:\n---\n{stdout}\n---\n\n"
-        f"stderr:\n---\n{stderr}\n---"
+        f"stdout:\n---\n{redact(stdout, secrets)}\n---\n\n"
+        f"stderr:\n---\n{redact(stderr, secrets)}\n---"
     )
     result = _complete_with_tools(
         TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT,
@@ -988,7 +1010,7 @@ def run_exploration_loop(
     max_actions: int,
     snapshot_window: int,
     on_round: Callable[[int], None],
-    secret_values: set[str] | None = None,
+    secrets: Mapping[str, str] | None = None,
     max_free_recordings: int = EXPLORATORY_MAX_FINDINGS,
     context_token_limit: int = EXPLORATORY_CONTEXT_TOKEN_LIMIT,
 ) -> ExplorationLoopResult:
@@ -1016,7 +1038,7 @@ def run_exploration_loop(
     progress feed, so the caller can persist a count that climbs during the
     session instead of appearing only once the loop returns.
 
-    ``secret_values`` is a redaction backstop for the action log: ``fill_secret``
+    ``secrets`` is a redaction backstop for the action log: ``fill_secret``
     already keeps credentials out of this module entirely, so this only catches
     a model that typed a literal through plain ``fill``.
 
@@ -1152,7 +1174,7 @@ def run_exploration_loop(
                     result = executor(**arguments)
 
             action_log.append(
-                f"{tool_name}({_format_args(arguments, secret_values)}) -> {_summarize(result)}"
+                f"{tool_name}({_format_args(arguments, secrets)}) -> {_summarize(result)}"
             )
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
             if tool_name == "snapshot":
@@ -1305,25 +1327,33 @@ def _forced_wrap_up(
     )
 
 
-def _format_args(arguments: dict, secret_values: set[str] | None = None) -> str:
+def _format_args(arguments: dict, secrets: Mapping[str, str] | None = None) -> str:
     """Render tool arguments for the action log.
 
     ``fill_secret`` is logged by variable name only — its value is resolved
     inside the executor and never reaches this module, which is what keeps
     the stored log credential-free by construction.
 
-    ``secret_values`` is the backstop for the one path that bypasses it: a
-    model that ignores the instruction and types a credential through plain
+    ``secrets`` is the backstop for the one path that bypasses it: a model
+    that ignores the instruction and types a credential through plain
     ``fill``.  Matching is **exact**, not substring — the model never sees
     environment values, so a leak means it reproduced one verbatim, whereas
-    substring matching would mangle ordinary log lines that happen to contain
-    a short value.
+    substring matching would mangle ordinary log lines that happen to
+    contain a short value.
+
+    The replacement is the variable's own name, matching every other
+    redaction in the application: ``value=$QA_PASSWORD`` tells a reader
+    which credential was typed, where a blanking placeholder tells them
+    only that something was.
     """
-    secrets = secret_values or set()
-    return ", ".join(
-        f"{key}={'***' if isinstance(value, str) and value in secrets else repr(value)}"
-        for key, value in arguments.items()
-    )
+    by_value = {value: name for name, value in sorted((secrets or {}).items())}
+
+    def render(value) -> str:
+        if isinstance(value, str) and value in by_value:
+            return f"${by_value[value]}"
+        return repr(value)
+
+    return ", ".join(f"{key}={render(value)}" for key, value in arguments.items())
 
 
 def _summarize(result: str, limit: int = 200) -> str:

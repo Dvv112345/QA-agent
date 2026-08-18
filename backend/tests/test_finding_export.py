@@ -359,15 +359,15 @@ def test_context_carries_the_provenance(db_session, tracker):
     assert context.run_label.startswith("Scripted run ")
 
 
-def test_secret_values_reach_the_transport_without_the_base_urls(db_session, tracker):
+def test_secrets_reach_the_transport_without_the_base_urls(db_session, tracker):
     """A bug report has to be allowed to name the page it is about."""
     _, execution = _scripted_run(db_session)
 
     finding_export.export_findings(db_session, execution)
 
-    secrets = tracker.created[0][2].secret_values
-    assert "s3cr3t-passw0rd" in secrets
-    assert "https://app.test" not in secrets
+    secrets = tracker.created[0][2].secrets
+    assert "s3cr3t-passw0rd" in secrets.values()
+    assert "https://app.test" not in secrets.values()
 
 
 # ── Idempotency ───────────────────────────────────────────────────────

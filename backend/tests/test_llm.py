@@ -1004,7 +1004,7 @@ def _run_loop(
     snapshot_window=3,
     rounds=None,
     base_urls=("https://app.test",),
-    secret_values=None,
+    secrets=None,
     max_free_recordings=llm.EXPLORATORY_MAX_FINDINGS,
     context_token_limit=llm.EXPLORATORY_CONTEXT_TOKEN_LIMIT,
 ):
@@ -1022,7 +1022,7 @@ def _run_loop(
         max_actions=max_actions,
         snapshot_window=snapshot_window,
         on_round=(rounds.append) if rounds is not None else (lambda _actions: None),
-        secret_values=secret_values,
+        secrets=secrets,
         max_free_recordings=max_free_recordings,
         context_token_limit=context_token_limit,
     )
@@ -1499,11 +1499,13 @@ class TestRunExplorationLoop:
             ],
         )
 
-        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+        result = _run_loop({"fill": lambda **kw: "filled"}, secrets={"QA_PASSWORD": "hunter2"})
 
         log = "\n".join(result.action_log)
         assert "hunter2" not in log
-        assert "***" in log
+        # Names the credential rather than blanking it, matching every other
+        # redaction in the application.
+        assert "$QA_PASSWORD" in log
 
     def test_non_secret_fill_values_stay_readable(self, monkeypatch):
         """Exact-match redaction must not mangle ordinary log lines."""
@@ -1515,7 +1517,7 @@ class TestRunExplorationLoop:
             ],
         )
 
-        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+        result = _run_loop({"fill": lambda **kw: "filled"}, secrets={"QA_PASSWORD": "hunter2"})
 
         assert "hunter2 is my dog" in "\n".join(result.action_log)
 
@@ -2179,3 +2181,77 @@ class TestGenerateCicdIntegration:
 
         with pytest.raises(LLMError, match="malformed"):
             _generate_cicd()
+
+
+class TestDiagnosisRedaction:
+    """`diagnose_and_fix_script` rewrites captured output before the prompt.
+
+    This is the one LLM input that can carry a live environment value —
+    the script ran as a subprocess with the confirmed variables injected.
+    Left alone the value flows into `fixed_script`, is cached on
+    `TestCase.script`, and is then served by the download endpoint and
+    committed by a CI/CD export.
+    """
+
+    _SECRETS = {"BASE_URL": "https://app.test", "PASSWORD": "s3cr3t-passw0rd"}
+
+    def _prompt(self, monkeypatch, *, stdout="", stderr="", secrets=None) -> str:
+        client = _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "script_bug",
+                    "explanation": "x",
+                    "fixed_script": "print(2)",
+                }
+            ),
+        )
+        llm.diagnose_and_fix_script(
+            name="Login",
+            description="Users can log in.",
+            test_case=_TEST_CASE,
+            env_var_names=["BASE_URL", "PASSWORD"],
+            readme=None,
+            file_tree=None,
+            script="print(1)",
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=1,
+            read_file=None,
+            on_round=lambda: None,
+            secrets=self._SECRETS if secrets is None else secrets,
+        )
+        return client.requests[0]["messages"][1]["content"]
+
+    def test_a_credential_in_stderr_becomes_its_variable_name(self, monkeypatch):
+        prompt = self._prompt(monkeypatch, stderr="login failed for admin/s3cr3t-passw0rd")
+
+        assert "s3cr3t-passw0rd" not in prompt
+        assert "$PASSWORD" in prompt
+
+    def test_a_url_value_is_rewritten_too(self, monkeypatch):
+        """`keep=()` here, unlike a ticket — and the diagnosis survives it."""
+        prompt = self._prompt(monkeypatch, stderr="Connection refused to https://app.test/login")
+
+        assert "https://app.test" not in prompt
+        # The path — the diagnostically load-bearing half — is untouched.
+        assert "$BASE_URL/login" in prompt
+
+    def test_stdout_is_rewritten_as_well_as_stderr(self, monkeypatch):
+        prompt = self._prompt(monkeypatch, stdout="GET https://app.test/health")
+
+        assert "https://app.test" not in prompt
+        assert "$BASE_URL/health" in prompt
+
+    def test_a_value_below_the_floor_is_left_alone(self, monkeypatch):
+        """Otherwise an ordinary word is rewritten throughout the output."""
+        prompt = self._prompt(
+            monkeypatch, stderr="the port 80 page returned 500", secrets={"PORT": "80"}
+        )
+
+        assert "the port 80 page returned 500" in prompt
+
+    def test_no_secrets_leaves_the_output_verbatim(self, monkeypatch):
+        prompt = self._prompt(monkeypatch, stderr="plain failure", secrets={})
+
+        assert "plain failure" in prompt
