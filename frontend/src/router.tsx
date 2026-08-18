@@ -1,4 +1,5 @@
 import { createBrowserRouter } from 'react-router-dom'
+import CicdPage from './pages/CicdPage'
 import CreateSprintPage from './pages/CreateSprintPage'
 import ExploratoryRunDetailPage from './pages/ExploratoryRunDetailPage'
 import ExploratorySessionPage from './pages/ExploratorySessionPage'
@@ -130,6 +131,22 @@ export const routes = [
           { id: 'run', label: 'Exploratory Run', path: '/sprints/:id/test-runs' },
           { id: 'session', label: 'Session Sheet' },
         ),
+      },
+      {
+        /*
+         * A side door off the last stage rather than a stage of its own —
+         * deliberately absent from `stages.ts`, which is the one definition
+         * of the four *gated* pipeline stages. Exporting is optional, has no
+         * gate of its own beyond the runs that produced the scripts, and
+         * adding it there would put it in the forward-crumb sequence as
+         * though a sprint were incomplete without it.
+         */
+        path: '/sprints/:id/cicd',
+        element: <CicdPage />,
+        handle: crumbs(SPRINTS, SPRINT, TEST_ENV, TEST_PLANS, TEST_RUNS, {
+          id: 'cicd',
+          label: 'CI/CD',
+        }),
       },
       {
         path: '/repos',

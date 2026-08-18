@@ -316,6 +316,13 @@ describe('TestRunsPage — exploratory list', () => {
     expect(screen.getByText('Scripted Test Runs')).toBeInTheDocument()
   })
 
+  it('links to the CI/CD export page', async () => {
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: 'Export scripts to CI/CD' })
+    expect(link).toHaveAttribute('href', '/sprints/1/cicd')
+  })
+
   it('renders both empty states independently', async () => {
     renderPage()
 

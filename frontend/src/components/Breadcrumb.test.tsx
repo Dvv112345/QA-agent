@@ -112,6 +112,16 @@ const CASES: Array<{
     ahead: [],
     publishes: ['run'],
   },
+  {
+    // A side door off the last stage, not a stage of its own: it carries the
+    // full trail but publishes no forward crumbs, because nothing follows it
+    // and a sprint is not incomplete without it.
+    pattern: '/sprints/:id/cicd',
+    url: '/sprints/7/cicd',
+    chain: ['Sprints', 'Sprint', 'Test Environment', 'Test Plans', 'Test Runs', 'CI/CD'],
+    ahead: [],
+    publishes: ['sprint'],
+  },
   { pattern: '/repos', url: '/repos', chain: ['Sprints', 'Repositories'], ahead: [] },
 ]
 

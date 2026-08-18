@@ -1,0 +1,234 @@
+/*
+ * Page-local only. `.page-frame` owns width, gutters and box-sizing, and
+ * anything unprefixed (`.btn*`, `.run-badge*`, `.page-nav`) lives in
+ * `styles/controls.css`.
+ */
+
+.cicd-header h1 {
+  margin: 0 0 0.25rem;
+}
+
+.cicd-sprint-name {
+  margin: 0 0 1rem;
+  color: var(--text);
+}
+
+/* ── The connection panel ── */
+
+.cicd-config-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.cicd-config-panel-label {
+  font-weight: 600;
+}
+
+.cicd-config-panel-none,
+.cicd-config-panel-hint {
+  color: var(--text);
+}
+
+/* ── What the team must create on the CI side ── */
+
+.cicd-env-names {
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.cicd-env-names h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.cicd-env-names-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.cicd-env-names dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.375rem 0.75rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.cicd-env-names dt {
+  font-weight: 600;
+}
+
+.cicd-env-names dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+}
+
+.cicd-env-names code,
+.cicd-export-files code,
+.cicd-export-dropped code {
+  padding: 0.05rem 0.35rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+/* ── Sections ── */
+
+.cicd-section {
+  margin-bottom: 2rem;
+}
+
+.cicd-section h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.cicd-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.cicd-section-header h2 {
+  margin: 0;
+}
+
+.cicd-notice {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.cicd-error {
+  margin: 0 0 0.5rem;
+  color: var(--danger);
+  font-size: 0.875rem;
+}
+
+/* ── Case selection ── */
+
+.cicd-requirement {
+  margin-bottom: 1.25rem;
+}
+
+.cicd-requirement h3 {
+  margin: 0 0 0.375rem;
+  font-size: 0.95rem;
+}
+
+.cicd-case-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cicd-case {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+
+.cicd-case:last-child {
+  border-bottom: none;
+}
+
+.cicd-case label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+/* Ineligible rows are shown, never hidden: a row that simply vanished is
+   indistinguishable from a bug. */
+.cicd-case-ineligible label {
+  cursor: not-allowed;
+}
+
+.cicd-case-ineligible .cicd-case-title {
+  color: var(--text);
+}
+
+.cicd-case-reason {
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.cicd-case-exported {
+  font-size: 0.8rem;
+}
+
+/* ── Export history ── */
+
+.cicd-export-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cicd-export {
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.cicd-export-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+}
+
+.cicd-export-when,
+.cicd-export-count {
+  color: var(--text);
+}
+
+.cicd-export-pr {
+  margin-left: auto;
+}
+
+.cicd-export-files,
+.cicd-export-dropped,
+.cicd-export-notes {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.cicd-export-failure {
+  margin-top: 0.5rem;
+}

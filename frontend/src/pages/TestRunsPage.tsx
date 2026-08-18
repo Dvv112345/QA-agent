@@ -196,6 +196,15 @@ export default function TestRunsPage() {
         )}
       </div>
 
+      <div className="issue-tracker-panel">
+        <span className="issue-tracker-panel-hint">
+          Commit the verified test scripts to this repository&rsquo;s own CI.
+        </span>
+        <Link to={`/sprints/${sprintId}/cicd`} className="btn btn-secondary btn-small">
+          Export scripts to CI/CD
+        </Link>
+      </div>
+
       {guarded ? (
         <p className="test-runs-notice">
           {active ? 'Approve every test plan first.' : 'This sprint is finished.'}
