@@ -20,12 +20,15 @@ filesystem effect.  It refuses rather than rewrites: raising costs a retry,
 while quietly editing the model's output — or the team's own CI file —
 ships a change nobody reviewed.
 
-The secret-containment check inside it is genuine belt-and-braces, not
-load-bearing: **no environment value reaches either LLM call**, because
-``cicd_context`` is handed the variable/secret *name* split and nothing
-else.  It stays because a committed branch is a third credential exit and
-the least reversible one — a pushed commit persists in git history, in
-forks, and in GitHub's public event stream.
+**A commit here is not a credential exit**, and there is deliberately no
+containment check to make it one.  Both of its inputs are value-free by
+construction: ``cicd_context`` hands the model the variable/secret *name*
+split and never a value, and a cached script had its captured output
+rewritten to ``$NAME`` before the diagnosis call that produced it.  Closing
+the leak where a value could actually enter — ``llm.diagnose_and_fix_script``
+— protects every consumer of a cached script, where a check here would only
+have caught it on the way to GitHub, and only by reading text this system
+wrote itself.
 """
 
 import io
@@ -36,7 +39,6 @@ from collections.abc import Sequence
 from backend.models.database import TestCase
 from backend.services import jenkins_text
 from backend.services.ci_introspect import WorkflowEditError, _round_trip_yaml, _safe_yaml
-from backend.utils.environment_utils import _MIN_REDACTABLE_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +211,11 @@ def qa_job_steps(
 
 
 def render_job_steps(steps: Sequence[dict]) -> str:
-    """The Actions step list as YAML text.
+    """The Actions step list as YAML text, for the prompt to show the model.
 
-    One renderer for two consumers that **must** agree byte for byte: what
-    the prompt shows the model, and what the containment gate exempts.  If
-    these ever drifted, the gate would start refusing our own text again.
+    Rendered rather than described, because rule 3 of the system prompt
+    tells the model to integrate these steps as given — it needs the actual
+    bytes, not a summary of them.
     """
     stream = io.StringIO()
     _round_trip_yaml().dump(list(steps), stream)
@@ -309,83 +311,16 @@ def _referenced_names(text: str, provider_is_actions: bool) -> set[str]:
     return names
 
 
-def _contains_value(text: str, value: str) -> bool:
-    """Whether ``value`` appears in ``text`` as a whole token.
-
-    Token-bounded rather than a bare substring match.  A credential still
-    leaks mid-sentence as a whole token, but a value that merely *contains*
-    or is *contained by* an unrelated identifier no longer trips the gate —
-    the difference between refusing a real leak and refusing
-    ``BROWSER=chromium`` for matching a word we wrote ourselves.
-    """
-    return re.search(rf"(?<![\w.-]){re.escape(value)}(?![\w.-])", text) is not None
-
-
-def _without_our_own_lines(text: str, block: str) -> str:
-    """``text`` minus every line our own deterministic block contributed.
-
-    The containment gate must not fire on text *we* wrote.  The block is
-    built entirely from names — no environment value is in scope in the
-    function that emits it — so a match inside it can only ever be a false
-    positive, and a false positive here is unfixable by retry (every
-    attempt regenerates the same block) and undiagnosable by construction
-    (the error cannot name the value without leaking it).
-
-    Subtraction rather than "skip the block", because the model is *told*
-    to integrate our steps: they come back embedded in its own output, so
-    exempting the function's return value alone would exempt nothing.
-    A sprint with ``BROWSER=chromium`` against our own
-    ``playwright install --with-deps chromium`` is the case that motivated
-    this.
-
-    Our lines are the needles: any line of ``text`` that reproduces one is
-    dropped.  A genuine leak *on such a line* is therefore missed — which
-    is the intended trade, since that line is ours.
-    """
-    ours = [
-        line.strip() for line in block.splitlines() if len(line.strip()) >= _MIN_REDACTABLE_LENGTH
-    ]
-    if not ours:
-        return text
-    kept = [line for line in text.splitlines() if not any(n in line for n in ours)]
-    return "\n".join(kept)
-
-
-def _check_containment(text: str, where: str, secret_values: dict[str, str]) -> None:
-    """Refuse when an environment value appears in content **we** authored.
-
-    Scoped deliberately: the model's files, the scripts, and the
-    model-authored job body — never our own deterministic block (built from
-    names, so a hit there can only be a false positive) and never the
-    repository's own pre-existing bytes (not ours to police).
-
-    The refusal names the **variable**, never the value: an error that
-    cannot say what to look at is an error the user cannot act on, and
-    printing the value would be the leak this exists to prevent.
-    """
-    for name, value in secret_values.items():
-        if len(value) < _MIN_REDACTABLE_LENGTH:
-            continue
-        if _contains_value(text, value):
-            raise CicdValidationError(
-                f"The value of environment variable {name} appears in {where}. "
-                "Generated CI must reference it by name, never inline its value."
-            )
-
-
 def validate(
     result,
     allowed_names: Sequence[str],
-    secret_values: dict[str, str],
     originals: dict[str, str],
     *,
     provider_is_actions: bool,
-    scripts: dict[str, str] | None = None,
-    deterministic_block: str = "",
 ) -> list[str]:
     """Check model output before anything is written. Returns dropped paths.
 
-    Five checks, three of them provider-dispatched:
+    Four checks, three of them provider-dispatched:
 
     1. **path allowlist** — the one place model output becomes a filesystem
        effect. Offending files are dropped and named in the PR trailer
@@ -399,10 +334,17 @@ def validate(
        that kind must carry;
     4. **reference resolution** — every ``vars``/``secrets``/``credentials``
        name resolves to one we supplied, or the job runs with a silently
-       blank variable and fails for reasons unrelated to the product;
-    5. **secret containment** — over the model's own bytes only. The
-       repository's untouched files are never read, and our deterministic
-       block is subtracted first (see ``_without_our_own_lines``).
+       blank variable and fails for reasons unrelated to the product.
+
+    There is deliberately **no secret-containment check**.  Neither input to
+    a commit can carry an environment value: the model is shown the
+    variable/secret *names* and never a value, and a cached script had its
+    captured output rewritten to ``$NAME`` before the diagnosis call that
+    produced it (``llm.diagnose_and_fix_script``).  A check here would have
+    had to read text this system wrote itself — which can only produce false
+    positives, and a false positive is unfixable by retry (every attempt
+    regenerates the same text) and undiagnosable by construction (the error
+    cannot name the value without leaking it).
     """
     allowed = set(allowed_names)
     dropped: list[str] = []
@@ -437,13 +379,6 @@ def validate(
                 f"{path} references {', '.join(unknown)}, which the sprint does not define. "
                 "Every variable and secret must be one of: " + ", ".join(sorted(allowed))
             )
-
-        _check_containment(
-            _without_our_own_lines(content, deterministic_block), path, secret_values
-        )
-
-    for path, script in (scripts or {}).items():
-        _check_containment(script, path, secret_values)
 
     if host_edit is not None and provider_is_actions:
         _check_actions_job_body(host_edit)

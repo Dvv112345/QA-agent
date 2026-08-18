@@ -2,7 +2,6 @@
 
 import pytest
 
-from backend.services import cicd_export
 from backend.services.cicd_export import (
     CicdValidationError,
     jenkins_stage_block,
@@ -207,7 +206,7 @@ def test_jenkins_stage_block_brace_balances_so_it_can_be_spliced():
 def test_validate_drops_a_path_outside_the_allowlist(path):
     result = _result(files=[CicdFileItem(path=path, content=_WORKFLOW)])
 
-    dropped = validate(result, [], {}, {}, provider_is_actions=True)
+    dropped = validate(result, [], {}, provider_is_actions=True)
 
     assert dropped == [path]
 
@@ -226,7 +225,7 @@ def test_validate_accepts_each_allowed_shape(path):
     content = _WORKFLOW if path.endswith((".yml", ".yaml")) else "echo hi"
     result = _result(files=[CicdFileItem(path=path, content=content)])
 
-    assert validate(result, [], {}, {}, provider_is_actions=True) == []
+    assert validate(result, [], {}, provider_is_actions=True) == []
 
 
 def test_validate_accepts_a_jenkinsfile_path():
@@ -239,7 +238,7 @@ def test_validate_accepts_a_jenkinsfile_path():
         ]
     )
 
-    assert validate(result, [], {}, {}, provider_is_actions=False) == []
+    assert validate(result, [], {}, provider_is_actions=False) == []
 
 
 # ── The gate: structural floor ────────────────────────────────────────
@@ -249,7 +248,7 @@ def test_validate_rejects_yaml_that_will_not_parse():
     result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content="a: [1\nb: :")])
 
     with pytest.raises(CicdValidationError, match="not valid YAML"):
-        validate(result, [], {}, {}, provider_is_actions=True)
+        validate(result, [], {}, provider_is_actions=True)
 
 
 def test_validate_rejects_a_workflow_with_no_jobs():
@@ -257,7 +256,7 @@ def test_validate_rejects_a_workflow_with_no_jobs():
     result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
 
     with pytest.raises(CicdValidationError, match="no jobs"):
-        validate(result, [], {}, {}, provider_is_actions=True)
+        validate(result, [], {}, provider_is_actions=True)
 
 
 def test_validate_rejects_a_workflow_with_no_triggers():
@@ -265,7 +264,7 @@ def test_validate_rejects_a_workflow_with_no_triggers():
     result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
 
     with pytest.raises(CicdValidationError, match="no triggers"):
-        validate(result, [], {}, {}, provider_is_actions=True)
+        validate(result, [], {}, provider_is_actions=True)
 
 
 def test_validate_accepts_a_bare_on_key():
@@ -273,7 +272,7 @@ def test_validate_accepts_a_bare_on_key():
     content = "name: QA\non:\n  workflow_dispatch:\njobs:\n  qa:\n    steps: []\n"
     result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
 
-    assert validate(result, [], {}, {}, provider_is_actions=True) == []
+    assert validate(result, [], {}, provider_is_actions=True) == []
 
 
 def test_validate_rejects_a_jenkinsfile_failing_the_floor_check():
@@ -281,7 +280,7 @@ def test_validate_rejects_a_jenkinsfile_failing_the_floor_check():
     result = _result(files=[CicdFileItem(path="Jenkinsfile", content="def x = 1\n")])
 
     with pytest.raises(CicdValidationError, match="not a usable Jenkinsfile"):
-        validate(result, [], {}, {}, provider_is_actions=False)
+        validate(result, [], {}, provider_is_actions=False)
 
 
 # ── The gate: reference resolution ────────────────────────────────────
@@ -294,7 +293,7 @@ def test_validate_rejects_an_actions_reference_we_never_supplied():
     result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
 
     with pytest.raises(CicdValidationError, match="NOPE"):
-        validate(result, ["BASE_URL"], {}, {}, provider_is_actions=True)
+        validate(result, ["BASE_URL"], {}, provider_is_actions=True)
 
 
 def test_validate_accepts_a_supplied_actions_reference():
@@ -304,7 +303,7 @@ def test_validate_accepts_a_supplied_actions_reference():
     )
     result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
 
-    assert validate(result, ["BASE_URL"], {}, {}, provider_is_actions=True) == []
+    assert validate(result, ["BASE_URL"], {}, provider_is_actions=True) == []
 
 
 def test_validate_rejects_unsupplied_jenkins_references():
@@ -316,7 +315,7 @@ def test_validate_rejects_unsupplied_jenkins_references():
     result = _result(files=[CicdFileItem(path="Jenkinsfile", content=content)])
 
     with pytest.raises(CicdValidationError, match="NOT_SUPPLIED"):
-        validate(result, ["BASE_URL"], {}, {}, provider_is_actions=False)
+        validate(result, ["BASE_URL"], {}, provider_is_actions=False)
 
 
 def test_validate_rejects_an_unsupplied_jenkins_credentials_id():
@@ -330,7 +329,7 @@ def test_validate_rejects_an_unsupplied_jenkins_credentials_id():
     result = _result(files=[CicdFileItem(path="Jenkinsfile", content=content)])
 
     with pytest.raises(CicdValidationError, match="NOT_SUPPLIED"):
-        validate(result, ["BASE_URL"], {}, {}, provider_is_actions=False)
+        validate(result, ["BASE_URL"], {}, provider_is_actions=False)
 
 
 def test_validate_accepts_supplied_jenkins_references():
@@ -343,7 +342,7 @@ def test_validate_accepts_supplied_jenkins_references():
     )
     result = _result(files=[CicdFileItem(path="Jenkinsfile", content=content)])
 
-    assert validate(result, ["BASE_URL", "QA_PASSWORD"], {}, {}, provider_is_actions=False) == []
+    assert validate(result, ["BASE_URL", "QA_PASSWORD"], {}, provider_is_actions=False) == []
 
 
 # ── The gate: host edits ──────────────────────────────────────────────
@@ -356,7 +355,7 @@ def test_validate_rejects_a_host_edit_for_a_file_this_export_never_fetched():
     result = _result(host_edit=edit)
 
     with pytest.raises(CicdValidationError, match="did not fetch"):
-        validate(result, [], {}, {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True)
+        validate(result, [], {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True)
 
 
 def test_validate_accepts_a_host_edit_against_a_fetched_file():
@@ -364,7 +363,7 @@ def test_validate_accepts_a_host_edit_against_a_fetched_file():
     result = _result(host_edit=edit)
 
     outcome = validate(
-        result, [], {}, {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True
+        result, [], {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True
     )
 
     assert outcome == []
@@ -375,133 +374,7 @@ def test_validate_rejects_a_job_body_that_is_not_a_mapping_with_steps():
     result = _result(host_edit=edit)
 
     with pytest.raises(CicdValidationError, match="mapping carrying 'steps'"):
-        validate(result, [], {}, {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True)
-
-
-# ── The gate: secret containment ──────────────────────────────────────
-
-_SECRETS = {"QA_PASSWORD": "hunter2secret", "BASE_URL": "https://staging.example.com"}
-
-
-def test_validate_raises_when_an_env_value_appears_in_a_created_file():
-    content = _WORKFLOW.replace(
-        "runs-on: ubuntu-latest", "runs-on: ubuntu-latest\n    env:\n      P: hunter2secret"
-    )
-    result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
-
-    with pytest.raises(CicdValidationError, match="QA_PASSWORD"):
-        validate(result, [], _SECRETS, {}, provider_is_actions=True)
-
-
-def test_a_containment_refusal_names_the_variable_and_never_the_value():
-    content = _WORKFLOW.replace(
-        "runs-on: ubuntu-latest", "runs-on: ubuntu-latest\n    env:\n      P: hunter2secret"
-    )
-    result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
-
-    with pytest.raises(CicdValidationError) as excinfo:
-        validate(result, [], _SECRETS, {}, provider_is_actions=True)
-
-    assert "QA_PASSWORD" in str(excinfo.value)
-    assert "hunter2secret" not in str(excinfo.value)
-
-
-def test_validate_raises_when_an_env_value_appears_in_a_script():
-    result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=_WORKFLOW)])
-
-    with pytest.raises(CicdValidationError, match="QA_PASSWORD"):
-        validate(
-            result,
-            [],
-            _SECRETS,
-            {},
-            provider_is_actions=True,
-            scripts={"qa-agent-tests/a_1/b_2.py": "login(password='hunter2secret')"},
-        )
-
-
-def test_validate_raises_when_an_env_value_appears_in_a_host_edit_job_body():
-    body = _JOB_BODY + "env:\n  P: hunter2secret\n"
-    edit = HostEdit(path=".github/workflows/ci.yml", job_name="qa", job_body=body)
-    result = _result(host_edit=edit)
-
-    with pytest.raises(CicdValidationError, match="QA_PASSWORD"):
-        validate(
-            result, [], _SECRETS, {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True
-        )
-
-
-def test_validate_passes_when_the_value_is_only_in_the_untouched_host_file():
-    """The repository's own content is not ours to police."""
-    host = _WORKFLOW.replace(
-        "runs-on: ubuntu-latest", "runs-on: ubuntu-latest\n    env:\n      P: hunter2secret"
-    )
-    edit = HostEdit(path=".github/workflows/ci.yml", job_name="qa", job_body=_JOB_BODY)
-    result = _result(host_edit=edit)
-
-    assert (
-        validate(result, [], _SECRETS, {".github/workflows/ci.yml": host}, provider_is_actions=True)
-        == []
-    )
-
-
-def test_validate_passes_when_a_value_collides_with_our_own_deterministic_block():
-    """`BROWSER=chromium` against `playwright install --with-deps chromium`.
-
-    The model is *told* to integrate our step block, so the block comes back
-    embedded in its own output — exempting only the emitting function would
-    exempt nothing. The gate subtracts our own lines first.
-
-    Without this the export is unfixable by retry (every attempt regenerates
-    the same block) and undiagnosable by construction (the error cannot name
-    the value without leaking it).
-    """
-    steps = qa_job_steps(["qa-agent-tests/a_1/b_2.py"], [], [])
-    block = cicd_export.render_job_steps(steps)
-    indented = "\n".join(f"      {line}" for line in block.splitlines())
-    content = f"name: QA\non:\n  workflow_dispatch:\njobs:\n  qa:\n    steps:\n{indented}\n"
-    result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
-
-    outcome = validate(
-        result,
-        [],
-        {"BROWSER": "chromium"},
-        {},
-        provider_is_actions=True,
-        deterministic_block=block,
-    )
-
-    assert outcome == []
-
-
-def test_the_gate_still_catches_a_leak_on_a_line_that_is_not_ours():
-    """Subtraction is line-scoped, so everything the model actually wrote is read."""
-    block = cicd_export.render_job_steps(qa_job_steps(["qa-agent-tests/a_1/b_2.py"], [], []))
-    content = _WORKFLOW.replace(
-        "runs-on: ubuntu-latest",
-        "runs-on: ubuntu-latest\n    env:\n      P: hunter2secret",
-    )
-    result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
-
-    with pytest.raises(CicdValidationError, match="QA_PASSWORD"):
-        validate(result, [], _SECRETS, {}, provider_is_actions=True, deterministic_block=block)
-
-
-def test_validate_passes_when_the_value_is_only_a_substring_of_an_identifier():
-    """Token-bounded matching, not a bare substring test."""
-    secrets = {"TOKEN": "abc123"}
-
-    # A longer identifier merely containing the value does not trip the gate…
-    cicd_export._check_containment("run: echo myabc123value", "x", secrets)
-
-    # …but the same value as a whole token still does.
-    with pytest.raises(CicdValidationError, match="TOKEN"):
-        cicd_export._check_containment("run: echo abc123", "x", secrets)
-
-
-def test_a_value_shorter_than_the_redaction_floor_is_not_checked():
-    """Otherwise every export with `ENV=dev` refuses on the word 'dev'."""
-    cicd_export._check_containment("run: echo dev", "x", {"ENV": "dev"})
+        validate(result, [], {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True)
 
 
 # ── The PR trailer ────────────────────────────────────────────────────
