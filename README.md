@@ -16,6 +16,14 @@ Each sprint's test-runs page opens with a **QA metrics panel** — how much was 
 
 A sprint can also be connected to a **Jira project or GitHub Issues repo** — for GitHub, one checkbox files into the sprint's own registered repository using its stored access token — and a run can file its bug findings there: findings are grouped first, so one defect becomes one ticket rather than one per failing test case, and only a run that finished reports automatically — anything else offers a button instead.
 
+Once a sprint's test cases have run to a verdict, their verified scripts can be **exported to the
+repository's own CI** — QA Agent opens a pull request adding the scripts under `qa-agent-tests/`
+plus the GitHub Actions workflow or Jenkins stage that runs them, written to match the conventions
+already in that repository. Nothing is ever merged for you: the pull request is the deliverable,
+and reviewing it is how a generated workflow gets checked. No environment value is ever written
+into the repository — the generated job references variables and secrets by name, and the pull
+request says which ones the team needs to create.
+
 ## Quick Start
 
 ### Prerequisites
@@ -25,8 +33,9 @@ A sprint can also be connected to a **Jira project or GitHub Issues repo** — f
 - PostgreSQL with a `qa_agent` database (`createdb qa_agent`)
 - Redis (optional — required for requirement analysis, test-plan generation, test execution, and exploratory testing)
 - An LLM API key (`OPENAI_API_KEY`, any OpenAI-compatible provider — required for requirement analysis, the test-environment check, test-plan generation, test execution, and exploratory testing)
-- `ENCRYPTION_KEY` (a Fernet key — required to register a repo with an access token, and to connect an issue tracker)
+- `ENCRYPTION_KEY` (a Fernet key — required to register a repo with an access token, to connect an issue tracker, and to connect CI/CD export)
 - Optional: a Jira or GitHub Issues account, to file bug findings from a run (for GitHub, the sprint's own repository and its stored token can be used instead — the token needs permission to write issues)
+- Optional: a GitHub token with **write** access to contents and pull requests, to export test scripts to the repository's CI (checked against the repository before it is saved, so a read-only token is refused at the form rather than halfway through an export)
 - For test execution and exploratory testing: `playwright install chromium` on the worker host (one-time, after `pip install -e .` — the `playwright` pip package doesn't include the browser binary)
 
 ### Backend
