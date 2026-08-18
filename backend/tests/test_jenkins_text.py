@@ -13,6 +13,7 @@ from backend.services.jenkins_text import (
     find_block,
     floor_check,
     insert_stage,
+    stage_check,
 )
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "jenkinsfiles"
@@ -197,3 +198,30 @@ def test_insert_stage_indents_the_stage_to_match_the_block():
     after = insert_stage(_text("declarative.Jenkinsfile"), _STAGE)
 
     assert "\n        stage('QA Agent E2E') {\n" in after
+
+
+# ── stage_check ───────────────────────────────────────────────────────
+
+
+def test_stage_check_passes_a_well_formed_fragment():
+    assert stage_check("stage('QA') {\n  steps { sh 'x' }\n}") == []
+
+
+def test_stage_check_reports_a_fragment_declaring_no_stage():
+    problems = stage_check("steps { sh 'x' }")
+
+    assert any("declares no stage" in problem for problem in problems)
+
+
+def test_stage_check_reports_unbalanced_braces():
+    problems = stage_check("stage('QA') { steps {")
+
+    assert any("braces" in problem for problem in problems)
+
+
+def test_stage_check_does_not_demand_a_pipeline_block():
+    """The file-level floor does; a fragment correctly has none."""
+    fragment = "stage('QA') { steps { sh 'x' } }"
+
+    assert stage_check(fragment) == []
+    assert floor_check(fragment) != []

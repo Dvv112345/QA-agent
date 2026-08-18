@@ -1498,6 +1498,15 @@ class CicdExport(SQLModel, table=True):
     # Copied from CicdConfig at creation — the config is editable, and this
     # export was authored for one provider's conventions.
     provider: str  # CicdProvider value
+    # What the user picked, as a JSON list of TestCase ids.
+    #
+    # Distinct from `items`, which are *receipts* written only after the
+    # commit succeeds: between creation and completion the job needs to know
+    # what was asked for, and on a failed export `items` is empty by design.
+    # The job re-derives eligibility from the database and intersects, so a
+    # case archived between selection and job start is skipped rather than
+    # fatal.
+    selected_case_ids_json: str | None = Field(default=None)
     # ── receipts, all written only after the commit succeeds ──
     branch_name: str | None = Field(default=None)
     commit_sha: str | None = Field(default=None)
@@ -1530,6 +1539,11 @@ class CicdExport(SQLModel, table=True):
             "order_by": "CicdExportItem.id",
         },
     )
+
+    @property
+    def selected_case_ids(self) -> list[int]:
+        """The ids the user picked — decoded once, here."""
+        return json.loads(self.selected_case_ids_json) if self.selected_case_ids_json else []
 
     @property
     def case_count(self) -> int:

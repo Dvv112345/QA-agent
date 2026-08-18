@@ -336,6 +336,11 @@ def validate(
        name resolves to one we supplied, or the job runs with a silently
        blank variable and fails for reasons unrelated to the product.
 
+    A **created file** and a **host edit** are checked differently on
+    purpose: the first is a whole CI file, the second a job or stage
+    fragment.  One floor applied to both would demand ``on``/``jobs`` of an
+    Actions job body and ``pipeline {`` of a Groovy stage.
+
     There is deliberately **no secret-containment check**.  Neither input to
     a commit can carry an environment value: the model is shown the
     variable/secret *names* and never a value, and a cached script had its
@@ -348,14 +353,22 @@ def validate(
     """
     allowed = set(allowed_names)
     dropped: list[str] = []
-    checked: list[tuple[str, str]] = []
+    created: list[tuple[str, str]] = []
 
     for item in result.files:
         if not _path_allowed(item.path):
             dropped.append(item.path)
             logger.warning("CI/CD export: refusing path outside the allowlist: %s", item.path)
             continue
-        checked.append((item.path, item.content))
+        created.append((item.path, item.content))
+
+    # A created file is a whole CI file and gets the whole-file floor.
+    for path, content in created:
+        if provider_is_actions and path.endswith((".yml", ".yaml")):
+            _check_actions_structure(path, content)
+        elif not provider_is_actions and "Jenkinsfile" in path:
+            _check_jenkins_structure(path, content)
+        _check_references(path, content, allowed, provider_is_actions)
 
     host_edit = getattr(result, "host_edit", None)
     if host_edit is not None:
@@ -364,41 +377,53 @@ def validate(
                 f"Host edit names {host_edit.path!r}, which this export did not fetch. "
                 "Only a CI file read during this export may be edited."
             )
-        checked.append((f"{host_edit.path} (added job)", host_edit.job_body))
-
-    for path, content in checked:
-        if path.endswith((".yml", ".yaml")) and provider_is_actions:
-            _check_actions_structure(path, content)
-        elif "Jenkinsfile" in path:
-            _check_jenkins_structure(path, content)
-
-        referenced = _referenced_names(content, provider_is_actions)
-        unknown = sorted(referenced - allowed)
-        if unknown:
-            raise CicdValidationError(
-                f"{path} references {', '.join(unknown)}, which the sprint does not define. "
-                "Every variable and secret must be one of: " + ", ".join(sorted(allowed))
-            )
-
-    if host_edit is not None and provider_is_actions:
-        _check_actions_job_body(host_edit)
+        # A host edit is a **fragment**, not a file, so it gets the
+        # fragment-level floor. Handing it the whole-file check would demand
+        # `on`/`jobs` of an Actions job body and `pipeline {` of a Groovy
+        # stage — rejecting every valid host edit on both sides.
+        label = f"{host_edit.path} (added job)"
+        _check_job_body(label, host_edit.job_body, provider_is_actions)
+        _check_references(label, host_edit.job_body, allowed, provider_is_actions)
 
     return dropped
 
 
-def _check_actions_job_body(host_edit) -> None:
-    """An added job must be a mapping carrying ``steps``.
+def _check_references(
+    path: str, content: str, allowed: set[str], provider_is_actions: bool
+) -> None:
+    """Every variable/secret reference must resolve to a name we supplied.
 
-    The Actions analogue of ``floor_check``: without it the splice writes a
-    string or a list under ``jobs:`` and produces a workflow that fails to
-    parse in the target repository.
+    Otherwise the job runs with a silently blank value and the suite fails
+    for reasons that have nothing to do with the product.
     """
-    try:
-        body = _safe_yaml().load(host_edit.job_body)
-    except Exception as exc:
-        raise CicdValidationError(f"The added job is not valid YAML: {exc}") from exc
-    if not isinstance(body, dict) or "steps" not in body:
-        raise CicdValidationError("The added job must be a mapping carrying 'steps'")
+    unknown = sorted(_referenced_names(content, provider_is_actions) - allowed)
+    if unknown:
+        raise CicdValidationError(
+            f"{path} references {', '.join(unknown)}, which the sprint does not define. "
+            "Every variable and secret must be one of: " + ", ".join(sorted(allowed))
+        )
+
+
+def _check_job_body(label: str, job_body: str, provider_is_actions: bool) -> None:
+    """The fragment-level floor, provider-dispatched.
+
+    Actions: a mapping carrying ``steps``, or the splice writes a string
+    under ``jobs:`` and the workflow fails to parse in the target
+    repository.  Jenkins: brace-balanced and declaring a stage, or
+    ``insert_stage`` produces something that does not resolve.
+    """
+    if provider_is_actions:
+        try:
+            body = _safe_yaml().load(job_body)
+        except Exception as exc:
+            raise CicdValidationError(f"The added job is not valid YAML: {exc}") from exc
+        if not isinstance(body, dict) or "steps" not in body:
+            raise CicdValidationError("The added job must be a mapping carrying 'steps'")
+        return
+
+    problems = jenkins_text.stage_check(job_body)
+    if problems:
+        raise CicdValidationError(f"{label} is not a usable stage: {'; '.join(problems)}")
 
 
 def parse_job_body(job_body: str) -> dict:

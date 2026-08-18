@@ -27,6 +27,7 @@ import rq
 from sqlmodel import Session
 
 from backend.config import (
+    CICD_EXPORT_JOB_TIMEOUT,
     EXPLORATORY_JOB_TIMEOUT,
     JOB_RESULT_TTL,
     JOB_TIMEOUT,
@@ -56,6 +57,7 @@ ANALYZE_REQUIREMENT_TASK = "backend.tasks.analyze_requirement.analyze_requiremen
 GENERATE_TEST_PLAN_TASK = "backend.tasks.generate_test_plan.generate_test_plan_task"
 EXECUTE_TEST_TASK = "backend.tasks.execute_test.execute_test_task"
 EXPLORE_REQUIREMENT_TASK = "backend.tasks.explore_requirement.explore_requirement_task"
+CICD_EXPORT_TASK = "backend.tasks.export_cicd.export_cicd_task"
 
 # ── Module-level singleton ────────────────────────────────────────────────
 _queue_service: QueueService | None = None
@@ -209,6 +211,16 @@ class QueueService:
             exploratory_run_id,
             EXPLORATORY_JOB_TIMEOUT,
             "exploratory run",
+        )
+
+    def enqueue_cicd_export(self, cicd_export_id: int) -> rq.job.Job | None:
+        """Enqueue a CI/CD export job and return the RQ Job handle.
+
+        One LLM call plus a handful of GitHub requests — smaller than a
+        run, larger than an analysis.
+        """
+        return self._enqueue(
+            CICD_EXPORT_TASK, cicd_export_id, CICD_EXPORT_JOB_TIMEOUT, "CI/CD export"
         )
 
     def get_job(self, job_id: str) -> rq.job.Job | None:

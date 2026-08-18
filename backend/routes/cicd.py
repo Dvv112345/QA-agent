@@ -15,21 +15,31 @@ exactly when a team wants its verified scripts committed — the testing is
 done, and the scripts are the artefact worth keeping.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from backend.database import get_session
-from backend.models.database import CicdConfig, CicdProvider, Sprint
+from backend.models.database import (
+    CicdConfig,
+    CicdExport,
+    CicdExportStatus,
+    CicdProvider,
+    Sprint,
+)
 from backend.models.types import (
     CicdConfigRequest,
     CicdConfigResponse,
     CicdEligibilityResponse,
+    CicdExportRequest,
+    CicdExportResponse,
 )
 from backend.routes._common import get_sprint_or_404
 from backend.services import cicd_eligibility
+from backend.services.queue import enqueue_rows, get_queue_service
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token, encrypt_token
 from backend.utils.environment_utils import url_values
@@ -271,3 +281,149 @@ async def get_cicd_eligibility(sprint_id: int, session: Session = Depends(get_se
         variable_names=variables,
         secret_names=secrets,
     )
+
+
+# ── Exports ───────────────────────────────────────────────────────────
+
+
+def _load_export_or_404(session: Session, cicd_export_id: int) -> CicdExport:
+    export = session.get(CicdExport, cicd_export_id)
+    if export is None:
+        raise HTTPException(status_code=404, detail="Export not found")
+    return export
+
+
+@router.post(
+    "/sprints/{sprint_id}/cicd-exports", response_model=CicdExportResponse, status_code=201
+)
+async def create_cicd_export(
+    sprint_id: int,
+    payload: CicdExportRequest,
+    session: Session = Depends(get_session),
+):
+    """Start an export of the selected test cases.
+
+    Every refusal here happens **before** the row is created, so a request
+    that cannot succeed never costs an LLM call and never leaves a `failed`
+    row for the user to make sense of.
+    """
+    sprint = cicd_eligibility.load_sprint_for_eligibility(session, sprint_id)
+    if sprint is None:
+        raise HTTPException(status_code=404, detail="Sprint not found")
+
+    config = sprint.cicd_config
+    if config is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Connect a CI/CD target for this sprint before exporting.",
+        )
+
+    # The environment can be cleared to None by a later insufficient check,
+    # and a finished sprint may still export — so without this the model
+    # would have nothing to reference and we would commit a workflow that
+    # runs the suite against no environment at all.
+    test_env = sprint.test_environment
+    if not (test_env and test_env.env_vars):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This sprint has no test-environment variables, so the generated CI "
+                "would have no environment to run against. Confirm the test environment first."
+            ),
+        )
+
+    entries = cicd_eligibility.case_entries(session, sprint)
+    eligible = cicd_eligibility.eligible_ids(entries)
+    selected = set(payload.test_case_ids) & eligible if payload.test_case_ids else eligible
+    if not selected:
+        raise HTTPException(status_code=422, detail=_no_eligible_detail(entries, payload))
+
+    export = CicdExport(
+        sprint_id=sprint_id,
+        provider=config.provider,
+        selected_case_ids_json=json.dumps(sorted(selected)),
+    )
+    session.add(export)
+    session.commit()
+    session.refresh(export)
+
+    enqueue_rows(session, [export], get_queue_service().enqueue_cicd_export)
+    session.commit()
+    session.refresh(export)
+
+    logger.info(
+        "Sprint id=%d: CI/CD export %d created for %d case(s)",
+        sprint_id,
+        export.id,
+        len(selected),
+    )
+    return export
+
+
+def _no_eligible_detail(entries, payload: CicdExportRequest) -> str:
+    """Say *why* nothing can be exported, rather than only that nothing can.
+
+    The two reasons imply different actions — run the case at all, versus
+    re-run it — and a bare "nothing to export" leaves the user guessing
+    which.
+    """
+    if not entries:
+        return "This sprint has no test cases to export yet."
+    if payload.test_case_ids:
+        return (
+            "None of the selected test cases can be exported. A case needs a cached "
+            "script from a run that reached a verdict, and that script must still match "
+            "the current requirement, plan and environment."
+        )
+    stale = sum(1 for entry in entries if entry.reason == "stale")
+    no_script = sum(1 for entry in entries if entry.reason == "no_script")
+    parts = []
+    if no_script:
+        parts.append(f"{no_script} have never run to a verdict")
+    if stale:
+        parts.append(f"{stale} are out of date and need re-running")
+    return "No test case can be exported yet: " + ", ".join(parts) + "."
+
+
+@router.get("/sprints/{sprint_id}/cicd-exports", response_model=list[CicdExportResponse])
+async def list_cicd_exports(sprint_id: int, session: Session = Depends(get_session)):
+    """This sprint's export history, newest first."""
+    get_sprint_or_404(session, sprint_id)
+    return session.exec(
+        select(CicdExport).where(CicdExport.sprint_id == sprint_id).order_by(CicdExport.id.desc())
+    ).all()
+
+
+@router.get("/cicd-exports/{cicd_export_id}", response_model=CicdExportResponse)
+async def get_cicd_export(cicd_export_id: int, session: Session = Depends(get_session)):
+    """One export, for the page to poll while it runs."""
+    return _load_export_or_404(session, cicd_export_id)
+
+
+@router.post("/cicd-exports/{cicd_export_id}/restart", response_model=CicdExportResponse)
+async def restart_cicd_export(cicd_export_id: int, session: Session = Depends(get_session)):
+    """Retry a failed export.
+
+    Uncapped, and with no bookkeeping: every attempt writes a **fresh
+    branch**, so a retry cannot collide with or half-adopt whatever the
+    previous attempt managed to write.  Only a run already in flight is
+    refused — restarting that would put two workers on one row.
+    """
+    export = _load_export_or_404(session, cicd_export_id)
+    if export.status == CicdExportStatus.RUNNING:
+        raise HTTPException(status_code=422, detail="This export is still running.")
+
+    export.status = CicdExportStatus.PENDING
+    export.error = None
+    export.last_heartbeat = None
+    export.retry_count = 0
+    export.updated_at = datetime.now(timezone.utc)
+    session.add(export)
+    session.commit()
+
+    enqueue_rows(session, [export], get_queue_service().enqueue_cicd_export)
+    session.commit()
+    session.refresh(export)
+
+    logger.info("CI/CD export %d restarted", cicd_export_id)
+    return export

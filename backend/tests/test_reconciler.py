@@ -7,8 +7,17 @@ import pytest
 from sqlmodel import select
 
 import backend.services.reconciler as reconciler_module
-from backend.models.database import SPRINT_FINISHED_ERROR, Requirement, RequirementStatus
-from backend.services.reconciler import reconcile_once
+from backend.config import MAX_AUTO_RETRIES
+from backend.models.database import (
+    SPRINT_FINISHED_ERROR,
+    CicdExport,
+    CicdExportStatus,
+    CicdProvider,
+    Requirement,
+    RequirementStatus,
+    Sprint,
+)
+from backend.services.reconciler import SWEEP_SPECS, fail_in_progress_rows, reconcile_once
 from backend.tests.test_requirement_routes import _seed_requirement, _seed_sprint
 
 
@@ -31,6 +40,7 @@ class _StubQueueService:
         self.enqueued_plans: list[int] = []
         self.enqueued_executions: list[int] = []
         self.enqueued_explorations: list[int] = []
+        self.enqueued_cicd_exports: list[int] = []
 
     def enqueue_analysis(self, requirement_id: int):
         self.enqueued.append(requirement_id)
@@ -47,6 +57,10 @@ class _StubQueueService:
     def enqueue_exploration(self, exploratory_run_id: int):
         self.enqueued_explorations.append(exploratory_run_id)
         return SimpleNamespace(id=f"exploration-job-{exploratory_run_id}")
+
+    def enqueue_cicd_export(self, cicd_export_id: int):
+        self.enqueued_cicd_exports.append(cicd_export_id)
+        return SimpleNamespace(id=f"cicd-job-{cicd_export_id}")
 
     def get_job(self, job_id: str):
         return self.jobs.get(job_id)
@@ -880,3 +894,120 @@ class TestBackgroundSweepsNeverFile:
 
         assert resp.status_code == 200
         assert tracker_spy == []
+
+
+class TestCicdExportSweeps:
+    """A CI/CD export may run on a *finished* sprint, and must still recover.
+
+    `inactive_sprint_ok` gates three sites, not two. The two inactive-sprint
+    sweeps skip this spec, and `_sweep_pending` drops its `Sprint.active`
+    predicate for it — without that third one a pending export on a finished
+    sprint is invisible to every sweep at once and sits there forever.
+    """
+
+    def _seed(self, db_session, *, active=False, status=CicdExportStatus.PENDING, **kwargs):
+        sprint = _seed_sprint(db_session, active=active)
+        export = CicdExport(
+            sprint_id=sprint.id,
+            provider=CicdProvider.GITHUB_ACTIONS,
+            status=status,
+            **kwargs,
+        )
+        db_session.add(export)
+        db_session.commit()
+        db_session.refresh(export)
+        return sprint, export
+
+    def _reload(self, db_session, export_id) -> CicdExport:
+        db_session.expire_all()
+        return db_session.get(CicdExport, export_id)
+
+    def test_the_inactive_sprint_sweep_does_not_fail_a_running_export(self, db_session, stub_queue):
+        _, export = self._seed(
+            db_session, status=CicdExportStatus.RUNNING, last_heartbeat=datetime.now(timezone.utc)
+        )
+
+        reconcile_once()
+
+        assert self._reload(db_session, export.id).status == CicdExportStatus.RUNNING
+
+    def test_a_pending_export_on_an_inactive_sprint_is_enqueued(self, db_session, stub_queue):
+        """The case a two-site flag silently drops."""
+        _, export = self._seed(db_session)
+
+        reconcile_once()
+
+        assert stub_queue.enqueued_cicd_exports == [export.id]
+        assert self._reload(db_session, export.id).job_id == f"cicd-job-{export.id}"
+
+    def test_a_pending_export_on_an_active_sprint_is_enqueued_too(self, db_session, stub_queue):
+        _, export = self._seed(db_session, active=True)
+
+        reconcile_once()
+
+        assert stub_queue.enqueued_cicd_exports == [export.id]
+
+    def test_a_stale_running_export_is_re_pended_and_recovers(self, db_session, stub_queue):
+        """Crash recovery is retained — the heartbeat sweep never had a Sprint join."""
+        _, export = self._seed(
+            db_session,
+            status=CicdExportStatus.RUNNING,
+            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=10_000),
+        )
+
+        reconcile_once()
+
+        row = self._reload(db_session, export.id)
+        assert row.status == CicdExportStatus.PENDING
+        assert row.retry_count == 1
+
+    def test_a_stale_running_export_fails_once_retries_are_exhausted(self, db_session, stub_queue):
+        _, export = self._seed(
+            db_session,
+            status=CicdExportStatus.RUNNING,
+            retry_count=MAX_AUTO_RETRIES - 1,
+            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=10_000),
+        )
+
+        reconcile_once()
+
+        row = self._reload(db_session, export.id)
+        assert row.status == CicdExportStatus.FAILED
+        assert "Use Restart" in row.error
+
+    def test_the_other_four_row_types_are_still_skipped_on_an_inactive_sprint(
+        self, db_session, stub_queue
+    ):
+        """Regression pin: the default is False, so nothing else may change."""
+        sprint = _seed_sprint(db_session, active=False)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.PENDING)
+
+        reconcile_once()
+
+        db_session.expire_all()
+        assert stub_queue.enqueued == []
+        assert db_session.get(Requirement, requirement.id).status == RequirementStatus.FAILED
+
+
+class TestFinishSprintLeavesExportsAlone:
+    def test_finishing_a_sprint_does_not_fail_a_pending_export(self, db_session):
+        """D21 permits an export on a finished sprint — killing it here would
+        retire exactly the work the feature exists for."""
+        sprint = _seed_sprint(db_session, active=True)
+        export = CicdExport(
+            sprint_id=sprint.id,
+            provider=CicdProvider.GITHUB_ACTIONS,
+            status=CicdExportStatus.PENDING,
+        )
+        db_session.add(export)
+        db_session.commit()
+
+        now = datetime.now(timezone.utc)
+        for spec in SWEEP_SPECS:
+            if spec.inactive_sprint_ok:
+                continue
+            fail_in_progress_rows(db_session, spec, Sprint.id == sprint.id, now)
+        db_session.commit()
+
+        db_session.expire_all()
+        assert db_session.get(CicdExport, export.id).status == CicdExportStatus.PENDING

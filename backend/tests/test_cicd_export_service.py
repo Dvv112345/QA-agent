@@ -433,3 +433,70 @@ def test_pr_body_carries_extra_notices_and_generation_notes():
 
     assert "Adapted the runner." in body
     assert "The repository was not read during generation." in body
+
+
+# ── The gate: a fragment is not a file ────────────────────────────────
+
+
+def test_a_jenkins_host_edit_is_checked_as_a_stage_not_a_whole_file():
+    """A stage fragment has no `pipeline {` — demanding one rejects every valid edit."""
+    stage = "stage('QA') {\n  steps {\n    sh 'python a.py'\n  }\n}"
+    edit = HostEdit(path="Jenkinsfile", job_name="QA", job_body=stage)
+    result = _result(host_edit=edit)
+
+    outcome = validate(result, [], {"Jenkinsfile": "pipeline { }"}, provider_is_actions=False)
+
+    assert outcome == []
+
+
+def test_a_jenkins_host_edit_that_declares_no_stage_is_refused():
+    edit = HostEdit(path="Jenkinsfile", job_name="QA", job_body="sh 'python a.py'")
+    result = _result(host_edit=edit)
+
+    with pytest.raises(CicdValidationError, match="not a usable stage"):
+        validate(result, [], {"Jenkinsfile": "pipeline { }"}, provider_is_actions=False)
+
+
+def test_a_jenkins_host_edit_with_unbalanced_braces_is_refused():
+    edit = HostEdit(path="Jenkinsfile", job_name="QA", job_body="stage('QA') { steps {")
+    result = _result(host_edit=edit)
+
+    with pytest.raises(CicdValidationError, match="braces do not balance"):
+        validate(result, [], {"Jenkinsfile": "pipeline { }"}, provider_is_actions=False)
+
+
+def test_a_created_jenkinsfile_still_gets_the_whole_file_floor():
+    """The distinction is fragment-vs-file, not Jenkins-vs-Actions."""
+    result = _result(files=[CicdFileItem(path="Jenkinsfile.qa-agent", content="stage('QA') { }")])
+
+    with pytest.raises(CicdValidationError, match="not a usable Jenkinsfile"):
+        validate(result, [], {}, provider_is_actions=False)
+
+
+def test_an_actions_host_edit_is_not_asked_for_triggers_or_jobs():
+    edit = HostEdit(
+        path=".github/workflows/ci.yml",
+        job_name="qa",
+        job_body="runs-on: ubuntu-latest\nsteps:\n  - run: python a.py\n",
+    )
+    result = _result(host_edit=edit)
+
+    outcome = validate(
+        result, [], {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True
+    )
+
+    assert outcome == []
+
+
+def test_references_inside_a_host_edit_are_still_resolved():
+    edit = HostEdit(
+        path=".github/workflows/ci.yml",
+        job_name="qa",
+        job_body="runs-on: ubuntu-latest\nsteps:\n  - run: echo ${{ secrets.NOPE }}\n",
+    )
+    result = _result(host_edit=edit)
+
+    with pytest.raises(CicdValidationError, match="NOPE"):
+        validate(
+            result, ["BASE_URL"], {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True
+        )

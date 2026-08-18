@@ -193,6 +193,23 @@ def floor_check(text: str) -> list[str]:
     return problems
 
 
+def stage_check(stage_src: str) -> list[str]:
+    """Structural problems with a *stage fragment*, as a host edit supplies one.
+
+    Deliberately not :func:`floor_check`: that one validates a whole
+    Jenkinsfile and demands ``pipeline {`` or ``node {``, which a stage
+    fragment correctly does not have.  Applying the file-level floor to a
+    fragment rejects every valid host edit — the Groovy mirror of checking
+    an Actions job body for ``on`` and ``jobs``.
+    """
+    problems = []
+    if not braces_balance(stage_src):
+        problems.append("braces do not balance")
+    if "stage(" not in _structural(stage_src):
+        problems.append("declares no stage")
+    return problems
+
+
 def insert_stage(text: str, stage_src: str) -> str | None:
     """Splice ``stage_src`` in as the last stage of the ``stages`` block.
 
