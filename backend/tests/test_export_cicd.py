@@ -583,3 +583,36 @@ def test_no_file_tree_means_no_read_file_tool(db_session, llm_stub, httpx_mock):
         if str(request.url).endswith("/pulls")
     )
     assert "could not read this repository" in pull["body"]
+
+
+def test_a_model_file_cannot_displace_a_verified_script(db_session, llm_stub, httpx_mock):
+    """The one invariant the schema alone could not hold.
+
+    `CicdIntegrationResult` has no field for a script, but a `files` entry
+    aimed at a script's own path was a way to write one anyway. The gate
+    now refuses the script root outright, and the commit applies our
+    scripts last regardless.
+    """
+    sprint, cases = _seed(db_session, cases=1)
+    export = _export(db_session, sprint, cases)
+    target = f"qa-agent-tests/user-login_1/case-0_{cases[0].id}.py"
+    llm_stub.result = _result(
+        files=[
+            CicdFileItem(path=".github/workflows/qa.yml", content=_WORKFLOW),
+            CicdFileItem(path=target, content="print('replaced by the model')\n"),
+        ]
+    )
+    _github_ok(httpx_mock)
+
+    export_cicd_task(export.id)
+
+    tree = next(
+        json.loads(request.content)
+        for request in httpx_mock.get_requests()
+        if str(request.url).endswith("/git/trees") and request.method == "POST"
+    )
+    by_path = {entry["path"]: entry["content"] for entry in tree["tree"]}
+    assert by_path[target] == "print(0)\n"
+
+    # Dropped rather than silently ignored, so the PR body names it.
+    assert target in _reload(db_session, export.id).dropped_paths

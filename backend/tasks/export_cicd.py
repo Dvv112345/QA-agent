@@ -384,18 +384,26 @@ def export_cicd_task(cicd_export_id: int) -> None:
                 reference_names,
                 originals,
                 provider_is_actions=is_actions,
+                host_candidates=host_candidates,
             )
 
             notices: list[str] = []
             if read_file is None:
                 notices.append(_TOOLS_FALLBACK_NOTICE)
 
-            files = dict(scripts)
             allowed_new = {item.path: item.content for item in result.files}
             for path in dropped:
                 allowed_new.pop(path, None)
+
+            files: dict[str, str] = {}
             files.update(allowed_new)
             files.update(_splice(result, originals, provider, notices))
+            # Our verified scripts are applied **last**, so no model-authored
+            # file can displace one. The path allowlist already refuses the
+            # script root, making this belt-and-braces — but the invariant
+            # "the LLM never edits a verified script" is worth holding at the
+            # write layer too, not only in the schema and the allowlist.
+            files.update(scripts)
 
             branch = _branch_name(sprint.id)
             body = cicd_export.pr_body(

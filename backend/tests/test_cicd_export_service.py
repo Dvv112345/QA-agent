@@ -259,7 +259,6 @@ def test_validate_drops_a_path_outside_the_allowlist(path):
         ".github/workflows/qa.yaml",
         ".github/actions/qa/action.yml",
         "ci/run-qa.sh",
-        "qa-agent-tests/README.md",
     ],
 )
 def test_validate_accepts_each_allowed_shape(path):
@@ -267,6 +266,22 @@ def test_validate_accepts_each_allowed_shape(path):
     result = _result(files=[CicdFileItem(path=path, content=content)])
 
     assert validate(result, [], {}, provider_is_actions=True) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["qa-agent-tests/README.md", "qa-agent-tests/login_1/happy_2.py"],
+)
+def test_the_model_may_not_write_into_the_verified_script_tree(path):
+    """The scripts are ours, and no model output may land beside them.
+
+    They are committed verbatim from the database by `script_files`, which
+    never passes through this gate — so an allowlist entry for the script
+    root granted the model write access to the suite and nothing else.
+    """
+    result = _result(files=[CicdFileItem(path=path, content="print(1)\n")])
+
+    assert validate(result, [], {}, provider_is_actions=True) == [path]
 
 
 def test_validate_accepts_a_jenkinsfile_path():
@@ -587,3 +602,72 @@ def test_the_jenkins_block_passes_its_own_gate(names):
         )
         == []
     )
+
+
+# ── The gate: Jenkins built-ins, and the trigger rule ─────────────────
+
+
+def test_a_jenkins_builtin_is_not_an_undefined_reference():
+    """Jenkins populates `env.BUILD_NUMBER`; the sprint never had to.
+
+    Refusing it costs three retries on text that regenerates identically,
+    and the error names a variable the user cannot define.
+    """
+    body = (
+        "stage('QA') {\n  steps {\n"
+        '    echo "build ${env.BUILD_NUMBER} on ${env.NODE_NAME}"\n'
+        "  }\n}"
+    )
+    result = _result(host_edit=HostEdit(path="Jenkinsfile", job_name="QA", job_body=body))
+
+    outcome = validate(
+        result, ["BASE_URL"], {"Jenkinsfile": "pipeline { }"}, provider_is_actions=False
+    )
+
+    assert outcome == []
+
+
+def test_a_typo_of_our_own_name_is_still_refused():
+    """The built-in allowance must not turn the gate off."""
+    body = "stage('QA') {\n  steps {\n    echo \"${env.BAES_URL}\"\n  }\n}"
+    result = _result(host_edit=HostEdit(path="Jenkinsfile", job_name="QA", job_body=body))
+
+    with pytest.raises(CicdValidationError, match="BAES_URL"):
+        validate(result, ["BASE_URL"], {"Jenkinsfile": "pipeline { }"}, provider_is_actions=False)
+
+
+def test_a_host_whose_triggers_do_not_fit_is_refused():
+    """D34, gated rather than merely asked for in the prompt.
+
+    A job inherits its workflow's triggers, so a QA suite added to an
+    `on: pull_request` workflow runs against a live environment on every
+    pull request in a repository we do not own.
+    """
+    result = _result(
+        host_edit=HostEdit(path=".github/workflows/pr.yml", job_name="qa", job_body=_JOB_BODY)
+    )
+
+    with pytest.raises(CicdValidationError, match="triggers do not fit"):
+        validate(
+            result,
+            [],
+            {".github/workflows/pr.yml": _WORKFLOW},
+            provider_is_actions=True,
+            host_candidates=[".github/workflows/nightly.yml"],
+        )
+
+
+def test_a_host_whose_triggers_fit_is_accepted():
+    result = _result(
+        host_edit=HostEdit(path=".github/workflows/nightly.yml", job_name="qa", job_body=_JOB_BODY)
+    )
+
+    outcome = validate(
+        result,
+        [],
+        {".github/workflows/nightly.yml": _WORKFLOW},
+        provider_is_actions=True,
+        host_candidates=[".github/workflows/nightly.yml"],
+    )
+
+    assert outcome == []

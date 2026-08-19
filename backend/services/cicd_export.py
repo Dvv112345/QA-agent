@@ -46,13 +46,21 @@ EXPORT_ROOT = "qa-agent-tests"
 
 # Where a model-authored path may land. Wider than `originals` on purpose —
 # a new workflow file has no pre-existing counterpart to be a key of.
+#
+# `qa-agent-tests/` is deliberately **absent**. The brainstorm framed this
+# list as "every path the export may write" and included the script root on
+# that reading, but the gate only ever runs over model output: our scripts
+# reach the commit through `script_files()` and never pass through here. So
+# the entry did nothing for them and only granted the model write access to
+# the verified suite. Nothing needs it — a script is run as `python <file>`
+# with no test framework, so there is no conftest, no `__init__.py` and no
+# requirements file to place beside it.
 _ALLOWED_PATH_PATTERNS = (
     re.compile(r"^\.github/workflows/[^/]+\.ya?ml$"),
     re.compile(r"^\.github/actions/[^\0]+$"),
     re.compile(r"^Jenkinsfile$"),
     re.compile(r"^Jenkinsfile\.[A-Za-z0-9._-]+$"),
     re.compile(r"^ci/[^\0]+$"),
-    re.compile(rf"^{EXPORT_ROOT}/[^\0]+$"),
 )
 
 _SLUG_MAX = 40
@@ -68,6 +76,50 @@ _JENKINS_REFERENCES = (
     re.compile(r"env\.([A-Za-z_]\w*)"),
     re.compile(r"credentialsId:\s*['\"]([^'\"]+)['\"]"),
     re.compile(r"credentials\(\s*['\"]([^'\"]+)['\"]\s*\)"),
+)
+
+# Jenkins populates these itself, so a stage may reference one without the
+# sprint having defined anything. Without this, an ordinary
+# `echo "${env.BUILD_NUMBER}"` is refused as an undefined variable and the
+# export burns every retry on text that regenerates identically.
+#
+# **Not a closed set**, unlike Actions' `vars.`/`secrets.`: Jenkins' `env`
+# namespace is extended by plugins (git supplies `GIT_*`, multibranch
+# supplies `BRANCH_NAME`/`CHANGE_*`), so this is a pragmatic floor covering
+# the core and the common plugins. The gate's real job is catching a name
+# that looks like one of *ours* but is not — a typo'd `env.BAES_URL` — and
+# that still fails here.
+_JENKINS_BUILTINS = frozenset(
+    {
+        "BUILD_NUMBER",
+        "BUILD_ID",
+        "BUILD_DISPLAY_NAME",
+        "BUILD_TAG",
+        "BUILD_URL",
+        "JOB_NAME",
+        "JOB_BASE_NAME",
+        "JOB_URL",
+        "JENKINS_URL",
+        "JENKINS_HOME",
+        "EXECUTOR_NUMBER",
+        "NODE_NAME",
+        "NODE_LABELS",
+        "WORKSPACE",
+        "WORKSPACE_TMP",
+        # Supplied by the git and multibranch plugins.
+        "GIT_COMMIT",
+        "GIT_BRANCH",
+        "GIT_URL",
+        "GIT_PREVIOUS_COMMIT",
+        "GIT_PREVIOUS_SUCCESSFUL_COMMIT",
+        "BRANCH_NAME",
+        "CHANGE_ID",
+        "CHANGE_TARGET",
+        "CHANGE_BRANCH",
+        "CHANGE_AUTHOR",
+        "CHANGE_URL",
+        "TAG_NAME",
+    }
 )
 
 # The libraries a generated script may import — the same closed set
@@ -368,7 +420,10 @@ def _referenced_names(text: str, provider_is_actions: bool) -> set[str]:
     names: set[str] = set()
     for pattern in _JENKINS_REFERENCES:
         names.update(match.group(1) for match in pattern.finditer(text))
-    return names
+    # Jenkins supplies these; only names the sprint was supposed to define
+    # are ours to check. Actions needs no counterpart — `github.*` and
+    # `runner.*` live outside the `vars`/`secrets` pattern entirely.
+    return names - _JENKINS_BUILTINS
 
 
 def validate(
@@ -377,6 +432,7 @@ def validate(
     originals: dict[str, str],
     *,
     provider_is_actions: bool,
+    host_candidates: Sequence[str] | None = None,
 ) -> list[str]:
     """Check model output before anything is written. Returns dropped paths.
 
@@ -436,6 +492,18 @@ def validate(
             raise CicdValidationError(
                 f"Host edit names {host_edit.path!r}, which this export did not fetch. "
                 "Only a CI file read during this export may be edited."
+            )
+        # A job inherits its workflow's triggers, so adding one to an
+        # `on: pull_request` host points an environment-dependent suite at
+        # a live system on every pull request in a repository we do not
+        # own. The prompt states the rule and names the legal hosts; a rule
+        # of this consequence is gated rather than asked for, exactly as
+        # the path allowlist and the fetched-file check are.
+        if host_candidates is not None and host_edit.path not in host_candidates:
+            raise CicdValidationError(
+                f"Host edit names {host_edit.path!r}, whose triggers do not fit an "
+                "environment-dependent suite. Add a job only to a workflow that already "
+                "runs on dispatch, a schedule, or a completed deployment."
             )
         # A host edit is a **fragment**, not a file, so it gets the
         # fragment-level floor. Handing it the whole-file check would demand
