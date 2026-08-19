@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import CicdConfigModal from '../components/CicdConfigModal'
 import FinishSprintControl from '../components/FinishSprintControl'
@@ -70,6 +70,28 @@ function EnvNameList({ names }: { names: CicdEnvName[] }) {
   )
 }
 
+/** Whether an export is still working, and so worth polling for. */
+function isInFlight(row: CicdExport): boolean {
+  return row.status === 'pending' || row.status === 'running'
+}
+
+/**
+ * Which cases start checked: every eligible one a completed export has not
+ * already shipped.
+ *
+ * Re-exporting a shipped case is legitimate but rarely what the user came
+ * for, so it is opt-in. Extracted because the same rule applies twice —
+ * on load, and again once an export finishes and its cases become
+ * "already exported".
+ */
+function defaultSelection(entries: CicdCaseEntry[]): Set<number> {
+  return new Set(
+    entries
+      .filter((entry) => entry.eligible && !entry.previously_exported)
+      .map((entry) => entry.test_case_id),
+  )
+}
+
 export default function CicdPage() {
   const { id } = useParams<{ id: string }>()
   const sprintId = Number(id)
@@ -80,6 +102,9 @@ export default function CicdPage() {
   const [exports, setExports] = useState<CicdExport[]>([])
   const [selected, setSelected] = useState<Set<number> | null>(null)
   const [showConfigModal, setShowConfigModal] = useState(false)
+  // Whether the previous read saw work in flight — the edge `refresh` needs
+  // to spot an export finishing.
+  const wasInFlightRef = useRef(false)
 
   const { loading, error } = useAsyncData(async () => {
     const [sprintData, configData, eligibilityData, exportData] = await Promise.all([
@@ -92,16 +117,8 @@ export default function CicdPage() {
     setConfig(configData)
     setEligibility(eligibilityData)
     setExports(exportData)
-    // Every eligible case starts checked, minus the ones a completed export
-    // already shipped: re-exporting those is legitimate but rarely what the
-    // user came for, so it is opt-in rather than opt-out.
-    setSelected(
-      new Set(
-        eligibilityData.entries
-          .filter((entry) => entry.eligible && !entry.previously_exported)
-          .map((entry) => entry.test_case_id),
-      ),
-    )
+    setSelected(defaultSelection(eligibilityData.entries))
+    wasInFlightRef.current = exportData.some(isInFlight)
     return sprintData
   }, [sprintId])
 
@@ -114,12 +131,24 @@ export default function CicdPage() {
     ])
     setExports(exportData)
     setEligibility(eligibilityData)
+    // When the last export settles, the cases it shipped have just become
+    // "already exported" — so the default selection means something
+    // different than it did a moment ago, and leaving the old one checked
+    // offers to export them again. Compared and assigned here, inside an
+    // async callback, rather than in an effect body: a ref written during
+    // render trips `react-hooks/refs`, and setState in a synchronous effect
+    // trips `react-hooks/set-state-in-effect`.
+    const nowInFlight = exportData.some(isInFlight)
+    if (wasInFlightRef.current && !nowInFlight) {
+      setSelected(defaultSelection(eligibilityData.entries))
+    }
+    wasInFlightRef.current = nowInFlight
   }, [sprintId])
 
   // No EXPORT_GRACE_TICKS analogue is needed: unlike a test run, this row
   // reaches `completed` only *after* its pull request exists, so nothing
   // lands after the terminal read.
-  const inFlight = exports.some((row) => row.status === 'pending' || row.status === 'running')
+  const inFlight = exports.some(isInFlight)
   usePolling(refresh, { enabled: inFlight })
 
   const exportAction = useAction<CicdExport>(() => {
@@ -129,12 +158,13 @@ export default function CicdPage() {
   // Keyed on the eligibility object itself rather than on a `?? []` fallback,
   // which would be a fresh array every render and rebuild the map each time.
   const grouped = useMemo(() => {
-    const byRequirement = new Map<number, { name: string; entries: CicdCaseEntry[] }>()
+    const byRequirement = new Map<number, { id: number; name: string; entries: CicdCaseEntry[] }>()
     for (const entry of eligibility?.entries ?? []) {
       const bucket = byRequirement.get(entry.requirement_id)
       if (bucket) bucket.entries.push(entry)
       else {
         byRequirement.set(entry.requirement_id, {
+          id: entry.requirement_id,
           name: entry.requirement_name,
           entries: [entry],
         })
@@ -262,7 +292,7 @@ export default function CicdPage() {
           </PageState>
         ) : (
           grouped.map((group) => (
-            <div key={group.name} className="cicd-requirement">
+            <div key={group.id} className="cicd-requirement">
               <h3>{group.name}</h3>
               <ul className="cicd-case-list">
                 {group.entries.map((entry) => (
@@ -338,7 +368,10 @@ function ExportRow({ row, onRestarted }: { row: CicdExport; onRestarted: () => P
           {CICD_EXPORT_STATUS_LABELS[row.status]}
         </span>
         <span className="cicd-export-when">{formatDateTime(row.created_at)}</span>
-        <span className="cicd-export-count">{plural(row.case_count, 'test case')}</span>
+        {/* Deliberately still 0 while running: receipts are written only
+            after the commit succeeds, so nothing has been committed yet —
+            which is exactly what this now says. */}
+        <span className="cicd-export-count">{plural(row.case_count, 'test case')} committed</span>
         {row.pr_url && (
           <a href={row.pr_url} target="_blank" rel="noreferrer" className="cicd-export-pr">
             {row.pr_number ? `Pull request #${row.pr_number}` : 'Pull request'}

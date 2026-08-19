@@ -389,6 +389,42 @@ describe('CicdPage', () => {
     expect(mockFetchExports.mock.calls.length).toBe(before)
   })
 
+  it('unchecks the cases an export has just shipped', async () => {
+    // The cases become "already exported" the moment the export completes,
+    // so leaving them checked offers to ship them a second time.
+    vi.useFakeTimers()
+    mockFetchExports.mockResolvedValue([makeExport({ status: 'running', pr_url: null })])
+
+    renderPage()
+    await vi.waitFor(() => expect(screen.getByText('Exporting')).toBeInTheDocument())
+    expect(screen.getByRole('checkbox', { name: /Happy path/ })).toBeChecked()
+
+    mockFetchExports.mockResolvedValue([makeExport({ status: 'completed' })])
+    mockFetchEligibility.mockResolvedValue(
+      makeEligibility({
+        entries: [makeEntry({ previously_exported: true, last_export_pr_url: 'https://pr' })],
+      }),
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500)
+    })
+
+    expect(screen.getByRole('checkbox', { name: /Happy path/ })).not.toBeChecked()
+  })
+
+  it('says a running export has committed nothing yet', async () => {
+    // `case_count` reads off the receipts, which are written only after the
+    // commit succeeds — so 0 is correct here, and now says what it means.
+    mockFetchExports.mockResolvedValue([
+      makeExport({ status: 'running', pr_url: null, case_count: 0 }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByText('0 test cases committed')).toBeInTheDocument()
+  })
+
   it('surfaces a 422 from the export route verbatim', async () => {
     mockCreateExport.mockRejectedValue(new Error('This sprint has no test-environment variables.'))
 
