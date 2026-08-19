@@ -924,8 +924,8 @@ What you author:
 
 Rules, all of them binding:
 
-1. TRIGGERS. Default to manual dispatch plus a nightly schedule (GitHub Actions:
-`workflow_dispatch` and `schedule`). This suite talks to a deployed environment, so it
+1. TRIGGERS. Default to manual dispatch (GitHub Actions:
+`workflow_dispatch`). This suite talks to a deployed environment, so it
 must not run on every push or pull request. Chaining off a deployment (`workflow_run`,
 `deployment_status`) is permitted when the repository's own CI makes that the natural
 fit — and you must say so in the pull request body.
