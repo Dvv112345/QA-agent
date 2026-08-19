@@ -157,17 +157,17 @@ def test_parse_composite_action_reports_a_required_input_with_no_default():
 
 
 def test_is_reusable_workflow_detects_workflow_call():
-    from backend.services.ci_introspect import _safe_yaml
+    from backend.services.ci_introspect import safe_yaml
 
-    doc = _safe_yaml().load(_text("reusable.yml"))
+    doc = safe_yaml().load(_text("reusable.yml"))
 
     assert is_reusable_workflow(doc) is True
 
 
 def test_is_reusable_workflow_is_false_for_an_ordinary_workflow():
-    from backend.services.ci_introspect import _safe_yaml
+    from backend.services.ci_introspect import safe_yaml
 
-    doc = _safe_yaml().load(_text("e2e_playwright.yml"))
+    doc = safe_yaml().load(_text("e2e_playwright.yml"))
 
     assert is_reusable_workflow(doc) is False
 

@@ -4,6 +4,7 @@ import pytest
 
 from backend.services.cicd_export import (
     CicdValidationError,
+    jenkins_fallback_file,
     jenkins_stage_block,
     pr_body,
     qa_job_steps,
@@ -671,3 +672,20 @@ def test_a_host_whose_triggers_fit_is_accepted():
     )
 
     assert outcome == []
+
+
+def test_the_jenkins_fallback_is_a_file_that_clears_the_whole_file_floor():
+    """A fragment written to a Jenkinsfile path must still be a Jenkinsfile.
+
+    `insert_stage` answering None routes the stage to a new file. Written
+    bare, that file parses as nothing and would fail the very floor a
+    created Jenkinsfile has to clear.
+    """
+    from backend.services.jenkins_text import floor_check
+
+    block = jenkins_stage_block(["a.py"], ["BASE_URL"], [])
+    wrapped = jenkins_fallback_file(block)
+
+    assert floor_check(wrapped) == []
+    assert floor_check(block) != []  # the fragment alone does not
+    assert "sh 'python a.py'" in wrapped

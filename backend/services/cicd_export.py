@@ -38,7 +38,7 @@ from collections.abc import Sequence
 
 from backend.models.database import TestCase
 from backend.services import jenkins_text
-from backend.services.ci_introspect import WorkflowEditError, _round_trip_yaml, _safe_yaml
+from backend.services.ci_introspect import WorkflowEditError, round_trip_yaml, safe_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,10 @@ _ALLOWED_PATH_PATTERNS = (
 
 _SLUG_MAX = 40
 
-# GitHub Actions secret names: letters, digits and underscores only, and
-# `GITHUB_` is reserved. A Jenkins credential id lives in a different
-# namespace with different rules — hence two sanitizers, not one.
+# GitHub Actions variable/secret names: letters, digits and underscores
+# only, and `GITHUB_` is reserved. Jenkins has *two* further namespaces with
+# different rules — a credential id, and an env var name referenced as
+# `env.NAME` — hence three sanitizers, all reached through `reference_map`.
 _ACTIONS_NAME_RE = re.compile(r"[^A-Za-z0-9_]")
 _JENKINS_ID_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -309,6 +310,21 @@ def qa_job_steps(
     return steps
 
 
+def jenkins_fallback_file(stage_src: str) -> str:
+    """A stage fragment wrapped into a Jenkinsfile that stands on its own.
+
+    Reached when ``insert_stage`` cannot resolve the repository's existing
+    Jenkinsfile and the stage is written to a new file instead.  Wrapping
+    costs four lines and makes the result a pipeline the team can actually
+    run — where a bare fragment is a file that parses as nothing and clears
+    none of the floor a created Jenkinsfile has to clear.
+    """
+    body = "\n".join(
+        f"    {line}" if line.strip() else line for line in stage_src.strip("\n").splitlines()
+    )
+    return f"pipeline {{\n  agent any\n  stages {{\n{body}\n  }}\n}}\n"
+
+
 def render_job_steps(steps: Sequence[dict]) -> str:
     """The Actions step list as YAML text, for the prompt to show the model.
 
@@ -317,7 +333,7 @@ def render_job_steps(steps: Sequence[dict]) -> str:
     bytes, not a summary of them.
     """
     stream = io.StringIO()
-    _round_trip_yaml().dump(list(steps), stream)
+    round_trip_yaml().dump(list(steps), stream)
     return stream.getvalue()
 
 
@@ -389,7 +405,7 @@ def _check_actions_structure(path: str, content: str) -> None:
     can establish that, and the pull request is what does.
     """
     try:
-        doc = _safe_yaml().load(content)
+        doc = safe_yaml().load(content)
     except Exception as exc:
         raise CicdValidationError(f"{path} is not valid YAML: {exc}") from exc
     if not isinstance(doc, dict):
@@ -542,7 +558,7 @@ def _check_job_body(label: str, job_body: str, provider_is_actions: bool) -> Non
     """
     if provider_is_actions:
         try:
-            body = _safe_yaml().load(job_body)
+            body = safe_yaml().load(job_body)
         except Exception as exc:
             raise CicdValidationError(f"The added job is not valid YAML: {exc}") from exc
         if not isinstance(body, dict) or "steps" not in body:
@@ -557,7 +573,7 @@ def _check_job_body(label: str, job_body: str, provider_is_actions: bool) -> Non
 def parse_job_body(job_body: str) -> dict:
     """The model's job fragment as a mapping, for ``add_job`` to splice in."""
     try:
-        body = _safe_yaml().load(job_body)
+        body = safe_yaml().load(job_body)
     except Exception as exc:
         raise WorkflowEditError(f"The added job is not valid YAML: {exc}") from exc
     if not isinstance(body, dict):

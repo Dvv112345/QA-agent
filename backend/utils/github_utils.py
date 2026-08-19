@@ -326,6 +326,41 @@ async def fetch_file_tree(
 # ── Repo file contents ───────────────────────────────────────────────
 
 
+async def get_file(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    path: str,
+    token: str | None = None,
+    ref: str | None = None,
+) -> str | None:
+    """``fetch_file`` over a client the caller already owns.
+
+    Public, and the same split the write helpers use: a caller reading one
+    file wants ``fetch_file``, while a caller reading twenty in a row —
+    a CI/CD export walking a repository's workflows — should not build
+    twenty clients to do it.
+    """
+    # Repo paths can contain spaces/# — quote each segment, keep separators.
+    quoted_path = urllib.parse.quote(path, safe="/")
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted_path}"
+    if ref:
+        url += f"?ref={urllib.parse.quote(ref)}"
+
+    data = await _get(client, url, token, allow_404=True)
+
+    if data is None:
+        return None
+    # A directory returns a JSON list; files >1 MB come back without inline
+    # content — neither is readable text for our purposes.
+    if not isinstance(data, dict) or data.get("type") != "file" or not data.get("content"):
+        raise GitHubError(f"{path!r} is not a readable text file.")
+    try:
+        return base64.b64decode(data["content"]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise GitHubError(f"{path!r} is not a readable text file: {exc}") from exc
+
+
 async def fetch_file(
     owner: str,
     repo: str,
@@ -341,25 +376,8 @@ async def fetch_file(
     ``GitHubError``; other HTTP failures raise the appropriate
     ``GitHubError`` subclass.
     """
-    # Repo paths can contain spaces/# — quote each segment, keep separators.
-    quoted_path = urllib.parse.quote(path, safe="/")
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted_path}"
-    if ref:
-        url += f"?ref={urllib.parse.quote(ref)}"
-
     async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
-        data = await _get(client, url, token, allow_404=True)
-
-    if data is None:
-        return None
-    # A directory returns a JSON list; files >1 MB come back without inline
-    # content — neither is readable text for our purposes.
-    if not isinstance(data, dict) or data.get("type") != "file" or not data.get("content"):
-        raise GitHubError(f"{path!r} is not a readable text file.")
-    try:
-        return base64.b64decode(data["content"]).decode("utf-8")
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise GitHubError(f"{path!r} is not a readable text file: {exc}") from exc
+        return await get_file(client, owner, repo, path, token, ref)
 
 
 # ── Write helpers (CI/CD export) ─────────────────────────────────────

@@ -169,21 +169,26 @@ def _ci_paths(file_tree: str | None, provider: str) -> list[str]:
 async def _fetch_ci_files(
     owner: str, repo: str, paths: list[str], token: str | None
 ) -> dict[str, str]:
-    """The existing CI files, by path.
+    """The existing CI files, by path, over **one** client.
+
+    Up to ``CICD_MAX_WORKFLOWS`` sequential reads against the same host, so
+    they share a connection rather than building a client apiece — the same
+    split the write sequence makes.
 
     A file that cannot be read is skipped rather than fatal: it is one
     fewer source of convention, and the model creates a new file instead of
     extending one — additive, and visible in the pull request.
     """
     originals: dict[str, str] = {}
-    for path in paths:
-        try:
-            content = await github_utils.fetch_file(owner, repo, path, token)
-        except github_utils.GitHubError as exc:
-            logger.info("CI/CD export: skipping unreadable %s: %s", path, exc)
-            continue
-        if content:
-            originals[path] = content
+    async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
+        for path in paths:
+            try:
+                content = await github_utils.get_file(client, owner, repo, path, token)
+            except github_utils.GitHubError as exc:
+                logger.info("CI/CD export: skipping unreadable %s: %s", path, exc)
+                continue
+            if content:
+                originals[path] = content
     return originals
 
 
@@ -242,12 +247,15 @@ def _splice(result, originals: dict[str, str], provider: str, notices: list[str]
     spliced = insert_stage(original, edit.job_body)
     if spliced is None:
         # A scanner that cannot resolve the file degrades to a new one
-        # rather than corrupting the existing pipeline.
+        # rather than corrupting the existing pipeline. Wrapped into a whole
+        # pipeline so the fallback is a file that runs, not a fragment that
+        # parses as nothing.
         notices.append(
             f"`{edit.path}` could not be edited safely, so the stage was written to "
-            f"`{_JENKINS_FALLBACK_PATH}` instead. Merge it into your pipeline by hand."
+            f"`{_JENKINS_FALLBACK_PATH}` as a standalone pipeline instead. Run it as is, "
+            "or move the stage into your own Jenkinsfile."
         )
-        return {_JENKINS_FALLBACK_PATH: edit.job_body}
+        return {_JENKINS_FALLBACK_PATH: cicd_export.jenkins_fallback_file(edit.job_body)}
     return {edit.path: spliced}
 
 

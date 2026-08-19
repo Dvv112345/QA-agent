@@ -82,14 +82,14 @@ _DEPLOY_MARKERS = ("deploy", "release", "publish", "ship", "rollout")
 _E2E_MARKERS = ("e2e", "end-to-end", "end_to_end", "playwright", "cypress", "selenium", "browser")
 
 
-def _safe_yaml() -> YAML:
+def safe_yaml() -> YAML:
     """A non-round-trip loader, for reading facts rather than editing."""
     parser = YAML(typ="safe")
     parser.allow_duplicate_keys = True
     return parser
 
 
-def _round_trip_yaml() -> YAML:
+def round_trip_yaml() -> YAML:
     """A round-trip loader that preserves comments, quoting and key order."""
     parser = YAML()
     parser.preserve_quotes = True
@@ -255,7 +255,7 @@ def parse_workflow(path: str, text: str) -> WorkflowFacts | None:
     extending one, which is additive and visible in the PR.
     """
     try:
-        doc = _safe_yaml().load(io.StringIO(text))
+        doc = safe_yaml().load(io.StringIO(text))
     except (YAMLError, ValueError) as exc:
         logger.info("Skipping unparseable workflow %s: %s", path, exc)
         return None
@@ -319,7 +319,7 @@ def is_reusable_workflow(doc: dict) -> bool:
 def parse_composite_action(text: str) -> ActionFacts | None:
     """Extract a composite action's contract, or ``None`` when unparseable."""
     try:
-        doc = _safe_yaml().load(io.StringIO(text))
+        doc = safe_yaml().load(io.StringIO(text))
     except (YAMLError, ValueError):
         return None
     if not isinstance(doc, dict):
@@ -485,7 +485,7 @@ def add_job(text: str, job_name: str, job_body: dict) -> str:
     matches the input outside the added job means the round trip perturbed
     something we did not intend to touch.
     """
-    parser = _round_trip_yaml()
+    parser = round_trip_yaml()
     try:
         doc = parser.load(io.StringIO(text))
     except (YAMLError, ValueError) as exc:
@@ -512,7 +512,7 @@ def _assert_only_added(before_text: str, after_text: str, added: str) -> None:
     it does catch a re-serialization that dropped, reordered or retyped
     something elsewhere in the host file.
     """
-    loader = _safe_yaml()
+    loader = safe_yaml()
     try:
         before = loader.load(io.StringIO(before_text))
         after = loader.load(io.StringIO(after_text))
