@@ -119,6 +119,14 @@ export default function CicdConfigModal({ sprintId, config, repo, onSaved, onClo
           Needs <strong>write</strong> access to contents and pull requests — this is checked
           against the repository before anything is saved. A read-only token is refused here rather
           than failing halfway through an export.
+          {provider === 'github_actions' && (
+            <>
+              {' '}
+              GitHub gates workflow files behind a separate grant, so an Actions export also needs
+              the <code>workflow</code> scope (classic token) or{' '}
+              <strong>Workflows: Read and write</strong> (fine-grained).
+            </>
+          )}
         </span>
       </label>
 

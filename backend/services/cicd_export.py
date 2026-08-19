@@ -34,7 +34,7 @@ wrote itself.
 import io
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from backend.models.database import TestCase
 from backend.services import jenkins_text
@@ -154,6 +154,24 @@ def slugify(text: str, fallback: str) -> str:
     return slug or fallback
 
 
+def _requirement_of(case: TestCase):
+    """The requirement a case belongs to, or ``None``.
+
+    The chain is walked in one place because three callers need it and a
+    case whose plan or requirement was archived must read as absent rather
+    than raise — the export lists cases long after the rows around them
+    have moved.
+    """
+    plan = case.test_plan
+    return plan.requirement if plan is not None else None
+
+
+def requirement_name(case: TestCase) -> str:
+    """The requirement's name, as the export copies it onto receipts and the PR."""
+    requirement = _requirement_of(case)
+    return requirement.name if requirement is not None else ""
+
+
 def script_path(case: TestCase) -> str:
     """Where one case's script is committed.
 
@@ -166,11 +184,9 @@ def script_path(case: TestCase) -> str:
     that slugify alike would otherwise land unrelated scripts in one
     directory where no reviewer can tell them apart.
     """
-    plan = case.test_plan
-    requirement = plan.requirement if plan is not None else None
+    requirement = _requirement_of(case)
     requirement_id = requirement.id if requirement is not None else 0
-    requirement_name = requirement.name if requirement is not None else ""
-    directory = f"{slugify(requirement_name, 'requirement')}_{requirement_id}"
+    directory = f"{slugify(requirement_name(case), 'requirement')}_{requirement_id}"
     filename = f"{slugify(case.title, 'case')}_{case.id}.py"
     return f"{EXPORT_ROOT}/{directory}/{filename}"
 
@@ -233,6 +249,40 @@ def sanitize_jenkins_env(name: str) -> str:
     return cleaned
 
 
+def _namespace_map(names: Sequence[str], sanitize: Callable[[str], str]) -> dict[str, str]:
+    """``{env var name: CI name}`` for **one** namespace, collisions broken apart.
+
+    Every sanitizer is many-to-one — ``base_url`` and ``base.url`` both
+    become ``BASE_URL`` — and nothing downstream could notice.  The block
+    would emit one reference for two variables, the gate would see a name
+    it had itself supplied and accept it, and the export would succeed with
+    one of the two scripts silently reading the other's value.
+    ``script_path`` has the same problem one layer down and settles it with
+    ``TestCase.id``; a CI name has no id to carry, so a numeric suffix is
+    the disambiguator.
+
+    The order is deliberately **not** the one ``env_vars_json`` happens to
+    be in.  A re-extraction or a hand edit reorders that dict, and an
+    assignment that followed it would quietly swap two variables the team
+    had already created in their CI — the same values, now feeding the
+    wrong scripts, with nothing on screen changed.  Sorting fixes the
+    assignment to the names themselves, and a name the CI system already
+    accepts verbatim sorts first, because it is not the one that should be
+    rewritten.
+    """
+    taken: set[str] = set()
+    mapped: dict[str, str] = {}
+    for name in sorted(names, key=lambda n: (sanitize(n) != n, n)):
+        target = sanitize(name)
+        candidate, suffix = target, 2
+        while candidate in taken:
+            candidate = f"{target}_{suffix}"
+            suffix += 1
+        taken.add(candidate)
+        mapped[name] = candidate
+    return mapped
+
+
 def reference_map(
     variable_names: Sequence[str],
     secret_names: Sequence[str],
@@ -253,13 +303,21 @@ def reference_map(
     Variables and secrets are mapped separately because on Jenkins they
     land in different namespaces — an env var name against a credential id.
     On Actions both are ``[A-Za-z0-9_]`` and the two branches coincide.
+
+    That separation is also why collisions are resolved **within** each
+    group rather than across the pair: a variable and a secret that
+    sanitize alike land in different stores (``vars.X`` and ``secrets.X``;
+    an env name and a credential id) and are not in fact the same name.
+    Rewriting one of them would invent a difference the CI system does not
+    have.  Two *variables* that sanitize alike genuinely are one name, and
+    those are what the suffix separates.
     """
     if provider_is_actions:
-        mapped = {name: sanitize_actions_name(name) for name in variable_names}
-        mapped.update({name: sanitize_actions_name(name) for name in secret_names})
+        mapped = _namespace_map(variable_names, sanitize_actions_name)
+        mapped.update(_namespace_map(secret_names, sanitize_actions_name))
         return mapped
-    mapped = {name: sanitize_jenkins_env(name) for name in variable_names}
-    mapped.update({name: sanitize_jenkins_id(name) for name in secret_names})
+    mapped = _namespace_map(variable_names, sanitize_jenkins_env)
+    mapped.update(_namespace_map(secret_names, sanitize_jenkins_id))
     return mapped
 
 
@@ -584,10 +642,38 @@ def parse_job_body(job_body: str) -> dict:
 # ── The PR body ───────────────────────────────────────────────────────
 
 
+def _case_inventory(cases: Sequence[TestCase]) -> list[str]:
+    """Every committed case, grouped under the requirement it came from.
+
+    A count told a reviewer how much arrived but nothing about what: the
+    titles are what let them judge whether the suite covers the change in
+    front of them, and the paths are how they find the script for a title
+    that looks wrong.  Grouped by requirement because that is the unit the
+    scripts are organised into on disk, so the list reads in the same shape
+    as the diff.
+
+    Insertion-ordered, following ``cases`` rather than sorting: the export
+    already loaded them in a stable order, and re-sorting here would make
+    the PR disagree with the commit for no gain.
+    """
+    grouped: dict[str, list[TestCase]] = {}
+    for case in cases:
+        grouped.setdefault(requirement_name(case) or "Unassigned", []).append(case)
+
+    lines = [f"### Test cases in this pull request ({len(cases)})", ""]
+    for name, members in grouped.items():
+        lines.append(f"**{name}**")
+        lines.append("")
+        for case in members:
+            lines.append(f"- {case.title} — `{script_path(case)}`")
+        lines.append("")
+    return lines
+
+
 def pr_body(
     llm_prose: str,
     sprint_name: str,
-    case_count: int,
+    cases: Sequence[TestCase],
     variable_names: Sequence[str],
     secret_names: Sequence[str],
     dropped: Sequence[str],
@@ -599,14 +685,20 @@ def pr_body(
     """The model's prose plus the trailer we control.
 
     The trailer exists because the model cannot be the only source of
-    "what must you do before this works".  It names the variables and
-    secrets the team has to create — **names only** — and any path the gate
-    refused, so a dropped file is visible rather than silently missing.
+    "what must you do before this works".  It inventories the cases
+    committed, names the variables and secrets the team has to create —
+    **names only** — and any path the gate refused, so a dropped file is
+    visible rather than silently missing.
+
+    Everything below the rule is deterministic, and the prompt tells the
+    model so (``CICD_SYSTEM_PROMPT`` rule 6): a reviewer reading the same
+    setup instructions twice, once written by a model and once by us,
+    cannot tell which one to trust when they differ.
     """
     parts = [llm_prose.strip(), "", "---", "", "## Generated by QA Agent", ""]
     parts.append(f"Sprint: **{sprint_name}**")
-    parts.append(f"Test scripts committed: **{case_count}**")
     parts.append("")
+    parts.extend(_case_inventory(cases))
 
     if variable_names or secret_names:
         kind = "repository variables and secrets" if provider_is_actions else "credentials"

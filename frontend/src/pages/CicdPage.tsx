@@ -189,10 +189,19 @@ export default function CicdPage() {
   }
 
   const handleExport = () => {
-    void exportAction.run(createCicdExport(sprintId, [...selected]))
+    // The created row goes into `exports` immediately rather than waiting
+    // for `refresh` to fetch it back. `useAction` clears `busy` the moment
+    // the POST resolves, while `refresh` is still a request away — so
+    // without this the button re-enables for a beat during which a second
+    // click would ask for a second pull request shipping the same scripts.
+    // The backend refuses that too; this is what keeps the user from
+    // meeting the refusal.
+    void exportAction.run(createCicdExport(sprintId, [...selected]), (created) =>
+      setExports((current) => [created, ...current]),
+    )
   }
 
-  const canExport = config !== null && selected.size > 0 && !exportAction.busy
+  const canExport = config !== null && selected.size > 0 && !exportAction.busy && !inFlight
 
   return (
     <div className="cicd">
@@ -280,6 +289,16 @@ export default function CicdPage() {
         </div>
 
         {!config && <p className="cicd-notice">Connect a CI/CD target before exporting.</p>}
+        {/* A disabled control always carries its reason. Without this the
+            button simply stops responding once an export starts, which
+            reads as the page being broken rather than as one export at a
+            time. */}
+        {config && inFlight && (
+          <p className="cicd-notice">
+            An export is in progress. Its pull request will list what it shipped; start another once
+            it finishes.
+          </p>
+        )}
         {exportAction.error && (
           <p className="cicd-error" role="alert">
             {exportAction.error}

@@ -953,6 +953,17 @@ it is local (`./.github/actions/...`) and you can supply every required input. N
 reusable workflow (`on: workflow_call`) — it is invoked at job level and cannot share a
 job with our steps. Name any action you wire in, in the pull request body.
 
+6. DO NOT RESTATE THE TRAILER. A generated section is appended below your `pr_body`,
+and it already lists: the sprint, every test case committed with its path, the exact
+variables and secrets the team must create before the job runs, any file that was
+dropped, and your `notes`.
+
+Write instead what only you can: what this pull request adds and how it is wired into
+this repository, which existing conventions it follows, and every deviation with its
+reason — a non-default trigger, an adapted setup step, a composite action, a new file
+where a host workflow might have been expected. Prose, a few short paragraphs; refer to
+the section below for the setup details rather than summarising them.
+
 Match the repository's existing conventions — runner, action versions, version pins,
 naming — using the facts you are given. Where a fact is absent it was genuinely
 unresolvable; fall back to a sensible default rather than inventing what the repository

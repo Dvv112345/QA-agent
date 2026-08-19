@@ -14,8 +14,8 @@ from backend.utils.github_utils import (
     RateLimitedError,
     RepoNotFoundError,
     TokenInvalidError,
-    check_push_permission,
     check_readme_exists,
+    check_write_access,
     create_commit,
     create_pull_request,
     create_ref,
@@ -389,32 +389,86 @@ async def write_client():
         yield client
 
 
-class TestCheckPushPermission:
-    """Tests for ``check_push_permission()`` — the config-save gate."""
+class TestCheckWriteAccess:
+    """Tests for ``check_write_access()`` — the config-save gate."""
 
     _URL = "https://api.github.com/repos/owner/repo"
 
     @pytest.mark.asyncio
     async def test_true_when_push_is_granted(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(url=self._URL, json={"permissions": {"push": True}})
-        assert await check_push_permission("owner", "repo", "ghp_x") is True
+        assert (await check_write_access("owner", "repo", "ghp_x")).can_push is True
 
     @pytest.mark.asyncio
     async def test_false_for_a_read_only_token(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(url=self._URL, json={"permissions": {"pull": True, "push": False}})
-        assert await check_push_permission("owner", "repo", "ghp_x") is False
+        assert (await check_write_access("owner", "repo", "ghp_x")).can_push is False
 
     @pytest.mark.asyncio
     async def test_false_when_the_permissions_block_is_absent(self, httpx_mock: HTTPXMock):
         """GitHub omits it for unauthenticated reads — default to refusing."""
         httpx_mock.add_response(url=self._URL, json={"full_name": "owner/repo"})
-        assert await check_push_permission("owner", "repo") is False
+        assert (await check_write_access("owner", "repo")).can_push is False
 
     @pytest.mark.asyncio
     async def test_404_raises_repo_not_found(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(url=self._URL, status_code=404)
         with pytest.raises(RepoNotFoundError):
-            await check_push_permission("owner", "repo", "ghp_x")
+            await check_write_access("owner", "repo", "ghp_x")
+
+    @pytest.mark.asyncio
+    async def test_scopes_come_from_the_header(self, httpx_mock: HTTPXMock):
+        """A classic token's grant is reported nowhere in the body."""
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"permissions": {"push": True}},
+            headers={"X-OAuth-Scopes": "repo, workflow"},
+        )
+
+        access = await check_write_access("owner", "repo", "ghp_x")
+
+        assert access.scopes == frozenset({"repo", "workflow"})
+        assert access.lacks("workflow") is False
+
+    @pytest.mark.asyncio
+    async def test_a_pushable_token_can_still_lack_the_workflow_scope(self, httpx_mock: HTTPXMock):
+        """The exact shape that failed: push granted, workflow files refused."""
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"permissions": {"admin": True, "push": True}},
+            headers={"X-OAuth-Scopes": "repo"},
+        )
+
+        access = await check_write_access("owner", "repo", "ghp_x")
+
+        assert access.can_push is True
+        assert access.lacks("workflow") is True
+
+    @pytest.mark.asyncio
+    async def test_an_empty_scope_header_still_reports_a_grant(self, httpx_mock: HTTPXMock):
+        """A classic token with no scopes says so — that is not "unknown"."""
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"permissions": {"push": True}},
+            headers={"X-OAuth-Scopes": ""},
+        )
+
+        access = await check_write_access("owner", "repo", "ghp_x")
+
+        assert access.scopes == frozenset()
+        assert access.lacks("workflow") is True
+
+    @pytest.mark.asyncio
+    async def test_a_credential_reporting_no_scopes_is_never_declared_lacking(
+        self, httpx_mock: HTTPXMock
+    ):
+        """Fine-grained PATs send no header — unknown must not read as missing."""
+        httpx_mock.add_response(url=self._URL, json={"permissions": {"push": True}})
+
+        access = await check_write_access("owner", "repo", "github_pat_x")
+
+        assert access.scopes is None
+        assert access.lacks("workflow") is False
 
 
 class TestWriteSequence:
@@ -577,6 +631,31 @@ class TestWriteErrorMapping:
         httpx_mock.add_response(url=self._URL, method="POST", status_code=404)
         with pytest.raises(RepoNotFoundError):
             await self._create_tree(write_client)
+
+    @pytest.mark.asyncio
+    async def test_404_on_a_workflow_file_names_the_workflow_scope(
+        self, write_client, httpx_mock: HTTPXMock
+    ):
+        """GitHub's own answer is a bare 404 — the path is the only evidence.
+
+        Pinned because the plain mapping sends the reader to check whether
+        the repository exists, which the reads that precede this call have
+        already answered.
+        """
+        httpx_mock.add_response(url=self._URL, method="POST", status_code=404)
+
+        with pytest.raises(GitHubError) as exc:
+            await create_tree(
+                write_client,
+                "owner",
+                "repo",
+                "base",
+                {"qa-agent-tests/a.py": "1", ".github/workflows/qa.yml": "on: push"},
+                "ghp_x",
+            )
+
+        assert "workflow" in str(exc.value)
+        assert not isinstance(exc.value, RepoNotFoundError)
 
     @pytest.mark.asyncio
     async def test_403_raises_rate_limited(self, write_client, httpx_mock: HTTPXMock):

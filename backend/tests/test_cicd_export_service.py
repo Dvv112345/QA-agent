@@ -42,6 +42,10 @@ class _Case:
         self.script = script
 
 
+_LOGIN = _Requirement(7, "User login")
+_CASES = [_Case(1, "Happy path", _LOGIN), _Case(2, "Locked account", _LOGIN)]
+
+
 def _result(**overrides) -> CicdIntegrationResult:
     fields = {
         "files": [],
@@ -222,6 +226,90 @@ def test_reference_map_is_what_both_blocks_derive_their_names_from():
 
     jenkins = reference_map(variables, secrets, provider_is_actions=False)
     assert jenkins == {"base_url": "BASE_URL", "GITHUB_TOKEN": "GITHUB_TOKEN"}
+
+
+# ── Name collisions ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("provider_is_actions", [True, False])
+def test_two_names_that_sanitize_alike_stay_two_names(provider_is_actions):
+    """Otherwise one CI value silently feeds two scripts, and one is wrong.
+
+    Nothing downstream could catch it: the block emits one reference for
+    both, and the gate sees a name it supplied itself and accepts it.
+    """
+    mapped = reference_map(["base_url", "base.url"], [], provider_is_actions=provider_is_actions)
+
+    assert len(set(mapped.values())) == 2
+
+
+def test_the_name_that_needed_no_rewriting_is_not_the_one_rewritten():
+    mapped = reference_map(["BASE_URL", "base.url"], [], provider_is_actions=True)
+
+    assert mapped["BASE_URL"] == "BASE_URL"
+    assert mapped["base.url"] == "BASE_URL_2"
+
+
+def test_the_assignment_does_not_follow_the_order_env_vars_came_in():
+    """A re-extraction or a hand edit reorders `env_vars_json`.
+
+    If the suffix followed that order, the two names would swap and the
+    variables the team already created in their CI would quietly start
+    feeding the wrong scripts — same values, same screen, wrong wiring.
+    """
+    one = reference_map(["base_url", "base.url"], [], provider_is_actions=True)
+    other = reference_map(["base.url", "base_url"], [], provider_is_actions=True)
+
+    assert one == other
+
+
+def test_a_third_collision_does_not_land_on_the_second_ones_name():
+    mapped = reference_map(["base_url", "base.url", "base-url"], [], provider_is_actions=True)
+
+    assert len(set(mapped.values())) == 3
+
+
+def test_a_variable_and_a_secret_may_share_a_ci_name():
+    """`vars.X` and `secrets.X` are different stores, so they are not one name.
+
+    Suffixing one of them would invent a difference the CI system does not
+    have — which is why collisions resolve within a namespace, not across
+    the pair.
+    """
+    mapped = reference_map(["base_url"], ["base.url"], provider_is_actions=True)
+
+    assert mapped == {"base_url": "BASE_URL", "base.url": "BASE_URL"}
+
+
+def test_colliding_names_survive_the_block_and_its_own_gate():
+    """The round trip, on the input the suffix exists for."""
+    variables = ["base_url", "base.url"]
+    steps = qa_job_steps(["qa-agent-tests/a_1/b_2.py"], variables, [])
+    body = render_job_steps(steps)
+    content = _WORKFLOW_HEAD + "\n".join("      " + line for line in body.splitlines()) + "\n"
+    result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
+
+    mapped = reference_map(variables, [], provider_is_actions=True)
+    assert validate(result, list(mapped.values()), {}, provider_is_actions=True) == []
+
+    # Each script variable reads its own CI name, not a shared one.
+    env = steps[-1]["env"]
+    assert env["base_url"] != env["base.url"]
+
+
+def test_the_trailer_names_both_sides_of_a_collision():
+    """Which name takes the suffix is arbitrary but fixed; both are named.
+
+    Neither of these survives sanitizing unchanged, so the tie breaks on
+    the name itself — what matters is that the reader can tell which
+    repository variable feeds which sprint variable.
+    """
+    body = pr_body(
+        "prose", "Sprint", _CASES, ["base_url", "base.url"], [], [], provider_is_actions=True
+    )
+
+    assert "`BASE_URL` (for the sprint's `base.url`)" in body
+    assert "`BASE_URL_2` (for the sprint's `base_url`)" in body
 
 
 def test_jenkins_stage_block_brace_balances_so_it_can_be_spliced():
@@ -441,7 +529,7 @@ def test_pr_body_lists_every_name_and_no_value():
     body = pr_body(
         "The model's prose.",
         "Sprint 1",
-        3,
+        _CASES,
         ["BASE_URL"],
         ["QA_PASSWORD"],
         [],
@@ -456,21 +544,60 @@ def test_pr_body_lists_every_name_and_no_value():
     assert "staging.example.com" not in body
 
 
+def test_pr_body_lists_every_case_under_its_requirement():
+    """A count says how much arrived; the titles say what, which is the reviewable part."""
+    body = pr_body("p", "S", _CASES, [], [], [], provider_is_actions=True)
+
+    assert "**User login**" in body
+    assert "- Happy path — `qa-agent-tests/user-login_7/happy-path_1.py`" in body
+    assert "- Locked account — `qa-agent-tests/user-login_7/locked-account_2.py`" in body
+
+
+def test_pr_body_groups_cases_by_requirement_in_the_committed_order():
+    """The list reads in the shape of the diff, so it is not re-sorted here."""
+    other = _Requirement(9, "Checkout")
+    cases = [_CASES[0], _Case(3, "Pays", other), _CASES[1]]
+
+    body = pr_body("p", "S", cases, [], [], [], provider_is_actions=True)
+
+    assert body.index("**User login**") < body.index("**Checkout**")
+    # Both of the login cases sit under the one heading, not one heading each.
+    assert body.count("**User login**") == 1
+    assert body.index("- Locked account") < body.index("**Checkout**")
+
+
+def test_pr_body_counts_the_cases_it_lists():
+    body = pr_body("p", "S", _CASES, [], [], [], provider_is_actions=True)
+
+    assert "### Test cases in this pull request (2)" in body
+
+
+def test_pr_body_survives_a_case_whose_requirement_is_gone():
+    """Archiving happens; a receipt-shaped list must not raise over it."""
+    orphan = _Case(4, "Orphan", None)
+    orphan.test_plan = None
+
+    body = pr_body("p", "S", [orphan], [], [], [], provider_is_actions=True)
+
+    assert "**Unassigned**" in body
+    assert "- Orphan — `qa-agent-tests/requirement_0/orphan_4.py`" in body
+
+
 def test_pr_body_names_a_sanitized_reference_when_it_differs():
-    body = pr_body("p", "S", 1, [], ["GITHUB_PAT"], [], provider_is_actions=True)
+    body = pr_body("p", "S", _CASES, [], ["GITHUB_PAT"], [], provider_is_actions=True)
 
     assert "QA_GITHUB_PAT" in body
 
 
 def test_pr_body_names_every_dropped_path():
-    body = pr_body("p", "S", 1, [], [], ["../etc/passwd"], provider_is_actions=True)
+    body = pr_body("p", "S", _CASES, [], [], ["../etc/passwd"], provider_is_actions=True)
 
     assert "../etc/passwd" in body
     assert "not written" in body
 
 
 def test_pr_body_says_so_when_the_sprint_defines_no_environment():
-    body = pr_body("p", "S", 1, [], [], [], provider_is_actions=True)
+    body = pr_body("p", "S", _CASES, [], [], [], provider_is_actions=True)
 
     assert "No environment variables" in body
 
@@ -479,7 +606,7 @@ def test_pr_body_carries_extra_notices_and_generation_notes():
     body = pr_body(
         "p",
         "S",
-        1,
+        _CASES,
         [],
         [],
         [],

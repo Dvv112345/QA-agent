@@ -268,6 +268,47 @@ describe('CicdPage', () => {
     await waitFor(() => expect(mockCreateExport).toHaveBeenCalledWith(1, [1]))
   })
 
+  it('posts once when Export is clicked twice', async () => {
+    // The expensive half of a double click is not the second row — it is the
+    // second pull request committing the same scripts to the team's repo.
+    const pending = makeExport({ status: 'pending', case_count: 0 })
+    mockCreateExport.mockResolvedValue(pending)
+    // Empty on load, and only then does the server know about the row —
+    // which is the window the created export has to close by itself.
+    mockFetchExports.mockResolvedValueOnce([]).mockResolvedValue([pending])
+
+    renderPage()
+    await screen.findByText('Happy path')
+    const button = screen.getByRole('button', { name: /^Export/ })
+    fireEvent.click(button)
+    fireEvent.click(button) // while the first POST is still in flight
+
+    await waitFor(() => expect(mockCreateExport).toHaveBeenCalledTimes(1))
+    // …and still shut once the POST resolves, before any refetch lands.
+    expect(await screen.findByText(/An export is in progress/)).toBeInTheDocument()
+    fireEvent.click(button)
+    expect(mockCreateExport).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables Export and says why while one is in flight', async () => {
+    mockFetchExports.mockResolvedValue([makeExport({ status: 'running', case_count: 0 })])
+
+    renderPage()
+
+    expect(await screen.findByText(/An export is in progress/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Export/ })).toBeDisabled()
+  })
+
+  it('re-enables Export once the last one is terminal', async () => {
+    mockFetchExports.mockResolvedValue([makeExport({ status: 'completed' })])
+
+    renderPage()
+    await screen.findByText('Happy path')
+
+    expect(screen.queryByText(/An export is in progress/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Export/ })).toBeEnabled()
+  })
+
   it('disables Export with nothing selected', async () => {
     renderPage()
     await screen.findByText('Happy path')

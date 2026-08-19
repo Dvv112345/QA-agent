@@ -4,7 +4,7 @@ import base64
 import logging
 import re
 import urllib.parse
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
@@ -392,6 +392,20 @@ async def fetch_file(
 # on Windows a stale ``SSL_CERT_FILE`` breaks client creation outright.
 
 
+# GitHub gates this one directory behind a scope of its own, for both
+# credential types — so it is the one path prefix the write layer knows by
+# name.
+WORKFLOW_DIR = ".github/workflows/"
+
+_WORKFLOW_SCOPE_ERROR = (
+    "GitHub refused to commit a file under .github/workflows/ and answered 404. "
+    "That is what it returns when the token lacks the 'workflow' scope (classic "
+    "token) or Workflows: Read and write (fine-grained token). The repository "
+    "itself is reachable — this export had already read it. Add that scope to "
+    "the token, reconnect the CI/CD target, and restart the export."
+)
+
+
 def _write_error(response: httpx.Response, has_token: bool) -> GitHubError:
     """Map a failed write, keeping GitHub's own explanation when it has one.
 
@@ -432,23 +446,69 @@ async def _write(
     return response.json()
 
 
-async def check_push_permission(owner: str, repo: str, token: str | None = None) -> bool:
-    """Whether ``token`` can push to ``owner/repo``.
+def _token_scopes(response: httpx.Response) -> frozenset[str] | None:
+    """The scopes a credential reports, or ``None`` when it reports none.
 
-    A stronger claim than the issue tracker's "can I file here", and checked
-    when the credential is *saved* rather than after an export has already
-    spent an LLM call on it.  A missing ``permissions`` block reads as
-    ``False``: GitHub omits it for unauthenticated reads, and defaulting a
-    permission question to "yes" is the wrong direction to be wrong in.
+    Only classic personal access tokens send ``X-OAuth-Scopes``.  A
+    fine-grained PAT or a GitHub App token omits the header entirely, and
+    that absence must stay distinguishable from an empty value: a classic
+    token with no scopes at all sends the header empty, and *that* one is
+    known to be missing everything.
+    """
+    header = response.headers.get("X-OAuth-Scopes")
+    if header is None:
+        return None
+    return frozenset(part.strip() for part in header.split(",") if part.strip())
+
+
+class RepoWriteAccess(NamedTuple):
+    """What a credential may do to a repository — both halves, one request.
+
+    The two fields answer *different questions*, which is why one value
+    could never carry both.  ``can_push`` comes from the repository's
+    ``permissions`` block, and that block describes the **account's role**
+    on the repository.  ``scopes`` comes from ``X-OAuth-Scopes``, and that
+    describes what the **credential** was granted.  A token held by a repo
+    admin reports ``push: true`` no matter how narrowly it was scoped, so
+    the first check alone certifies a credential that cannot write.
+    """
+
+    can_push: bool
+    scopes: frozenset[str] | None
+
+    def lacks(self, scope: str) -> bool:
+        """Whether this credential is *known* to be missing ``scope``.
+
+        False when scopes are unknown, deliberately: a fine-grained PAT
+        reports nothing, and refusing every such token at save time would
+        block the credential type GitHub now recommends.  The write-time
+        error mapping is what covers that case.
+        """
+        return self.scopes is not None and scope not in self.scopes
+
+
+async def check_write_access(owner: str, repo: str, token: str | None = None) -> RepoWriteAccess:
+    """What ``token`` may do to ``owner/repo``, checked when it is *saved*.
+
+    A stronger claim than the issue tracker's "can I file here", and asked
+    before an export has spent an LLM call discovering the answer.  A
+    missing ``permissions`` block reads as no push: GitHub omits it for
+    unauthenticated reads, and defaulting a permission question to "yes" is
+    the wrong direction to be wrong in.
+
+    Uses ``_request`` rather than ``_get`` because the scopes live in a
+    **header** — the one caller here that needs the response itself and not
+    only its body.
     """
     url = f"https://api.github.com/repos/{owner}/{repo}"
     async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
-        data = await _get(client, url, token)
+        response = await _request(client, url, token)
+    if not response.is_success:
+        raise _classify_error(response.status_code, bool(token))
 
-    permissions = data.get("permissions")
-    if not isinstance(permissions, dict):
-        return False
-    return bool(permissions.get("push"))
+    permissions = response.json().get("permissions")
+    can_push = bool(permissions.get("push")) if isinstance(permissions, dict) else False
+    return RepoWriteAccess(can_push=can_push, scopes=_token_scopes(response))
 
 
 async def get_branch_sha(
@@ -495,7 +555,19 @@ async def create_tree(
             for path, content in files.items()
         ],
     }
-    data = await _write(client, url, token, payload=payload)
+    try:
+        data = await _write(client, url, token, payload=payload)
+    except RepoNotFoundError:
+        # A 404 here is never a missing repository: this call is preceded by
+        # reads of the same repository with the same token. GitHub answers a
+        # workflow-file write from a token without the `workflow` scope with
+        # a bare 404 — no 403, no message — so the paths are the only
+        # evidence of what actually happened, and they are only in scope
+        # here. Without this the export reports "Repository not found or not
+        # accessible" and sends the reader to check the wrong thing.
+        if any(path.startswith(WORKFLOW_DIR) for path in files):
+            raise GitHubError(_WORKFLOW_SCOPE_ERROR) from None
+        raise
     return data["sha"]
 
 

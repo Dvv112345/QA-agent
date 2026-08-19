@@ -361,6 +361,12 @@ def export_cicd_task(cicd_export_id: int) -> None:
                     "\n\n".join(f"{path}:\n{text}" for path, text in originals.items())
                     or "No existing Jenkinsfile was found in this repository."
                 )
+                # Every fetched Jenkinsfile is a legal host, so the trigger
+                # gate degenerates to the fetched-file check above it. That
+                # is the one place the asymmetry is intended: a Jenkinsfile
+                # carries no trigger metadata this export parses, so there
+                # is nothing to filter on — unlike a workflow, where the job
+                # would inherit an `on: pull_request` we must refuse.
                 host_candidates = list(originals)
                 block = cicd_export.jenkins_stage_block(script_paths, variable_names, secret_names)
 
@@ -417,7 +423,7 @@ def export_cicd_task(cicd_export_id: int) -> None:
             body = cicd_export.pr_body(
                 result.pr_body,
                 sprint.name,
-                len(cases),
+                cases,
                 variable_names,
                 secret_names,
                 dropped,
@@ -446,7 +452,7 @@ def export_cicd_task(cicd_export_id: int) -> None:
                 CicdExportItem(
                     test_case_id=case.id,
                     case_title=case.title,
-                    requirement_name=_requirement_name(case),
+                    requirement_name=cicd_export.requirement_name(case),
                     committed_path=cicd_export.script_path(case),
                 )
                 for case in cases
@@ -481,13 +487,6 @@ def export_cicd_task(cicd_export_id: int) -> None:
             # registry, is the recovery mechanism.
             logger.exception("CI/CD export failed for export %d", cicd_export_id)
             finalization.record_failure(session, finalization.CICD_EXPORT_SPEC, cicd_export_id, exc)
-
-
-def _requirement_name(case) -> str:
-    """The requirement a case belongs to, copied onto the receipt."""
-    plan = case.test_plan
-    requirement = plan.requirement if plan is not None else None
-    return requirement.name if requirement is not None else ""
 
 
 def _load_cases(session, sprint, case_ids: set[int]) -> list:

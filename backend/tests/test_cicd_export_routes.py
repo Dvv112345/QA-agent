@@ -75,6 +75,15 @@ def _seed_exportable(db_session, *, active: bool = True, script: str | None = "p
     return sprint, case
 
 
+def _settle(db_session, export_id: int, status: str = CicdExportStatus.COMPLETED) -> CicdExport:
+    """Take an export out of flight, the way its job would."""
+    export = db_session.get(CicdExport, export_id)
+    export.status = status
+    db_session.add(export)
+    db_session.commit()
+    return export
+
+
 # ── Create ────────────────────────────────────────────────────────────
 
 
@@ -197,6 +206,46 @@ async def test_create_succeeds_on_a_finished_sprint(async_client, db_session):
     assert resp.status_code == 201
 
 
+@pytest.mark.parametrize("in_flight", [CicdExportStatus.PENDING, CicdExportStatus.RUNNING])
+@pytest.mark.asyncio
+async def test_create_is_refused_while_an_export_is_in_flight(async_client, db_session, in_flight):
+    """A second click must not open a second pull request for the same scripts."""
+    sprint, case = _seed_exportable(db_session)
+    first = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+    _settle(db_session, first.json()["id"], in_flight)
+
+    second = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+
+    assert second.status_code == 422
+    assert "already in progress" in second.json()["detail"]
+    assert [row.id for row in db_session.exec(select(CicdExport)).all()] == [first.json()["id"]]
+
+
+@pytest.mark.asyncio
+async def test_create_is_allowed_once_the_previous_export_settles(async_client, db_session):
+    """The gate is one export at a time, not one export ever."""
+    sprint, case = _seed_exportable(db_session)
+    first = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+
+    for status in (CicdExportStatus.COMPLETED, CicdExportStatus.FAILED):
+        _settle(db_session, first.json()["id"], status)
+        again = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+        assert again.status_code == 201, again.text
+        _settle(db_session, again.json()["id"])
+
+
+@pytest.mark.asyncio
+async def test_another_sprints_export_does_not_block_this_one(async_client, db_session):
+    """The gate is per sprint — two sprints export to two different repositories."""
+    busy_sprint, _ = _seed_exportable(db_session)
+    other_sprint, _ = _seed_exportable(db_session)
+    await async_client.post(f"/api/sprints/{busy_sprint.id}/cicd-exports", json={})
+
+    resp = await async_client.post(f"/api/sprints/{other_sprint.id}/cicd-exports", json={})
+
+    assert resp.status_code == 201, resp.text
+
+
 @pytest.mark.asyncio
 async def test_create_404s_for_an_unknown_sprint(async_client):
     resp = await async_client.post("/api/sprints/9999/cicd-exports", json={})
@@ -211,6 +260,7 @@ async def test_create_404s_for_an_unknown_sprint(async_client):
 async def test_history_is_newest_first(async_client, db_session):
     sprint, case = _seed_exportable(db_session)
     first = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+    _settle(db_session, first.json()["id"])
     second = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
 
     resp = await async_client.get(f"/api/sprints/{sprint.id}/cicd-exports")
@@ -298,6 +348,35 @@ async def test_restart_is_accepted_on_a_completed_export(async_client, db_sessio
     resp = await async_client.post(f"/api/cicd-exports/{export.id}/restart")
 
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_restart_is_refused_while_a_sibling_export_is_in_flight(async_client, db_session):
+    """Restart cannot open the second pull request that create refuses to."""
+    sprint, case = _seed_exportable(db_session)
+    first = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+    failed = _settle(db_session, first.json()["id"], CicdExportStatus.FAILED)
+    second = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+    assert second.status_code == 201
+
+    resp = await async_client.post(f"/api/cicd-exports/{failed.id}/restart")
+
+    assert resp.status_code == 422
+    assert "already in progress" in resp.json()["detail"]
+    db_session.expire_all()
+    assert db_session.get(CicdExport, failed.id).status == CicdExportStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_restart_re_pends_an_export_that_is_only_blocked_by_itself(async_client, db_session):
+    """`pending` is what a Redis outage leaves behind — restarting it must still work."""
+    sprint, case = _seed_exportable(db_session)
+    created = await async_client.post(f"/api/sprints/{sprint.id}/cicd-exports", json={})
+
+    resp = await async_client.post(f"/api/cicd-exports/{created.json()['id']}/restart")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == CicdExportStatus.PENDING
 
 
 @pytest.mark.asyncio

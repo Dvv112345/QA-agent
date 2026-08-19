@@ -604,10 +604,19 @@ deliverable, and its review is what catches a generated workflow being wrong.
 **Connecting.** One `CicdConfig` per sprint: a provider (GitHub Actions or Jenkins), a
 Fernet-encrypted write token, and an optional free-text note about the CI environment. There is no
 repository field — the destination is always the sprint's own registered repository, derived from
-`Repo.github_link`. The token is verified against the live repository's `permissions.push` on
-**every** save; nothing persists if that fails. A provider switch keeps the stored credential,
-unlike the issue tracker: Jenkins also ships as a GitHub pull request, so the token is GitHub's
-either way.
+`Repo.github_link`. The token is verified against the live repository on **every** save; nothing
+persists if that fails. A provider switch keeps the stored credential, unlike the issue tracker:
+Jenkins also ships as a GitHub pull request, so the token is GitHub's either way.
+
+Verification (`github_utils.check_write_access`) asks two questions in one request, because they
+have two answers. `permissions.push` reports what the **account** may do to the repository;
+`X-OAuth-Scopes` reports what the **credential** was granted. A classic token scoped `repo` but not
+`workflow` passes the first and fails the second — and since a GitHub Actions export always commits
+a file under `.github/workflows/`, which GitHub gates behind that separate scope and refuses with a
+bare `404`, the save is refused for the Actions provider when the scope is known to be absent.
+Fine-grained tokens send no scope header; they are accepted (unknown is not missing) and covered by
+`create_tree`, which re-maps a 404 on a workflow path to a message naming the scope instead of
+"repository not found". Jenkins needs neither grant — it writes a Jenkinsfile.
 
 **Eligibility.** A case can be exported when it has a cached script and the three
 `script_*_revision` values stamped when that script was cached still match the sprint's current
@@ -620,6 +629,17 @@ date" imply different actions.
 the existing CI files → build the deterministic install/run block → **one** LLM call with a
 bounded `read_file` loop → validate → splice → write. The write sequence is four requests
 regardless of case count, over one shared client: tree (content inline) → commit → ref → PR.
+
+**The pull-request text.** The title is the model's, verbatim. The body is the model's prose plus
+a deterministic trailer (`cicd_export.pr_body`) below a horizontal rule: the sprint, an inventory
+of every committed case grouped under its requirement with the path its script landed at, the
+variables and secrets the team must create before the job runs (**names only**), any generation
+notes, and any path the gate dropped. The prompt tells the model that the trailer exists and
+forbids restating it — two setup checklists, one written from the names the model was given and one
+from what was actually committed, leave a reviewer no way to choose when they disagree. The model's
+half is meant to carry what only it knows: how the suite was wired in, which conventions it
+followed, and every deviation with its reason. The commit message is a plain f-string, not
+generated.
 
 **What the model may and may not author.** It authors CI files and the pull-request prose. It
 authors a **job or stage body** for an existing file — never the file itself, so a truncating
@@ -637,8 +657,12 @@ with a token in it goes to the secret store. The CI-side name itself comes from
 the pull-request trailer and the gate, since a name they each derived separately is a name they can
 disagree about. `base_url` becomes `BASE_URL`, and Actions reserves the `GITHUB_` prefix, so
 `GITHUB_PAT` becomes `QA_GITHUB_PAT`; the eligibility endpoint and the trailer both report the
-CI-side name with the sprint's own alongside it. Both providers bind the same direction — CI
-supplies the mapped name and the script reads the sprint's own name from `os.environ`.
+CI-side name with the sprint's own alongside it. Sanitizing is many-to-one, so two sprint names
+that map alike (`base_url` and `base.url`) are separated by a numeric suffix — within a namespace
+only, since `vars.X` and `secrets.X` are different stores and not the same name. The assignment
+sorts by name rather than following `env_vars_json`, whose order an edit can change. Both providers
+bind the same direction — CI supplies the mapped name and the script reads the sprint's own name
+from `os.environ`.
 
 **The gate** (`cicd_export.validate`), run before any write: a path allowlist (the one place model
 output becomes a filesystem effect), a host-edit target check (only a file this export actually

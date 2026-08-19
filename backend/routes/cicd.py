@@ -48,7 +48,7 @@ from backend.utils.environment_utils import variable_and_secret_names
 from backend.utils.github_utils import (
     GitHubError,
     GitHubUnavailableError,
-    check_push_permission,
+    check_write_access,
     parse_github_url,
 )
 
@@ -65,6 +65,14 @@ _NO_PUSH = (
 
 _TOKEN_REQUIRED = (
     "A GitHub access token with write access to contents and pull requests is required."
+)
+
+_NO_WORKFLOW_SCOPE = (
+    "This token can push, but GitHub requires a separate grant to write workflow "
+    "files: the 'workflow' scope on a classic token, or Workflows: Read and write "
+    "on a fine-grained one. Without it the export commits its scripts and is then "
+    "refused the .github/workflows/ file it exists to add. Add that scope and save "
+    "again, or choose Jenkins, which writes no workflow file."
 )
 
 
@@ -181,13 +189,19 @@ async def save_cicd_config(
     token = _resolve_token(payload, existing, sprint)
 
     try:
-        can_push = await check_push_permission(owner, repo_name, token)
+        access = await check_write_access(owner, repo_name, token)
     except GitHubUnavailableError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except GitHubError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if not can_push:
+    if not access.can_push:
         raise HTTPException(status_code=422, detail=_NO_PUSH)
+    # Pushing and writing a workflow file are two different grants, and an
+    # Actions export always does the second. Asked here because GitHub
+    # answers the write itself with a bare 404 that names neither the scope
+    # nor the file — after the export has spent its LLM call.
+    if provider == CicdProvider.GITHUB_ACTIONS and access.lacks("workflow"):
+        raise HTTPException(status_code=422, detail=_NO_WORKFLOW_SCOPE)
 
     try:
         encrypted = encrypt_token(token)
@@ -305,6 +319,42 @@ def _load_export_or_404(session: Session, cicd_export_id: int) -> CicdExport:
     return export
 
 
+_ALREADY_EXPORTING = (
+    "An export is already in progress for this sprint. Wait for it to finish — "
+    "starting another now would open a second pull request shipping the same scripts."
+)
+
+
+def _export_in_flight(session: Session, sprint_id: int, exclude_id: int | None = None) -> bool:
+    """Whether this sprint already has an export pending or running.
+
+    One export at a time per sprint, because a second one is never merely
+    redundant.  The two write to the *same* repository: each computes its CI
+    splice from the default branch as it stands now, so a concurrent pair
+    both edit the pre-export file and neither PR knows about the other's
+    job.  The user-visible symptom is two pull requests committing the same
+    scripts, which is what makes an accidental double click expensive here
+    in a way it is not anywhere else in the app — a pushed commit cannot be
+    taken back.
+
+    Deliberately status-based rather than a lock: a crashed worker leaves a
+    ``running`` row that the reconciler's heartbeat sweep fails within
+    ``HEARTBEAT_STALE_SECONDS``, so the gate reopens on its own.
+    """
+    query = (
+        select(CicdExport.id)
+        .where(CicdExport.sprint_id == sprint_id)
+        .where(
+            CicdExport.status.in_(  # type: ignore[attr-defined]
+                [CicdExportStatus.PENDING, CicdExportStatus.RUNNING]
+            )
+        )
+    )
+    if exclude_id is not None:
+        query = query.where(CicdExport.id != exclude_id)
+    return session.exec(query).first() is not None
+
+
 @router.post(
     "/sprints/{sprint_id}/cicd-exports", response_model=CicdExportResponse, status_code=201
 )
@@ -322,6 +372,14 @@ async def create_cicd_export(
     sprint = cicd_eligibility.load_sprint_for_eligibility(session, sprint_id)
     if sprint is None:
         raise HTTPException(status_code=404, detail="Sprint not found")
+
+    # Before every other refusal: an export in flight is the one condition a
+    # second click produces on its own, and it is the only one whose cost is
+    # paid in the user's repository rather than here.
+    if _export_in_flight(session, sprint_id):
+        # 422 rather than 409, because every other state refusal in this
+        # module is a 422 and the frontend reads `detail`, not the code.
+        raise HTTPException(status_code=422, detail=_ALREADY_EXPORTING)
 
     config = sprint.cicd_config
     if config is None:
@@ -424,6 +482,11 @@ async def restart_cicd_export(cicd_export_id: int, session: Session = Depends(ge
     export = _load_export_or_404(session, cicd_export_id)
     if export.status == CicdExportStatus.RUNNING:
         raise HTTPException(status_code=422, detail="This export is still running.")
+    # And no *sibling* may be in flight either, or a restart would open the
+    # second pull request that `create` refuses to. `exclude_id` is what
+    # keeps re-pending this row legal after a Redis outage left it `pending`.
+    if _export_in_flight(session, export.sprint_id, exclude_id=export.id):
+        raise HTTPException(status_code=422, detail=_ALREADY_EXPORTING)
 
     export.status = CicdExportStatus.PENDING
     export.error = None

@@ -94,6 +94,76 @@ async def test_put_with_a_read_only_token_422s_and_persists_nothing(
 
 
 @pytest.mark.asyncio
+async def test_put_422s_when_a_classic_token_lacks_the_workflow_scope(
+    async_client, db_session, httpx_mock: HTTPXMock
+):
+    """The shape that reached production: pushable, and refused at the last write.
+
+    An Actions export always commits under `.github/workflows/`, which GitHub
+    gates behind a scope of its own and refuses with a bare 404 — after the
+    LLM call has been spent.
+    """
+    sprint_id = _sprint_id(db_session)
+    httpx_mock.add_response(url=_REPO_API, json=_push(True), headers={"X-OAuth-Scopes": "repo"})
+
+    resp = await async_client.put(
+        f"/api/sprints/{sprint_id}/cicd-config",
+        json={"provider": "github_actions", "access_token": "ghp_no_workflow"},
+    )
+
+    assert resp.status_code == 422
+    assert "workflow" in resp.json()["detail"]
+    assert db_session.exec(select(CicdConfig)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_put_accepts_a_classic_token_carrying_the_workflow_scope(
+    async_client, db_session, httpx_mock: HTTPXMock
+):
+    sprint_id = _sprint_id(db_session)
+    httpx_mock.add_response(
+        url=_REPO_API, json=_push(True), headers={"X-OAuth-Scopes": "repo, workflow"}
+    )
+
+    resp = await async_client.put(
+        f"/api/sprints/{sprint_id}/cicd-config",
+        json={"provider": "github_actions", "access_token": "ghp_full"},
+    )
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_jenkins_needs_no_workflow_scope(async_client, db_session, httpx_mock: HTTPXMock):
+    """A Jenkins export writes a Jenkinsfile, which GitHub gates behind nothing extra."""
+    sprint_id = _sprint_id(db_session)
+    httpx_mock.add_response(url=_REPO_API, json=_push(True), headers={"X-OAuth-Scopes": "repo"})
+
+    resp = await async_client.put(
+        f"/api/sprints/{sprint_id}/cicd-config",
+        json={"provider": "jenkins", "access_token": "ghp_no_workflow"},
+    )
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_a_fine_grained_token_is_not_refused_for_an_unreported_scope(
+    async_client, db_session, httpx_mock: HTTPXMock
+):
+    """Fine-grained PATs report no scopes — unknown must not read as missing."""
+    sprint_id = _sprint_id(db_session)
+    httpx_mock.add_response(url=_REPO_API, json=_push(True))
+
+    resp = await async_client.put(
+        f"/api/sprints/{sprint_id}/cicd-config",
+        json={"provider": "github_actions", "access_token": "github_pat_x"},
+    )
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
 async def test_put_502s_when_github_is_unreachable_and_persists_nothing(
     async_client, db_session, httpx_mock: HTTPXMock
 ):
