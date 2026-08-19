@@ -637,6 +637,23 @@ class CicdCaseEntry(SQLModel):
     last_export_pr_url: str | None = None
 
 
+class CicdEnvName(SQLModel):
+    """One environment variable, as the CI system will carry it.
+
+    Both names, because the reader needs both: ``name`` is what they create
+    in GitHub or Jenkins, ``env_var`` is the sprint's own variable it feeds.
+    The two differ whenever the CI system's naming rules reject the
+    sprint's name verbatim (``base_url`` → ``BASE_URL``, and a
+    ``GITHUB_``-prefixed name, which Actions reserves).
+
+    A **value** never appears here, and there is deliberately no field that
+    could hold one.
+    """
+
+    name: str
+    env_var: str
+
+
 class CicdEligibilityResponse(SQLModel):
     """Everything the export page needs before a selection is made."""
 
@@ -645,12 +662,12 @@ class CicdEligibilityResponse(SQLModel):
     eligible_count: int = 0
     stale_count: int = 0
     no_script_count: int = 0
-    # The environment variable **names** the generated CI will reference,
-    # split by what they become in the CI system: a URL-valued variable is a
-    # plain CI variable, everything else is a secret. Values are read to sort
-    # the names and are never serialized.
-    variable_names: list[str] = []
-    secret_names: list[str] = []
+    # What the team must create in their CI, split by what each becomes: a
+    # URL-valued variable carrying no credential material is a plain CI
+    # variable, everything else is a secret. Values are read to sort the
+    # names and are never serialized.
+    variable_names: list[CicdEnvName] = []
+    secret_names: list[CicdEnvName] = []
 
 
 class CicdExportRequest(SQLModel):

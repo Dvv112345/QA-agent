@@ -21,6 +21,7 @@ import type {
   CicdCaseEntry,
   CicdConfig,
   CicdEligibility,
+  CicdEnvName,
   CicdExport,
   SprintResponse,
 } from '../types'
@@ -45,6 +46,28 @@ function ineligibleReason(entry: CicdCaseEntry): string {
   if (entry.reason === 'no_script') return 'No script yet — run this test case first'
   const reasons = entry.stale_reasons.map((r) => STALE_REASON_LABELS[r] ?? r).join(', ')
   return `Out of date — ${reasons}. Re-run this test case`
+}
+
+/**
+ * The CI-side name, and the sprint variable it feeds when they differ.
+ *
+ * Leading with the CI name is the point: that is the one the reader has to
+ * go and create. The sprint's own name is what tells them which variable it
+ * carries, and is omitted when the two coincide rather than repeated.
+ */
+function EnvNameList({ names }: { names: CicdEnvName[] }) {
+  return (
+    <>
+      {names.map((entry) => (
+        <span key={entry.env_var} className="cicd-env-name">
+          <code>{entry.name}</code>
+          {entry.name !== entry.env_var && (
+            <span className="cicd-env-name-source">for {entry.env_var}</span>
+          )}
+        </span>
+      ))}
+    </>
+  )
 }
 
 export default function CicdPage() {
@@ -194,17 +217,15 @@ export default function CicdPage() {
         <section className="cicd-env-names">
           <h2>What the team will need to create</h2>
           <p className="cicd-env-names-hint">
-            The generated job references these by name. Values are never written into the
-            repository, so they have to exist on the CI side before it can run.
+            Create these in your CI before the generated job runs. Values are never written into the
+            repository, so they have to exist on the CI side first.
           </p>
           <dl>
             {eligibility.variable_names.length > 0 && (
               <>
                 <dt>Variables</dt>
                 <dd>
-                  {eligibility.variable_names.map((name) => (
-                    <code key={name}>{name}</code>
-                  ))}
+                  <EnvNameList names={eligibility.variable_names} />
                 </dd>
               </>
             )}
@@ -212,9 +233,7 @@ export default function CicdPage() {
               <>
                 <dt>Secrets</dt>
                 <dd>
-                  {eligibility.secret_names.map((name) => (
-                    <code key={name}>{name}</code>
-                  ))}
+                  <EnvNameList names={eligibility.secret_names} />
                 </dd>
               </>
             )}

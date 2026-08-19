@@ -151,7 +151,7 @@ def sanitize_actions_name(name: str) -> str:
 
 
 def sanitize_jenkins_id(name: str) -> str:
-    """A Jenkins credential id derived from an env var name.
+    """A Jenkins **credential id** derived from an env var name.
 
     Deliberately **not** a reuse of the Actions sanitizer: Jenkins ids
     allow dots and hyphens and reserve nothing, so one function cannot
@@ -162,6 +162,52 @@ def sanitize_jenkins_id(name: str) -> str:
     if cleaned[0].isdigit():
         cleaned = f"qa_{cleaned}"
     return cleaned
+
+
+def sanitize_jenkins_env(name: str) -> str:
+    """A Jenkins **environment variable** name derived from an env var name.
+
+    Three sanitizers rather than two, because there are three namespaces
+    and not two.  A Jenkins credential id is an arbitrary string
+    (:func:`sanitize_jenkins_id`); a Jenkins env var name referenced as
+    ``env.NAME`` has to be an identifier, so dots and hyphens — which the
+    credential id keeps — must go here.  Deriving both from one function
+    and upper-casing one of the results is what let the two drift apart.
+    """
+    cleaned = _ACTIONS_NAME_RE.sub("_", name).upper().strip("_") or "QA_VAR"
+    if cleaned[0].isdigit():
+        cleaned = f"QA_{cleaned}"
+    return cleaned
+
+
+def reference_map(
+    variable_names: Sequence[str],
+    secret_names: Sequence[str],
+    *,
+    provider_is_actions: bool,
+) -> dict[str, str]:
+    """``{env var name: the name the CI system carries it under}``.
+
+    **The one place a CI-facing name is derived.**  The deterministic block
+    emits these names, the prompt offers them to the model, the PR trailer
+    explains them and the validation gate accepts them — four consumers
+    that must agree exactly.  When each derived its own, they did not: the
+    block emitted ``${{ vars.BASE_URL }}`` for an env var called
+    ``base_url`` while the gate was handed ``base_url``, so the gate
+    refused our own output and no retry could ever fix it (every attempt
+    regenerates the same text).
+
+    Variables and secrets are mapped separately because on Jenkins they
+    land in different namespaces — an env var name against a credential id.
+    On Actions both are ``[A-Za-z0-9_]`` and the two branches coincide.
+    """
+    if provider_is_actions:
+        mapped = {name: sanitize_actions_name(name) for name in variable_names}
+        mapped.update({name: sanitize_actions_name(name) for name in secret_names})
+        return mapped
+    mapped = {name: sanitize_jenkins_env(name) for name in variable_names}
+    mapped.update({name: sanitize_jenkins_id(name) for name in secret_names})
+    return mapped
 
 
 def _install_commands(repo_install: Sequence[str] | None) -> list[str]:
@@ -196,8 +242,9 @@ def qa_job_steps(
     script, no test framework in between, because that is how these scripts
     were verified.
     """
-    env = {name: f"${{{{ vars.{sanitize_actions_name(name)} }}}}" for name in variable_names}
-    env.update({name: f"${{{{ secrets.{sanitize_actions_name(name)} }}}}" for name in secret_names})
+    mapped = reference_map(variable_names, secret_names, provider_is_actions=True)
+    env = {name: f"${{{{ vars.{mapped[name]} }}}}" for name in variable_names}
+    env.update({name: f"${{{{ secrets.{mapped[name]} }}}}" for name in secret_names})
 
     steps: list[dict] = [{"uses": "actions/checkout@v4"}]
     for command in _install_commands(repo_install):
@@ -233,28 +280,41 @@ def jenkins_stage_block(
     Without this, Jenkins would have had no block of ours at all and the
     model would be authoring the install and run steps itself — the one
     thing this design does not delegate.
+
+    **The binding runs the same direction as the Actions block**: the CI
+    system supplies the mapped name and the script reads the sprint's own
+    name, exactly as ``env: {ORIGINAL: ${{ vars.MAPPED }}}`` does. Written
+    the other way round the script looks for a variable nothing sets, and —
+    worse — degrades to a self-assignment whenever the two names coincide,
+    which is precisely the case anyone checks by hand.
+
+    ``withEnv`` rather than ``environment { }`` because a Groovy
+    ``environment`` key must be a valid identifier: an env var named
+    ``api.base-url`` is a syntax error there, while ``withEnv`` takes
+    strings and carries any name the sprint defines.
     """
-    lines = ["stage('QA Agent E2E') {"]
-    if variable_names:
-        lines.append("  environment {")
-        for name in variable_names:
-            lines.append(f'    {sanitize_jenkins_id(name).upper()} = "${{env.{name}}}"')
-        lines.append("  }")
-    lines.append("  steps {")
+    mapped = reference_map(variable_names, secret_names, provider_is_actions=False)
+    lines = ["stage('QA Agent E2E') {", "  steps {"]
 
     indent = "    "
+    if variable_names:
+        bindings = ", ".join(f'"{name}=${{env.{mapped[name]}}}"' for name in variable_names)
+        lines.append(f"    withEnv([{bindings}]) {{")
+        indent = "      "
     if secret_names:
         bindings = ", ".join(
-            f"string(credentialsId: '{sanitize_jenkins_id(name)}', variable: '{name}')"
-            for name in secret_names
+            f"string(credentialsId: '{mapped[name]}', variable: '{name}')" for name in secret_names
         )
-        lines.append(f"    withCredentials([{bindings}]) {{")
-        indent = "      "
+        lines.append(f"{indent}withCredentials([{bindings}]) {{")
+        indent += "  "
     for command in _install_commands(repo_install):
         lines.append(f"{indent}sh '{command}'")
     for path in script_paths:
         lines.append(f"{indent}sh 'python {path}'")
     if secret_names:
+        indent = indent[:-2]
+        lines.append(f"{indent}}}")
+    if variable_names:
         lines.append("    }")
     lines.append("  }")
     lines.append("}")
@@ -468,18 +528,17 @@ def pr_body(
         kind = "repository variables and secrets" if provider_is_actions else "credentials"
         parts.append(f"### Before this runs, create these {kind}")
         parts.append("")
+        # Named through the one mapping every other consumer reads, and led
+        # by the CI-side name: that is what the reader has to go and create.
+        mapped = reference_map(
+            variable_names, secret_names, provider_is_actions=provider_is_actions
+        )
         for name in variable_names:
-            mapped = (
-                sanitize_actions_name(name) if provider_is_actions else sanitize_jenkins_id(name)
-            )
-            suffix = f" (referenced as `{mapped}`)" if mapped != name else ""
-            parts.append(f"- variable `{name}`{suffix}")
+            suffix = f" (for the sprint's `{name}`)" if mapped[name] != name else ""
+            parts.append(f"- variable `{mapped[name]}`{suffix}")
         for name in secret_names:
-            mapped = (
-                sanitize_actions_name(name) if provider_is_actions else sanitize_jenkins_id(name)
-            )
-            suffix = f" (referenced as `{mapped}`)" if mapped != name else ""
-            parts.append(f"- secret `{name}`{suffix}")
+            suffix = f" (for the sprint's `{name}`)" if mapped[name] != name else ""
+            parts.append(f"- secret `{mapped[name]}`{suffix}")
         parts.append("")
         parts.append("Values are deliberately not included here — QA Agent never writes an")
         parts.append("environment value into a repository.")

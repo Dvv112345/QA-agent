@@ -70,6 +70,20 @@
   font-weight: 600;
 }
 
+/* The CI-side name and the sprint variable it feeds travel together, so
+   they wrap as one unit rather than splitting across a line break. */
+.cicd-env-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.cicd-env-name-source {
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
 .cicd-env-names dd {
   display: flex;
   flex-wrap: wrap;

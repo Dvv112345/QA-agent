@@ -287,11 +287,40 @@ async def test_endpoint_reports_counts_and_the_variable_secret_split(async_clien
     assert body["eligible_count"] == 1
     assert body["no_script_count"] == 1
     assert body["stale_count"] == 0
-    assert sorted(body["variable_names"]) == ["API_URL", "BASE_URL"]
-    assert body["secret_names"] == ["QA_PASSWORD"]
+    # Each entry names both sides: what the team creates in CI, and the
+    # sprint variable it feeds. Here they coincide — nothing needed mapping.
+    assert sorted(entry["name"] for entry in body["variable_names"]) == ["API_URL", "BASE_URL"]
+    assert body["secret_names"] == [{"name": "QA_PASSWORD", "env_var": "QA_PASSWORD"}]
     # Names only — no environment value may appear anywhere in the payload.
     assert "hunter2" not in resp.text
     assert "staging.example.com" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_the_endpoint_names_the_ci_side_name_when_it_differs(async_client, db_session):
+    """A name the CI system will not take verbatim must not be shown as-is.
+
+    The page tells the team what to create; `base_url` is not what they
+    create on GitHub Actions, `BASE_URL` is.
+    """
+    sprint = _seed_sprint(db_session)
+    db_session.add(
+        TestEnvironmentAccess(
+            sprint_id=sprint.id,
+            content="staging",
+            original_content="staging",
+            status=TestEnvironmentStatus.CONFIRMED,
+            env_vars_json='{"base_url": "https://staging.example.com", "GITHUB_PAT": "ghp_x"}',
+        )
+    )
+    db_session.commit()
+    _seed_case(db_session, sprint)
+
+    body = (await async_client.get(f"/api/sprints/{sprint.id}/cicd-eligibility")).json()
+
+    assert body["variable_names"] == [{"name": "BASE_URL", "env_var": "base_url"}]
+    # Actions reserves the GITHUB_ prefix, so this one is rewritten too.
+    assert body["secret_names"] == [{"name": "QA_GITHUB_PAT", "env_var": "GITHUB_PAT"}]
 
 
 @pytest.mark.asyncio

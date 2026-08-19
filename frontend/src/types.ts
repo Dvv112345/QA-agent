@@ -495,6 +495,20 @@ export interface CicdCaseEntry {
   last_export_pr_url: string | null
 }
 
+/**
+ * One environment variable as the CI system will carry it.
+ *
+ * Both names, because the reader needs both: `name` is what they create in
+ * GitHub or Jenkins, `env_var` is the sprint's own variable it feeds. They
+ * differ whenever the CI system's naming rules reject the sprint's name
+ * verbatim (`base_url` → `BASE_URL`, or a `GITHUB_`-prefixed name, which
+ * Actions reserves).
+ */
+export interface CicdEnvName {
+  name: string
+  env_var: string
+}
+
 export interface CicdEligibility {
   sprint_id: number
   entries: CicdCaseEntry[]
@@ -502,8 +516,8 @@ export interface CicdEligibility {
   stale_count: number
   no_script_count: number
   /** Names only — no environment value is ever serialized. */
-  variable_names: string[]
-  secret_names: string[]
+  variable_names: CicdEnvName[]
+  secret_names: CicdEnvName[]
 }
 
 export interface CicdExportItem {

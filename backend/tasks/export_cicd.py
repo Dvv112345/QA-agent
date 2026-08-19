@@ -86,7 +86,7 @@ from backend.services.ci_introspect import (
 from backend.services.jenkins_text import insert_stage
 from backend.utils import github_utils
 from backend.utils.crypto import decrypt_token
-from backend.utils.environment_utils import url_values
+from backend.utils.environment_utils import variable_and_secret_names
 from backend.utils.http_utils import SSL_CONTEXT
 from backend.utils.readme_utils import resolve_readme
 
@@ -314,10 +314,16 @@ def export_cicd_task(cicd_export_id: int) -> None:
                 return
 
             provider = export.provider
+            is_actions = provider == CicdProvider.GITHUB_ACTIONS
             env_vars = sprint.test_environment.env_vars if sprint.test_environment else {}
-            urls = url_values(env_vars)
-            variable_names = [name for name, value in (env_vars or {}).items() if value in urls]
-            secret_names = [name for name, value in (env_vars or {}).items() if value not in urls]
+            variable_names, secret_names = variable_and_secret_names(env_vars)
+            # The names the CI system will actually carry. Built once and
+            # threaded through the prompt, the block and the gate — deriving
+            # them separately is what made the gate refuse our own output.
+            mapped = cicd_export.reference_map(
+                variable_names, secret_names, provider_is_actions=is_actions
+            )
+            reference_names = list(mapped.values())
 
             scripts = cicd_export.script_files(cases)
             script_paths = sorted(scripts)
@@ -325,7 +331,7 @@ def export_cicd_task(cicd_export_id: int) -> None:
             ci_paths = _ci_paths(file_tree, provider)
             originals = asyncio.run(_fetch_ci_files(owner, repo_name, ci_paths, token))
 
-            if provider == CicdProvider.GITHUB_ACTIONS:
+            if is_actions:
                 facts = [
                     fact
                     for fact in (parse_workflow(path, text) for path, text in originals.items())
@@ -361,8 +367,11 @@ def export_cicd_task(cicd_export_id: int) -> None:
                 file_tree=file_tree,
                 ci_facts=ci_facts,
                 ci_environment_hint=config.ci_environment_hint,
-                variable_names=variable_names,
-                secret_names=secret_names,
+                # The model is offered the names it may actually reference —
+                # the CI-side ones the deterministic block above emits, not
+                # the sprint's own.
+                variable_names=[mapped[name] for name in variable_names],
+                secret_names=[mapped[name] for name in secret_names],
                 script_paths=script_paths,
                 deterministic_block=block,
                 host_candidates=host_candidates,
@@ -372,9 +381,9 @@ def export_cicd_task(cicd_export_id: int) -> None:
 
             dropped = cicd_export.validate(
                 result,
-                [*variable_names, *secret_names],
+                reference_names,
                 originals,
-                provider_is_actions=provider == CicdProvider.GITHUB_ACTIONS,
+                provider_is_actions=is_actions,
             )
 
             notices: list[str] = []
@@ -396,7 +405,7 @@ def export_cicd_task(cicd_export_id: int) -> None:
                 variable_names,
                 secret_names,
                 dropped,
-                provider_is_actions=provider == CicdProvider.GITHUB_ACTIONS,
+                provider_is_actions=is_actions,
                 notes=result.notes,
                 extra_notices=notices,
             )
@@ -434,8 +443,10 @@ def export_cicd_task(cicd_export_id: int) -> None:
             export.notes = result.notes
             export.ci_file_paths_json = json.dumps(ci_file_paths)
             export.dropped_paths_json = json.dumps(dropped)
-            export.variable_names_json = json.dumps(variable_names)
-            export.secret_names_json = json.dumps(secret_names)
+            # The CI-side names, so the receipt records what the team was
+            # asked to create rather than the sprint's own vocabulary.
+            export.variable_names_json = json.dumps([mapped[n] for n in variable_names])
+            export.secret_names_json = json.dumps([mapped[n] for n in secret_names])
             export.status = CicdExportStatus.COMPLETED
             export.last_heartbeat = None
             export.retry_count = 0

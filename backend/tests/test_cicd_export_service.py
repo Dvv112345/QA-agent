@@ -7,7 +7,10 @@ from backend.services.cicd_export import (
     jenkins_stage_block,
     pr_body,
     qa_job_steps,
+    reference_map,
+    render_job_steps,
     sanitize_actions_name,
+    sanitize_jenkins_env,
     sanitize_jenkins_id,
     script_files,
     script_path,
@@ -50,15 +53,16 @@ def _result(**overrides) -> CicdIntegrationResult:
     return CicdIntegrationResult(**fields)
 
 
-_WORKFLOW = """name: QA
+_WORKFLOW_HEAD = """name: QA
 on:
   workflow_dispatch:
 jobs:
   qa:
     runs-on: ubuntu-latest
     steps:
-      - run: python qa-agent-tests/a_1/b_2.py
 """
+
+_WORKFLOW = _WORKFLOW_HEAD + "      - run: python qa-agent-tests/a_1/b_2.py\n"
 
 
 # ── Structural pins on the result schema ──────────────────────────────
@@ -179,7 +183,44 @@ def test_jenkins_stage_block_emits_the_same_sequence_as_sh_steps():
     assert "sh 'python qa-agent-tests/a_1/b_2.py'" in block
     assert "withCredentials(" in block
     assert "credentialsId: 'QA_PASSWORD'" in block
-    assert 'BASE_URL = "${env.BASE_URL}"' in block
+    assert 'withEnv(["BASE_URL=${env.BASE_URL}"])' in block
+
+
+def test_both_providers_bind_the_ci_name_to_the_scripts_own_name():
+    """The two blocks must agree on which side of the binding is which.
+
+    Written the other way round on Jenkins the script looks for a variable
+    nothing sets — and degrades to a harmless-looking self-assignment
+    exactly when the two names coincide, which is the case anyone checks by
+    hand. Only reading them side by side makes the direction visible.
+    """
+    variables, secrets = ["base_url"], ["db.password"]
+
+    env = qa_job_steps(["a.py"], variables, secrets)[-1]["env"]
+    # Actions: the script's own name is the key, the CI name the reference.
+    assert env["base_url"] == "${{ vars.BASE_URL }}"
+    assert env["db.password"] == "${{ secrets.DB_PASSWORD }}"
+
+    block = jenkins_stage_block(["a.py"], variables, secrets)
+    # Jenkins: same direction — script's name on the left, CI name inside.
+    assert 'withEnv(["base_url=${env.BASE_URL}"])' in block
+    assert "credentialsId: 'db.password', variable: 'db.password'" in block
+
+
+def test_a_jenkins_env_name_is_an_identifier_where_a_credential_id_need_not_be():
+    """Three namespaces, three sanitizers — env names cannot keep dots."""
+    assert sanitize_jenkins_env("api.base-url") == "API_BASE_URL"
+    assert sanitize_jenkins_id("api.base-url") == "api.base-url"
+
+
+def test_reference_map_is_what_both_blocks_derive_their_names_from():
+    variables, secrets = ["base_url"], ["GITHUB_TOKEN"]
+
+    actions = reference_map(variables, secrets, provider_is_actions=True)
+    assert actions == {"base_url": "BASE_URL", "GITHUB_TOKEN": "QA_GITHUB_TOKEN"}
+
+    jenkins = reference_map(variables, secrets, provider_is_actions=False)
+    assert jenkins == {"base_url": "BASE_URL", "GITHUB_TOKEN": "GITHUB_TOKEN"}
 
 
 def test_jenkins_stage_block_brace_balances_so_it_can_be_spliced():
@@ -500,3 +541,49 @@ def test_references_inside_a_host_edit_are_still_resolved():
         validate(
             result, ["BASE_URL"], {".github/workflows/ci.yml": _WORKFLOW}, provider_is_actions=True
         )
+
+
+# ── The block and the gate must agree ─────────────────────────────────
+#
+# The defect these pin: `qa_job_steps` emitted `${{ vars.BASE_URL }}` while
+# `validate` was handed `base_url`, so the gate refused our own output. No
+# retry could fix it — every attempt regenerates the same text — and it hit
+# any name that was not already canonical, including every `GITHUB_`-prefixed
+# secret, which is exactly the case the sanitizer exists for.
+#
+# Each half was tested alone, with names that happened to agree. These
+# compose them.
+
+
+@pytest.mark.parametrize("names", [["base_url"], ["api.base-url"], ["2fa_token"]])
+def test_the_actions_block_passes_its_own_gate(names):
+    steps = qa_job_steps(["qa-agent-tests/a_1/b_2.py"], names, ["GITHUB_TOKEN"])
+    body = render_job_steps(steps)
+    indented = "\n".join("      " + line for line in body.splitlines())
+    content = _WORKFLOW_HEAD + indented + "\n"
+    result = _result(files=[CicdFileItem(path=".github/workflows/qa.yml", content=content)])
+
+    allowed = reference_map(names, ["GITHUB_TOKEN"], provider_is_actions=True).values()
+
+    assert validate(result, list(allowed), {}, provider_is_actions=True) == []
+
+
+@pytest.mark.parametrize("names", [["base_url"], ["api.base-url"]])
+def test_the_jenkins_block_passes_its_own_gate(names):
+    block = jenkins_stage_block(["qa-agent-tests/a_1/b_2.py"], names, ["db.password"])
+    result = _result(
+        files=[],
+        host_edit=HostEdit(path="Jenkinsfile", job_name="QA", job_body=block),
+    )
+
+    allowed = reference_map(names, ["db.password"], provider_is_actions=False).values()
+
+    assert (
+        validate(
+            result,
+            list(allowed),
+            {"Jenkinsfile": "pipeline { }"},
+            provider_is_actions=False,
+        )
+        == []
+    )

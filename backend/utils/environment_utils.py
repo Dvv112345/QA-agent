@@ -20,6 +20,7 @@ import platform
 import sys
 from collections.abc import Iterable, Mapping
 from importlib.metadata import version
+from urllib.parse import urlsplit
 
 # Matches the separator used in the UI's single-line rendering.
 _SEPARATOR = " · "
@@ -29,7 +30,14 @@ _SEPARATOR = " · "
 
 
 def url_values(env_vars: Mapping[str, str] | None) -> set[str]:
-    """The environment values that are http(s) URLs."""
+    """The environment values that are http(s) URLs.
+
+    Answers **"may a human reading this be shown the value"** — a bug report
+    about a page has to be allowed to name the page.  That is deliberately
+    *not* the same question as "may this be a plain CI variable"; see
+    :func:`ci_variable_values`, which is narrower, and do not collapse the
+    two.
+    """
     if not env_vars:
         return set()
     return {
@@ -37,6 +45,64 @@ def url_values(env_vars: Mapping[str, str] | None) -> set[str]:
         for value in env_vars.values()
         if isinstance(value, str) and value.startswith(("http://", "https://"))
     }
+
+
+def ci_variable_values(env_vars: Mapping[str, str] | None) -> set[str]:
+    """The environment values safe to hold as a plain **CI variable**.
+
+    A strictly narrower question than :func:`url_values`, and the two must
+    not share a classifier.  "A human may read this in a ticket" is weaker
+    than "this may sit in a world-readable store and go unmasked in CI
+    logs": a repository variable is visible to anyone with read access and
+    is printed verbatim in job output, where a ticket has an audience.
+
+    So an ``http(s)`` value qualifies only when it carries no credential
+    material — no ``user:pass@`` userinfo, and no query string, both of
+    which routinely carry tokens.  Everything else falls through to the
+    secret store, so the rule can only ever move a value toward the safer
+    of the two.
+
+    **Known limit:** a token embedded in a *path*
+    (``/services/T00/B00/XXXX``) is indistinguishable from an ordinary
+    route and is classified as a variable.  The PR trailer names every
+    variable the team must create, so a reviewer sees it before it is
+    stored — that visibility is the backstop, not this function.
+    """
+    if not env_vars:
+        return set()
+    safe = set()
+    for value in env_vars.values():
+        if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+            continue
+        try:
+            parts = urlsplit(value)
+        except ValueError:  # a malformed URL is not one we will vouch for
+            continue
+        if parts.username or parts.password or parts.query:
+            continue
+        safe.add(value)
+    return safe
+
+
+def variable_and_secret_names(
+    env_vars: Mapping[str, str] | None,
+) -> tuple[list[str], list[str]]:
+    """Environment variable **names**, split into CI variables and CI secrets.
+
+    One home for the split, because two callers need the identical answer:
+    the export page tells the team which repository secrets to create, and
+    the export job commits references to them.  Two copies that drift name
+    one set on screen and commit another.
+
+    Values are read here only to sort the names and are then discarded —
+    nothing downstream of this function ever sees one.
+    """
+    if not env_vars:
+        return [], []
+    safe = ci_variable_values(env_vars)
+    variables = [name for name, value in env_vars.items() if value in safe]
+    secrets = [name for name, value in env_vars.items() if value not in safe]
+    return variables, secrets
 
 
 # Below this length the replacement does more damage than the leak: a

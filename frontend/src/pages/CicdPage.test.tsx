@@ -94,8 +94,8 @@ function makeEligibility(overrides: Partial<CicdEligibility> = {}): CicdEligibil
     eligible_count: 1,
     stale_count: 0,
     no_script_count: 0,
-    variable_names: ['BASE_URL'],
-    secret_names: ['QA_PASSWORD'],
+    variable_names: [{ name: 'BASE_URL', env_var: 'BASE_URL' }],
+    secret_names: [{ name: 'QA_PASSWORD', env_var: 'QA_PASSWORD' }],
     ...overrides,
   }
 }
@@ -129,6 +129,8 @@ function makeExport(overrides: Partial<CicdExport> = {}): CicdExport {
     case_count: 1,
     ci_file_paths: ['.github/workflows/qa-agent.yml'],
     dropped_paths: [],
+    // The receipt records the CI-side names only — what the team was asked
+    // to create, not the sprint's own vocabulary.
     variable_names: ['BASE_URL'],
     secret_names: ['QA_PASSWORD'],
     items: [],
@@ -289,6 +291,32 @@ describe('CicdPage', () => {
 
     expect(await screen.findByText('BASE_URL')).toBeInTheDocument()
     expect(screen.getByText('QA_PASSWORD')).toBeInTheDocument()
+  })
+
+  it('leads with the CI name and says which sprint variable it feeds', async () => {
+    // `base_url` is not what the team creates on GitHub Actions — `BASE_URL`
+    // is. Showing the sprint's own name alone would name something they
+    // cannot create verbatim.
+    mockFetchEligibility.mockResolvedValue(
+      makeEligibility({
+        variable_names: [{ name: 'BASE_URL', env_var: 'base_url' }],
+        secret_names: [{ name: 'QA_GITHUB_PAT', env_var: 'GITHUB_PAT' }],
+      }),
+    )
+
+    renderPage()
+
+    expect(await screen.findByText('BASE_URL')).toBeInTheDocument()
+    expect(screen.getByText('for base_url')).toBeInTheDocument()
+    expect(screen.getByText('QA_GITHUB_PAT')).toBeInTheDocument()
+    expect(screen.getByText('for GITHUB_PAT')).toBeInTheDocument()
+  })
+
+  it('omits the source name when the two coincide', async () => {
+    renderPage()
+
+    await screen.findByText('BASE_URL')
+    expect(screen.queryByText('for BASE_URL')).not.toBeInTheDocument()
   })
 
   it('links a history row to its pull request', async () => {

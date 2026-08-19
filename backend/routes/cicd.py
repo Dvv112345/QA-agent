@@ -34,15 +34,17 @@ from backend.models.types import (
     CicdConfigRequest,
     CicdConfigResponse,
     CicdEligibilityResponse,
+    CicdEnvName,
     CicdExportRequest,
     CicdExportResponse,
 )
 from backend.routes._common import get_sprint_or_404
 from backend.services import cicd_eligibility
+from backend.services.cicd_export import reference_map
 from backend.services.queue import enqueue_rows, get_queue_service
 from backend.utils.auth import verify_auth
 from backend.utils.crypto import decrypt_token, encrypt_token
-from backend.utils.environment_utils import url_values
+from backend.utils.environment_utils import variable_and_secret_names
 from backend.utils.github_utils import (
     GitHubError,
     GitHubUnavailableError,
@@ -236,26 +238,36 @@ async def delete_cicd_config(sprint_id: int, session: Session = Depends(get_sess
 # ── Eligibility ───────────────────────────────────────────────────────
 
 
-def env_var_name_split(sprint: Sprint) -> tuple[list[str], list[str]]:
-    """Environment variable **names**, split into CI variables and CI secrets.
+def env_var_names(sprint: Sprint) -> tuple[list[CicdEnvName], list[CicdEnvName]]:
+    """The CI variables and secrets this sprint's export will reference.
 
-    A URL-valued variable becomes a plain CI variable; everything else
-    becomes a secret.  Values are read here only to sort the names and are
-    then discarded — nothing below this line ever sees one, and no response
-    in this module carries one.
+    Both halves come from one place each: the split itself lives in
+    ``environment_utils.variable_and_secret_names`` (the export job needs
+    the identical answer, and two copies that drift name one set of secrets
+    on screen while committing references to another), and the CI-side name
+    comes from ``cicd_export.reference_map`` — the single derivation the
+    deterministic block, the prompt and the validation gate also read.
 
-    That split is what lets the export page say up front which repository
-    secrets the team will have to create, instead of the team learning it
-    from a workflow that runs and fails.
+    Each entry carries **both** names because the reader needs both: the
+    CI-side one is what they go and create, the sprint's own is how they
+    know which variable it feeds.  Values are read only to sort the names
+    and are then discarded; no response in this module carries one.
+
+    A sprint with nothing connected yet has no provider to map against, so
+    the Actions rules are assumed — the commoner case, and the names are
+    re-derived for real when the export runs.
     """
     test_env = sprint.test_environment
-    env_vars = test_env.env_vars if test_env is not None else None
-    if not env_vars:
-        return [], []
-    urls = url_values(env_vars)
-    variables = [name for name, value in env_vars.items() if value in urls]
-    secrets = [name for name, value in env_vars.items() if value not in urls]
-    return variables, secrets
+    variables, secrets = variable_and_secret_names(
+        test_env.env_vars if test_env is not None else None
+    )
+    config = sprint.cicd_config
+    is_actions = config is None or config.provider == CicdProvider.GITHUB_ACTIONS
+    mapped = reference_map(variables, secrets, provider_is_actions=is_actions)
+    return (
+        [CicdEnvName(name=mapped[name], env_var=name) for name in variables],
+        [CicdEnvName(name=mapped[name], env_var=name) for name in secrets],
+    )
 
 
 @router.get("/sprints/{sprint_id}/cicd-eligibility", response_model=CicdEligibilityResponse)
@@ -271,7 +283,7 @@ async def get_cicd_eligibility(sprint_id: int, session: Session = Depends(get_se
         raise HTTPException(status_code=404, detail="Sprint not found")
 
     entries = cicd_eligibility.case_entries(session, sprint)
-    variables, secrets = env_var_name_split(sprint)
+    variables, secrets = env_var_names(sprint)
     return CicdEligibilityResponse(
         sprint_id=sprint_id,
         entries=entries,
