@@ -624,13 +624,31 @@ regardless of case count, over one shared client: tree (content inline) → comm
 **What the model may and may not author.** It authors CI files and the pull-request prose. It
 authors a **job or stage body** for an existing file — never the file itself, so a truncating
 rewrite of the team's CI is not expressible; the splice is ours (`add_job` / `insert_stage`).
-There is no field that could carry a test script. It is shown environment variable and secret
-**names**, never values.
+There is no field that could carry a test script, `qa-agent-tests/` is outside the path allowlist,
+and the commit applies our scripts last — three layers, because the schema alone did not stop a
+`files` entry aimed at a script's own path. It is shown environment variable and secret **names**,
+never values.
+
+**Variable and secret names.** Which variables become plain CI variables and which become secrets
+is decided by `environment_utils.variable_and_secret_names`: an `http(s)` value counts as a plain
+variable only when it carries no userinfo and no query string, so a basic-auth URL or a webhook
+with a token in it goes to the secret store. The CI-side name itself comes from
+`cicd_export.reference_map` — a single derivation shared by the deterministic block, the prompt,
+the pull-request trailer and the gate, since a name they each derived separately is a name they can
+disagree about. `base_url` becomes `BASE_URL`, and Actions reserves the `GITHUB_` prefix, so
+`GITHUB_PAT` becomes `QA_GITHUB_PAT`; the eligibility endpoint and the trailer both report the
+CI-side name with the sprint's own alongside it. Both providers bind the same direction — CI
+supplies the mapped name and the script reads the sprint's own name from `os.environ`.
 
 **The gate** (`cicd_export.validate`), run before any write: a path allowlist (the one place model
 output becomes a filesystem effect), a host-edit target check (only a file this export actually
-fetched), a structural floor, and reference resolution (every `vars`/`secrets`/`credentials` name
-must be one we supplied). A failure raises, which costs a retry rather than a review cycle.
+fetched, and only one whose triggers already fit — a job inherits its workflow's triggers, so this
+is what keeps an environment-dependent suite off every pull request), a structural floor, and
+reference resolution (every `vars`/`secrets`/`credentials` name must be one we supplied). Jenkins'
+own `env` names — `BUILD_NUMBER`, `WORKSPACE`, `BRANCH_NAME` and the rest — are allowed through
+that last check, since Jenkins supplies them and plugins extend the set; Actions' `vars`/`secrets`
+namespaces are closed and need no such allowance. A failure raises, which costs a retry rather than
+a review cycle.
 
 **Endpoints.**
 
@@ -781,7 +799,7 @@ backend/
     readme_utils.py    # Best-effort README resolution (stored copy → re-download → none) + refresh_project_context for a run
     sprint_utils.py    # Unique sprint directory generation
     upload_utils.py    # read_upload_capped — bounded multipart reads
-    environment_utils.py # Where a finding was observed, and which env values may leave the app
+    environment_utils.py # Where a finding was observed; which env values may leave, and as what
     exploratory_utils.py # session_sheets(run) — session rows as plain prompt data
   tests/               # pytest suite (in-memory SQLite, mocked GitHub API, Redis + LLM stubbed)
 ```
