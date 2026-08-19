@@ -66,8 +66,9 @@ def _export_history(session: Session, sprint_id: int) -> dict[int, str]:
             CicdExport.sprint_id == sprint_id,
             CicdExport.status == CicdExportStatus.COMPLETED,
         )
-        .order_by(CicdExport.id)
+        .order_by(CicdExport.updated_at.asc())
     ).all()
+    logger.info(rows)
     return dict(rows)
 
 
