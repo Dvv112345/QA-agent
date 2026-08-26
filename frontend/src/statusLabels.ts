@@ -12,11 +12,20 @@
  * disagree) is gone.
  */
 import type {
+  CicdExportStatus,
   ExploratoryRunStatus,
   ExploratorySessionStatus,
   TestCaseExecutionStatus,
   TestExecutionStatus,
 } from './types'
+
+/** CI/CD exports — "Exporting" is the honest verb while it writes. */
+export const CICD_EXPORT_STATUS_LABELS: Record<CicdExportStatus, string> = {
+  pending: 'Queued',
+  running: 'Exporting',
+  completed: 'Exported',
+  failed: 'Failed',
+}
 
 /** Scripted runs and executions. */
 export const RUN_STATUS_LABELS: Record<TestExecutionStatus, string> = {

@@ -288,6 +288,10 @@ async def finish_sprint(
     now = datetime.now(timezone.utc)
     failed_counts: list[tuple[str, int]] = []
     for spec in SWEEP_SPECS:
+        if spec.inactive_sprint_ok:
+            # A CI/CD export is legitimate on a finished sprint — killing
+            # one here would retire exactly the work D21 permits.
+            continue
         rows = fail_in_progress_rows(session, spec, Sprint.id == sprint_id, now)
         if rows:
             failed_counts.append((spec.label, len(rows)))

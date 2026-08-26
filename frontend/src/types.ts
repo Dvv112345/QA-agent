@@ -456,3 +456,95 @@ export interface SprintMetrics {
   excluded_runs_running: number
   excluded_runs_failed: number
 }
+
+// ── CI/CD export ──────────────────────────────────────────────────────
+
+export type CicdProvider = 'github_actions' | 'jenkins'
+
+export type CicdExportStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+/** Why a case cannot be exported. `null` when it can. */
+export type CicdIneligibleReason = 'no_script' | 'stale'
+
+export interface CicdConfig {
+  id: number
+  sprint_id: number
+  provider: CicdProvider
+  ci_environment_hint: string | null
+  verified_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CicdConfigInput {
+  provider: CicdProvider
+  /** Blank keeps whatever credential is already stored — a provider switch included. */
+  access_token?: string | null
+  ci_environment_hint?: string | null
+}
+
+export interface CicdCaseEntry {
+  test_case_id: number
+  case_title: string
+  requirement_id: number
+  requirement_name: string
+  eligible: boolean
+  reason: CicdIneligibleReason | null
+  stale_reasons: string[]
+  previously_exported: boolean
+  last_export_pr_url: string | null
+}
+
+/**
+ * One environment variable as the CI system will carry it.
+ *
+ * Both names, because the reader needs both: `name` is what they create in
+ * GitHub or Jenkins, `env_var` is the sprint's own variable it feeds. They
+ * differ whenever the CI system's naming rules reject the sprint's name
+ * verbatim (`base_url` → `BASE_URL`, or a `GITHUB_`-prefixed name, which
+ * Actions reserves).
+ */
+export interface CicdEnvName {
+  name: string
+  env_var: string
+}
+
+export interface CicdEligibility {
+  sprint_id: number
+  entries: CicdCaseEntry[]
+  eligible_count: number
+  stale_count: number
+  no_script_count: number
+  /** Names only — no environment value is ever serialized. */
+  variable_names: CicdEnvName[]
+  secret_names: CicdEnvName[]
+}
+
+export interface CicdExportItem {
+  test_case_id: number
+  case_title: string
+  requirement_name: string
+  committed_path: string
+}
+
+export interface CicdExport {
+  id: number
+  sprint_id: number
+  provider: CicdProvider
+  status: CicdExportStatus
+  branch_name: string | null
+  commit_sha: string | null
+  pr_number: number | null
+  pr_url: string | null
+  pr_title: string | null
+  notes: string | null
+  error: string | null
+  case_count: number
+  ci_file_paths: string[]
+  dropped_paths: string[]
+  variable_names: string[]
+  secret_names: string[]
+  items: CicdExportItem[]
+  created_at: string
+  updated_at: string
+}

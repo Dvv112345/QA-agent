@@ -1,0 +1,74 @@
+.cicd-config-hint {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.cicd-config-providers {
+  display: flex;
+  gap: 1rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.cicd-config-providers legend {
+  padding: 0 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.cicd-config-providers label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  cursor: pointer;
+}
+
+.cicd-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.cicd-config-field input,
+.cicd-config-field textarea {
+  padding: 0.5rem;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.cicd-config-field textarea {
+  resize: vertical;
+}
+
+.cicd-config-optional {
+  font-weight: 400;
+  color: var(--text);
+}
+
+/* Shown rather than left to the placeholder: an edit prefills the input,
+   and the placeholder a user most needs is the one they never see. */
+.cicd-config-field-note {
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.cicd-config-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+.cicd-config-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* Pushes Disconnect away from Save/Cancel — the one irreversible action here. */
+.cicd-config-actions .btn-danger {
+  margin-left: auto;
+}

@@ -182,6 +182,18 @@ SCRIPT_EXECUTION_TIMEOUT: int = _get_int("SCRIPT_EXECUTION_TIMEOUT", 60)
 # up to (1 + MAX_SCRIPT_FIX_ROUNDS) generate/execute/diagnose cycles.
 TEST_EXECUTION_JOB_TIMEOUT: int = _get_int("TEST_EXECUTION_JOB_TIMEOUT", 3600)
 
+# ── CI/CD export ──────────────────────────────────────────────────────
+# Max read_file tool rounds per CI/CD integration call. The model reads the
+# repository to match its conventions, which is the whole task here — the
+# "read_file becomes the oracle" hazard does not apply, because this call
+# judges nothing about the product.
+CICD_TOOL_ROUNDS: int = _get_int("CICD_TOOL_ROUNDS", 5)
+# RQ job_timeout for one export: one LLM call plus five GitHub requests.
+CICD_EXPORT_JOB_TIMEOUT: int = _get_int("CICD_EXPORT_JOB_TIMEOUT", 1800)
+# How many workflow files an export fetches and parses before it stops
+# looking. Bounds both the request count and the prompt size.
+CICD_MAX_WORKFLOWS: int = _get_int("CICD_MAX_WORKFLOWS", 20)
+
 # ── LLM (OpenAI-compatible; DeepSeek by default) ─────────────────────
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL: str | None = os.environ.get("OPENAI_BASE_URL") or None

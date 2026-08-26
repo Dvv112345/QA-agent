@@ -1004,7 +1004,7 @@ def _run_loop(
     snapshot_window=3,
     rounds=None,
     base_urls=("https://app.test",),
-    secret_values=None,
+    secrets=None,
     max_free_recordings=llm.EXPLORATORY_MAX_FINDINGS,
     context_token_limit=llm.EXPLORATORY_CONTEXT_TOKEN_LIMIT,
 ):
@@ -1022,7 +1022,7 @@ def _run_loop(
         max_actions=max_actions,
         snapshot_window=snapshot_window,
         on_round=(rounds.append) if rounds is not None else (lambda _actions: None),
-        secret_values=secret_values,
+        secrets=secrets,
         max_free_recordings=max_free_recordings,
         context_token_limit=context_token_limit,
     )
@@ -1499,11 +1499,13 @@ class TestRunExplorationLoop:
             ],
         )
 
-        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+        result = _run_loop({"fill": lambda **kw: "filled"}, secrets={"QA_PASSWORD": "hunter2"})
 
         log = "\n".join(result.action_log)
         assert "hunter2" not in log
-        assert "***" in log
+        # Names the credential rather than blanking it, matching every other
+        # redaction in the application.
+        assert "$QA_PASSWORD" in log
 
     def test_non_secret_fill_values_stay_readable(self, monkeypatch):
         """Exact-match redaction must not mangle ordinary log lines."""
@@ -1515,7 +1517,7 @@ class TestRunExplorationLoop:
             ],
         )
 
-        result = _run_loop({"fill": lambda **kw: "filled"}, secret_values={"hunter2"})
+        result = _run_loop({"fill": lambda **kw: "filled"}, secrets={"QA_PASSWORD": "hunter2"})
 
         assert "hunter2 is my dog" in "\n".join(result.action_log)
 
@@ -2038,3 +2040,218 @@ class TestGroupFindings:
         stub_client.content = "not json"
         with pytest.raises(LLMError):
             llm.group_findings(self._candidates(), [])
+
+
+# ── CI/CD integration ─────────────────────────────────────────────────
+
+_CICD_PAYLOAD = {
+    "files": [
+        {
+            "path": ".github/workflows/qa.yml",
+            "content": "name: QA\non:\n  workflow_dispatch:\njobs:\n  qa:\n    steps: []\n",
+        }
+    ],
+    "host_edit": None,
+    "pr_title": "Add the QA suite to CI",
+    "pr_body": "It runs nightly.",
+    "notes": None,
+}
+
+
+def _generate_cicd(**overrides):
+    kwargs = {
+        "provider": "github_actions",
+        "readme": None,
+        "file_tree": "src/app.py",
+        "ci_facts": "No existing CI workflows were found in this repository.",
+        "ci_environment_hint": None,
+        "variable_names": ["BASE_URL"],
+        "secret_names": ["QA_PASSWORD"],
+        "script_paths": ["qa-agent-tests/login_1/happy_2.py"],
+        "deterministic_block": "- run: playwright install --with-deps chromium",
+        "host_candidates": [],
+        "read_file": lambda path: "FILE CONTENT",
+        "on_round": lambda: None,
+    }
+    kwargs.update(overrides)
+    return llm.generate_cicd_integration(**kwargs)
+
+
+class TestGenerateCicdIntegration:
+    def test_sends_the_tool_schema_and_parses_the_result(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(_CICD_PAYLOAD))
+
+        result = _generate_cicd()
+
+        assert result.pr_title == "Add the QA suite to CI"
+        assert result.files[0].path == ".github/workflows/qa.yml"
+        assert result.host_edit is None
+        tools = client.requests[0]["tools"]
+        assert [t["function"]["name"] for t in tools] == ["read_file"]
+
+    def test_the_prompt_carries_names_but_no_environment_value(self, monkeypatch):
+        """Nothing downstream can inline a value the model was never shown."""
+        client = _sequence_client(monkeypatch, _final_response(_CICD_PAYLOAD))
+
+        _generate_cicd()
+
+        prompt = client.requests[0]["messages"][1]["content"]
+        assert "BASE_URL" in prompt
+        assert "QA_PASSWORD" in prompt
+        assert "hunter2" not in prompt
+        assert "https://staging" not in prompt
+
+    def test_a_tool_round_reads_the_repo_then_answers(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response(".github/workflows/ci.yml"),
+            _final_response(_CICD_PAYLOAD),
+        )
+        read_paths: list[str] = []
+
+        _generate_cicd(read_file=lambda path: read_paths.append(path) or "text")
+
+        assert read_paths == [".github/workflows/ci.yml"]
+        assert len(client.requests) == 2
+
+    def test_it_degrades_to_a_plain_completion_when_the_provider_rejects_tools(self, monkeypatch):
+        """Reachable, and it authors CI having never read the repo's conventions."""
+        client = _sequence_client(monkeypatch, _bad_request_error(), _final_response(_CICD_PAYLOAD))
+
+        result = _generate_cicd()
+
+        assert result.pr_title == "Add the QA suite to CI"
+        assert len(client.requests) == 2
+        assert "tools" not in client.requests[1]
+
+    def test_no_file_tree_means_a_plain_completion(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(_CICD_PAYLOAD))
+
+        _generate_cicd(read_file=None)
+
+        assert "tools" not in client.requests[0]
+
+    def test_a_host_edit_is_parsed_into_its_three_parts(self, monkeypatch):
+        payload = dict(_CICD_PAYLOAD)
+        payload["files"] = []
+        payload["host_edit"] = {
+            "path": ".github/workflows/nightly.yml",
+            "job_name": "qa-agent-e2e",
+            "job_body": "runs-on: ubuntu-latest\nsteps: []\n",
+        }
+        _sequence_client(monkeypatch, _final_response(payload))
+
+        result = _generate_cicd()
+
+        assert result.host_edit.path == ".github/workflows/nightly.yml"
+        assert result.host_edit.job_name == "qa-agent-e2e"
+
+    def test_it_rejects_a_result_with_nothing_to_commit(self, monkeypatch):
+        payload = dict(_CICD_PAYLOAD, files=[], host_edit=None)
+        _sequence_client(monkeypatch, _final_response(payload))
+
+        with pytest.raises(LLMError, match="nothing to commit"):
+            _generate_cicd()
+
+    def test_it_rejects_a_result_with_no_pr_title(self, monkeypatch):
+        payload = dict(_CICD_PAYLOAD, pr_title="   ")
+        _sequence_client(monkeypatch, _final_response(payload))
+
+        with pytest.raises(LLMError, match="no title"):
+            _generate_cicd()
+
+    def test_it_rejects_an_empty_ci_file(self, monkeypatch):
+        payload = dict(_CICD_PAYLOAD)
+        payload["files"] = [{"path": ".github/workflows/qa.yml", "content": "  "}]
+        _sequence_client(monkeypatch, _final_response(payload))
+
+        with pytest.raises(LLMError, match="empty CI file"):
+            _generate_cicd()
+
+    def test_it_rejects_an_incomplete_host_edit(self, monkeypatch):
+        payload = dict(_CICD_PAYLOAD, files=[])
+        payload["host_edit"] = {"path": ".github/workflows/x.yml", "job_name": "", "job_body": "x"}
+        _sequence_client(monkeypatch, _final_response(payload))
+
+        with pytest.raises(LLMError, match="incomplete host edit"):
+            _generate_cicd()
+
+    def test_malformed_json_surfaces_as_an_llm_error(self, monkeypatch):
+        _sequence_client(monkeypatch, _final_response("not json at all"))
+
+        with pytest.raises(LLMError, match="malformed"):
+            _generate_cicd()
+
+
+class TestDiagnosisRedaction:
+    """`diagnose_and_fix_script` rewrites captured output before the prompt.
+
+    This is the one LLM input that can carry a live environment value —
+    the script ran as a subprocess with the confirmed variables injected.
+    Left alone the value flows into `fixed_script`, is cached on
+    `TestCase.script`, and is then served by the download endpoint and
+    committed by a CI/CD export.
+    """
+
+    _SECRETS = {"BASE_URL": "https://app.test", "PASSWORD": "s3cr3t-passw0rd"}
+
+    def _prompt(self, monkeypatch, *, stdout="", stderr="", secrets=None) -> str:
+        client = _sequence_client(
+            monkeypatch,
+            _final_response(
+                {
+                    "classification": "script_bug",
+                    "explanation": "x",
+                    "fixed_script": "print(2)",
+                }
+            ),
+        )
+        llm.diagnose_and_fix_script(
+            name="Login",
+            description="Users can log in.",
+            test_case=_TEST_CASE,
+            env_var_names=["BASE_URL", "PASSWORD"],
+            readme=None,
+            file_tree=None,
+            script="print(1)",
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=1,
+            read_file=None,
+            on_round=lambda: None,
+            secrets=self._SECRETS if secrets is None else secrets,
+        )
+        return client.requests[0]["messages"][1]["content"]
+
+    def test_a_credential_in_stderr_becomes_its_variable_name(self, monkeypatch):
+        prompt = self._prompt(monkeypatch, stderr="login failed for admin/s3cr3t-passw0rd")
+
+        assert "s3cr3t-passw0rd" not in prompt
+        assert "$PASSWORD" in prompt
+
+    def test_a_url_value_is_rewritten_too(self, monkeypatch):
+        """`keep=()` here, unlike a ticket — and the diagnosis survives it."""
+        prompt = self._prompt(monkeypatch, stderr="Connection refused to https://app.test/login")
+
+        assert "https://app.test" not in prompt
+        # The path — the diagnostically load-bearing half — is untouched.
+        assert "$BASE_URL/login" in prompt
+
+    def test_stdout_is_rewritten_as_well_as_stderr(self, monkeypatch):
+        prompt = self._prompt(monkeypatch, stdout="GET https://app.test/health")
+
+        assert "https://app.test" not in prompt
+        assert "$BASE_URL/health" in prompt
+
+    def test_a_value_below_the_floor_is_left_alone(self, monkeypatch):
+        """Otherwise an ordinary word is rewritten throughout the output."""
+        prompt = self._prompt(
+            monkeypatch, stderr="the port 80 page returned 500", secrets={"PORT": "80"}
+        )
+
+        assert "the port 80 page returned 500" in prompt
+
+    def test_no_secrets_leaves_the_output_verbatim(self, monkeypatch):
+        prompt = self._prompt(monkeypatch, stderr="plain failure", secrets={})
+
+        assert "plain failure" in prompt

@@ -324,7 +324,9 @@ TEST_SCRIPT_DIAGNOSIS_SYSTEM_PROMPT = (
     "wrong-endpoint guess, but never to redefine what the correct outcome "
     "should be. Treat a wrong or missing os.environ key as a "
     "script_bug fixable by referencing the correct name from the provided "
-    "list. Treat a failure caused by an unmet precondition — the script "
+    "list. Environment values appear in the captured output as $NAME — read "
+    "them from os.environ by that name, and never inline the literal $NAME "
+    "text into a script. Treat a failure caused by an unmet precondition — the script "
     "assumed it rather than establishing it — as a script_bug too. Treat a "
     f"failure caused by importing anything outside this set as a script_bug "
     f"too: {AVAILABLE_TEST_LIBRARIES} A fix must not reintroduce a "
@@ -903,4 +905,135 @@ def finding_grouping_context(
         )
     else:
         parts.append("Known defects in this sprint: (none yet)")
+    return parts
+
+
+# ── CI/CD export ──────────────────────────────────────────────────────
+
+CICD_SYSTEM_PROMPT = """You integrate an existing, already-verified test suite into a
+repository's own CI system.
+
+The test scripts are written and verified. They are committed for you, verbatim, at
+paths you are given. You never write, edit, quote or reproduce a test script — your
+job is the CI configuration around them, and the pull request text that explains it.
+
+What you author:
+- the CI file(s) needed to run the suite, or a single job/stage body to add to an
+  existing one;
+- the pull request title and body.
+
+Rules, all of them binding:
+
+1. TRIGGERS. Default to manual dispatch (GitHub Actions:
+`workflow_dispatch`). This suite talks to a deployed environment, so it
+must not run on every push or pull request. Chaining off a deployment (`workflow_run`,
+`deployment_status`) is permitted when the repository's own CI makes that the natural
+fit — and you must say so in the pull request body.
+
+2. NO ENVIRONMENT VALUES. Never write a URL, host, port, username, password, token or
+any other environment value into a file. You are given variable and secret *names*
+only, and that is deliberate. Reference them: `${{ vars.NAME }}` for variables and
+`${{ secrets.NAME }}` for secrets on GitHub Actions; `env.NAME` and
+`credentials('name')` on Jenkins. Every name you reference must be one you were given.
+
+3. THE SETUP AND RUN STEPS ARE SUPPLIED. You are given the exact step block that
+installs dependencies and runs the scripts. Use it as given wherever you can. You may
+adapt it where the repository genuinely demands it — a self-hosted runner, a container
+image, service containers — and when you do, you must state in the pull request body
+which steps you changed and why. A reviewer needs to know which parts stopped being
+canonical.
+
+4. EXTEND AN EXISTING FILE ONLY WHEN ITS TRIGGERS ALREADY FIT. A job added to a
+workflow inherits that workflow's triggers. If the candidate host runs on
+`pull_request` or `push`, do not add a job to it — create a new workflow file instead.
+You are told, per workflow, whether it is a legal host.
+
+5. LOCAL COMPOSITE ACTIONS ONLY. You may wire in a composite action with `uses:` when
+it is local (`./.github/actions/...`) and you can supply every required input. Never a
+reusable workflow (`on: workflow_call`) — it is invoked at job level and cannot share a
+job with our steps. Name any action you wire in, in the pull request body.
+
+6. DO NOT RESTATE THE TRAILER. A generated section is appended below your `pr_body`,
+and it already lists: the sprint, every test case committed with its path, the exact
+variables and secrets the team must create before the job runs, any file that was
+dropped, and your `notes`.
+
+Write instead what only you can: what this pull request adds and how it is wired into
+this repository, which existing conventions it follows, and every deviation with its
+reason — a non-default trigger, an adapted setup step, a composite action, a new file
+where a host workflow might have been expected. Prose, a few short paragraphs; refer to
+the section below for the setup details rather than summarising them.
+
+Match the repository's existing conventions — runner, action versions, version pins,
+naming — using the facts you are given. Where a fact is absent it was genuinely
+unresolvable; fall back to a sensible default rather than inventing what the repository
+"probably" does.
+
+Respond with a JSON object only:
+{
+  "files": [{"path": "...", "content": "..."}],
+  "host_edit": {"path": "...", "job_name": "...", "job_body": "..."} or null,
+  "pr_title": "...",
+  "pr_body": "...",
+  "notes": "..." or null
+}
+
+`files` creates new files. `host_edit` adds one job (GitHub Actions) or one stage
+(Jenkins) to a file that already exists — `job_body` is the job's YAML mapping, or the
+Groovy `stage('...') { ... }` source, and nothing else. You never restate a whole
+existing file: the splice is performed for you. Use `notes` for caveats a reviewer
+should know."""
+
+
+def cicd_context(
+    provider: str,
+    readme: str | None,
+    file_tree: str | None,
+    ci_facts: str,
+    ci_environment_hint: str | None,
+    variable_names: list[str],
+    secret_names: list[str],
+    script_paths: list[str],
+    deterministic_block: str,
+    host_candidates: list[str],
+) -> list[str]:
+    """User-prompt blocks for the CI/CD integration call.
+
+    Carries **names**, never values — which is what makes the containment
+    gate downstream belt-and-braces rather than load-bearing.
+    """
+    parts = [f"Target CI system: {provider}"]
+    if readme:
+        parts.append(f"Repository README:\n{readme[:README_MAX_CHARS]}")
+    if file_tree:
+        parts.append(f"Repository file tree:\n{file_tree}")
+
+    parts.append(f"Existing CI in this repository:\n{ci_facts}")
+
+    if host_candidates:
+        parts.append(
+            "Workflows you may add a job to (their triggers already fit):\n"
+            + "\n".join(f"- {path}" for path in host_candidates)
+        )
+    else:
+        parts.append(
+            "No existing workflow is a legal host — every one of them runs on push or "
+            "pull_request, or there are none. Create a new file."
+        )
+
+    if ci_environment_hint:
+        parts.append(f"What the team said about their CI environment:\n{ci_environment_hint}")
+
+    parts.append(
+        "Environment variable names available (values are deliberately withheld):\n"
+        f"- as CI variables: {', '.join(variable_names) or '(none)'}\n"
+        f"- as CI secrets: {', '.join(secret_names) or '(none)'}"
+    )
+    parts.append(
+        "Test scripts that will be committed (paths only — you never author these):\n"
+        + "\n".join(f"- {path}" for path in script_paths)
+    )
+    parts.append(
+        f"The setup and run steps to integrate, supplied by QA Agent:\n{deterministic_block}"
+    )
     return parts

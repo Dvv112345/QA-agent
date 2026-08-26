@@ -4,7 +4,7 @@ import base64
 import logging
 import re
 import urllib.parse
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
@@ -98,16 +98,27 @@ async def _request(
     client: httpx.AsyncClient,
     url: str,
     token: str | None,
+    *,
+    method: str = "GET",
+    json: dict[str, Any] | None = None,
 ) -> httpx.Response:
-    """One authenticated GET, with every transport failure mapped to ours.
+    """One authenticated request, with every transport failure mapped to ours.
 
     Returns the response whatever its status — the callers differ on which
     codes are fatal, and on whether they want the body at all.  Only
     failures that produced *no* response raise from here.
+
+    ``method``/``json`` exist so the write helpers share this transport and
+    its error mapping.  Everything above stays split exactly as it was:
+    this layer never parses a body, and ``_get`` remains the only place
+    that does (see the "share the transport, not the parsing" rule — a
+    caller that discards the body must not inherit a parse that can fail).
     """
     headers = _build_headers(token)
     try:
-        return await client.get(url, headers=headers, timeout=GITHUB_API_TIMEOUT)
+        return await client.request(
+            method, url, headers=headers, json=json, timeout=GITHUB_API_TIMEOUT
+        )
     except httpx.TimeoutException:
         raise GitHubUnavailableError(
             f"GitHub API request timed out after {GITHUB_API_TIMEOUT}s: {url}"
@@ -315,6 +326,41 @@ async def fetch_file_tree(
 # ── Repo file contents ───────────────────────────────────────────────
 
 
+async def get_file(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    path: str,
+    token: str | None = None,
+    ref: str | None = None,
+) -> str | None:
+    """``fetch_file`` over a client the caller already owns.
+
+    Public, and the same split the write helpers use: a caller reading one
+    file wants ``fetch_file``, while a caller reading twenty in a row —
+    a CI/CD export walking a repository's workflows — should not build
+    twenty clients to do it.
+    """
+    # Repo paths can contain spaces/# — quote each segment, keep separators.
+    quoted_path = urllib.parse.quote(path, safe="/")
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted_path}"
+    if ref:
+        url += f"?ref={urllib.parse.quote(ref)}"
+
+    data = await _get(client, url, token, allow_404=True)
+
+    if data is None:
+        return None
+    # A directory returns a JSON list; files >1 MB come back without inline
+    # content — neither is readable text for our purposes.
+    if not isinstance(data, dict) or data.get("type") != "file" or not data.get("content"):
+        raise GitHubError(f"{path!r} is not a readable text file.")
+    try:
+        return base64.b64decode(data["content"]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise GitHubError(f"{path!r} is not a readable text file: {exc}") from exc
+
+
 async def fetch_file(
     owner: str,
     repo: str,
@@ -330,22 +376,254 @@ async def fetch_file(
     ``GitHubError``; other HTTP failures raise the appropriate
     ``GitHubError`` subclass.
     """
-    # Repo paths can contain spaces/# — quote each segment, keep separators.
-    quoted_path = urllib.parse.quote(path, safe="/")
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted_path}"
-    if ref:
-        url += f"?ref={urllib.parse.quote(ref)}"
-
     async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
-        data = await _get(client, url, token, allow_404=True)
+        return await get_file(client, owner, repo, path, token, ref)
 
-    if data is None:
-        return None
-    # A directory returns a JSON list; files >1 MB come back without inline
-    # content — neither is readable text for our purposes.
-    if not isinstance(data, dict) or data.get("type") != "file" or not data.get("content"):
-        raise GitHubError(f"{path!r} is not a readable text file.")
+
+# ── Write helpers (CI/CD export) ─────────────────────────────────────
+#
+# Every helper below takes an open ``client`` as its first argument rather
+# than opening one, because the whole branch-and-PR sequence is five
+# sequential requests against the same host and there is exactly one
+# ``async with`` above them.  That matches the split this module already
+# had: public *read* helpers open a client, the layer beneath receives one.
+#
+# ``SSL_CONTEXT`` is therefore mandatory at that single construction site —
+# on Windows a stale ``SSL_CERT_FILE`` breaks client creation outright.
+
+
+# GitHub gates this one directory behind a scope of its own, for both
+# credential types — so it is the one path prefix the write layer knows by
+# name.
+WORKFLOW_DIR = ".github/workflows/"
+
+_WORKFLOW_SCOPE_ERROR = (
+    "GitHub refused to commit a file under .github/workflows/ and answered 404. "
+    "That is what it returns when the token lacks the 'workflow' scope (classic "
+    "token) or Workflows: Read and write (fine-grained token). The repository "
+    "itself is reachable — this export had already read it. Add that scope to "
+    "the token, reconnect the CI/CD target, and restart the export."
+)
+
+
+def _write_error(response: httpx.Response, has_token: bool) -> GitHubError:
+    """Map a failed write, keeping GitHub's own explanation when it has one.
+
+    ``_classify_error`` answers a bare ``GitHubError`` for the statuses it
+    does not recognise, and the one that matters most here — 422 from
+    ``create_ref`` when a branch name already exists — is exactly such a
+    status.  Without the API's message the retry is undiagnosable.
+    """
+    error = _classify_error(response.status_code, has_token)
+    if type(error) is not GitHubError:
+        return error
     try:
-        return base64.b64decode(data["content"]).decode("utf-8")
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise GitHubError(f"{path!r} is not a readable text file: {exc}") from exc
+        message = response.json().get("message")
+    except (ValueError, AttributeError):
+        message = None
+    if not message:
+        return error
+    return GitHubError(f"GitHub API returned {response.status_code}: {message}")
+
+
+async def _write(
+    client: httpx.AsyncClient,
+    url: str,
+    token: str | None,
+    *,
+    method: str = "POST",
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One authenticated write, returning parsed JSON.
+
+    Deliberately has no ``allow_404`` analogue: absence is a value on a read
+    (a repository legitimately has no README), but a 404 on a write always
+    means the target is wrong or the token cannot see it.
+    """
+    response = await _request(client, url, token, method=method, json=payload)
+    if not response.is_success:
+        raise _write_error(response, bool(token))
+    return response.json()
+
+
+def _token_scopes(response: httpx.Response) -> frozenset[str] | None:
+    """The scopes a credential reports, or ``None`` when it reports none.
+
+    Only classic personal access tokens send ``X-OAuth-Scopes``.  A
+    fine-grained PAT or a GitHub App token omits the header entirely, and
+    that absence must stay distinguishable from an empty value: a classic
+    token with no scopes at all sends the header empty, and *that* one is
+    known to be missing everything.
+    """
+    header = response.headers.get("X-OAuth-Scopes")
+    if header is None:
+        return None
+    return frozenset(part.strip() for part in header.split(",") if part.strip())
+
+
+class RepoWriteAccess(NamedTuple):
+    """What a credential may do to a repository — both halves, one request.
+
+    The two fields answer *different questions*, which is why one value
+    could never carry both.  ``can_push`` comes from the repository's
+    ``permissions`` block, and that block describes the **account's role**
+    on the repository.  ``scopes`` comes from ``X-OAuth-Scopes``, and that
+    describes what the **credential** was granted.  A token held by a repo
+    admin reports ``push: true`` no matter how narrowly it was scoped, so
+    the first check alone certifies a credential that cannot write.
+    """
+
+    can_push: bool
+    scopes: frozenset[str] | None
+
+    def lacks(self, scope: str) -> bool:
+        """Whether this credential is *known* to be missing ``scope``.
+
+        False when scopes are unknown, deliberately: a fine-grained PAT
+        reports nothing, and refusing every such token at save time would
+        block the credential type GitHub now recommends.  The write-time
+        error mapping is what covers that case.
+        """
+        return self.scopes is not None and scope not in self.scopes
+
+
+async def check_write_access(owner: str, repo: str, token: str | None = None) -> RepoWriteAccess:
+    """What ``token`` may do to ``owner/repo``, checked when it is *saved*.
+
+    A stronger claim than the issue tracker's "can I file here", and asked
+    before an export has spent an LLM call discovering the answer.  A
+    missing ``permissions`` block reads as no push: GitHub omits it for
+    unauthenticated reads, and defaulting a permission question to "yes" is
+    the wrong direction to be wrong in.
+
+    Uses ``_request`` rather than ``_get`` because the scopes live in a
+    **header** — the one caller here that needs the response itself and not
+    only its body.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    async with httpx.AsyncClient(verify=SSL_CONTEXT) as client:
+        response = await _request(client, url, token)
+    if not response.is_success:
+        raise _classify_error(response.status_code, bool(token))
+
+    permissions = response.json().get("permissions")
+    can_push = bool(permissions.get("push")) if isinstance(permissions, dict) else False
+    return RepoWriteAccess(can_push=can_push, scopes=_token_scopes(response))
+
+
+async def get_branch_sha(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    branch: str,
+    token: str | None = None,
+) -> str:
+    """The commit SHA a branch currently points at — the base of our commit."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{branch}"
+    data = await _get(client, url, token)
+    sha = (data.get("object") or {}).get("sha")
+    if not sha:
+        raise GitHubError(f"Branch {branch!r} has no commit to build on.")
+    return sha
+
+
+async def create_tree(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    base_tree: str,
+    files: dict[str, str],
+    token: str | None = None,
+) -> str:
+    """Create a git tree extending ``base_tree`` with ``files``, return its SHA.
+
+    File content rides **inline** on each entry rather than being uploaded
+    as a blob first: GitHub writes the blob itself, so the whole export is
+    four write requests regardless of how many test cases it ships, instead
+    of one per file plus four.  The only bound is total request size, which
+    text scripts do not approach.
+
+    ``base_tree`` is what makes the commit an *addition* to the default
+    branch rather than a tree that replaces everything else in the
+    repository with these files alone.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees"
+    payload = {
+        "base_tree": base_tree,
+        "tree": [
+            {"path": path, "mode": "100644", "type": "blob", "content": content}
+            for path, content in files.items()
+        ],
+    }
+    try:
+        data = await _write(client, url, token, payload=payload)
+    except RepoNotFoundError:
+        # A 404 here is never a missing repository: this call is preceded by
+        # reads of the same repository with the same token. GitHub answers a
+        # workflow-file write from a token without the `workflow` scope with
+        # a bare 404 — no 403, no message — so the paths are the only
+        # evidence of what actually happened, and they are only in scope
+        # here. Without this the export reports "Repository not found or not
+        # accessible" and sends the reader to check the wrong thing.
+        if any(path.startswith(WORKFLOW_DIR) for path in files):
+            raise GitHubError(_WORKFLOW_SCOPE_ERROR) from None
+        raise
+    return data["sha"]
+
+
+async def create_commit(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    message: str,
+    tree_sha: str,
+    parent_sha: str,
+    token: str | None = None,
+) -> str:
+    """Create a commit over ``tree_sha`` with one parent, return its SHA."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/commits"
+    payload = {"message": message, "tree": tree_sha, "parents": [parent_sha]}
+    data = await _write(client, url, token, payload=payload)
+    return data["sha"]
+
+
+async def create_ref(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    branch: str,
+    sha: str,
+    token: str | None = None,
+) -> None:
+    """Point a **new** branch at ``sha``.
+
+    Always a create, never a force-update: the export's whole relationship
+    with the target repository is append-only, and a fresh branch per
+    attempt is what makes a retry idempotent.  A 422 here means the name is
+    taken, which is a clean retryable failure rather than something to
+    resolve by overwriting someone's branch.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/refs"
+    await _write(client, url, token, payload={"ref": f"refs/heads/{branch}", "sha": sha})
+
+
+async def create_pull_request(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    title: str,
+    body: str,
+    head: str,
+    base: str,
+    token: str | None = None,
+) -> dict[str, Any]:
+    """Open a pull request, returning ``{"number", "html_url"}``.
+
+    The PR *is* the deliverable: nothing here ever merges it, and the human
+    review it invites is the gate that catches a generated workflow being
+    wrong in a way no check of ours could.
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+    payload = {"title": title, "body": body, "head": head, "base": base}
+    data = await _write(client, url, token, payload=payload)
+    return {"number": data.get("number"), "html_url": data.get("html_url", "")}

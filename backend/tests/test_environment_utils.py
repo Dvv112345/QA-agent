@@ -11,8 +11,11 @@ from importlib.metadata import PackageNotFoundError
 from backend.utils import environment_utils
 from backend.utils.environment_utils import (
     browser_environment,
+    ci_variable_values,
     os_environment,
     script_environment,
+    url_values,
+    variable_and_secret_names,
 )
 
 
@@ -94,3 +97,56 @@ class TestBrowserEnvironment:
     def test_falls_back_to_os_alone(self):
         """A session constructed without a browser still describes something."""
         assert browser_environment(None, None, None) == platform.platform()
+
+
+class TestCiVariableValues:
+    """The narrower half of the URL question.
+
+    `url_values` answers "may a human be shown this in a ticket";
+    `ci_variable_values` answers "may this sit in a world-readable CI store
+    and go unmasked in job logs". Reusing one classifier for both failed
+    open — a credential-bearing URL was filed as a plain CI variable.
+    """
+
+    def test_a_plain_http_url_is_a_variable(self):
+        env = {"BASE_URL": "https://staging.example.com/app"}
+
+        assert ci_variable_values(env) == {"https://staging.example.com/app"}
+
+    def test_basic_auth_credentials_fall_through_to_secret(self):
+        env = {"BASE_URL": "https://qa:hunter2@staging.example.com"}
+
+        assert ci_variable_values(env) == set()
+        # Still readable in a ticket — the other question, unchanged.
+        assert url_values(env) == {"https://qa:hunter2@staging.example.com"}
+
+    def test_a_query_string_falls_through_to_secret(self):
+        """Webhooks and signed URLs carry their token here."""
+        env = {"HOOK": "https://hooks.example.com/services/AB?token=xyz"}
+
+        assert ci_variable_values(env) == set()
+
+    def test_a_non_url_is_never_a_variable(self):
+        assert ci_variable_values({"BROWSER": "chromium", "PORT": "8080"}) == set()
+
+    def test_no_env_vars_is_not_an_error(self):
+        assert ci_variable_values(None) == set()
+        assert ci_variable_values({}) == set()
+
+
+class TestVariableAndSecretNames:
+    def test_splits_names_by_what_they_become_in_ci(self):
+        variables, secrets = variable_and_secret_names(
+            {
+                "BASE_URL": "https://staging.example.com",
+                "DB_PASSWORD": "hunter2",
+                "ADMIN_URL": "https://admin:pw@staging.example.com",
+            }
+        )
+
+        assert variables == ["BASE_URL"]
+        # The credential-bearing URL lands in the safer store.
+        assert secrets == ["DB_PASSWORD", "ADMIN_URL"]
+
+    def test_an_empty_environment_yields_two_empty_lists(self):
+        assert variable_and_secret_names(None) == ([], [])

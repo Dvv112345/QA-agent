@@ -20,6 +20,7 @@ import platform
 import sys
 from collections.abc import Iterable, Mapping
 from importlib.metadata import version
+from urllib.parse import urlsplit
 
 # Matches the separator used in the UI's single-line rendering.
 _SEPARATOR = " · "
@@ -29,7 +30,14 @@ _SEPARATOR = " · "
 
 
 def url_values(env_vars: Mapping[str, str] | None) -> set[str]:
-    """The environment values that are http(s) URLs."""
+    """The environment values that are http(s) URLs.
+
+    Answers **"may a human reading this be shown the value"** — a bug report
+    about a page has to be allowed to name the page.  That is deliberately
+    *not* the same question as "may this be a plain CI variable"; see
+    :func:`ci_variable_values`, which is narrower, and do not collapse the
+    two.
+    """
     if not env_vars:
         return set()
     return {
@@ -39,34 +47,135 @@ def url_values(env_vars: Mapping[str, str] | None) -> set[str]:
     }
 
 
-def redactable_values(
+def ci_variable_values(env_vars: Mapping[str, str] | None) -> set[str]:
+    """The environment values safe to hold as a plain **CI variable**.
+
+    A strictly narrower question than :func:`url_values`, and the two must
+    not share a classifier.  "A human may read this in a ticket" is weaker
+    than "this may sit in a world-readable store and go unmasked in CI
+    logs": a repository variable is visible to anyone with read access and
+    is printed verbatim in job output, where a ticket has an audience.
+
+    So an ``http(s)`` value qualifies only when it carries no credential
+    material — no ``user:pass@`` userinfo, and no query string, both of
+    which routinely carry tokens.  Everything else falls through to the
+    secret store, so the rule can only ever move a value toward the safer
+    of the two.
+
+    **Known limit:** a token embedded in a *path*
+    (``/services/T00/B00/XXXX``) is indistinguishable from an ordinary
+    route and is classified as a variable.  The PR trailer names every
+    variable the team must create, so a reviewer sees it before it is
+    stored — that visibility is the backstop, not this function.
+    """
+    if not env_vars:
+        return set()
+    safe = set()
+    for value in env_vars.values():
+        if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+            continue
+        try:
+            parts = urlsplit(value)
+        except ValueError:  # a malformed URL is not one we will vouch for
+            continue
+        if parts.username or parts.password or parts.query:
+            continue
+        safe.add(value)
+    return safe
+
+
+def variable_and_secret_names(
+    env_vars: Mapping[str, str] | None,
+) -> tuple[list[str], list[str]]:
+    """Environment variable **names**, split into CI variables and CI secrets.
+
+    One home for the split, because two callers need the identical answer:
+    the export page tells the team which repository secrets to create, and
+    the export job commits references to them.  Two copies that drift name
+    one set on screen and commit another.
+
+    Values are read here only to sort the names and are then discarded —
+    nothing downstream of this function ever sees one.
+    """
+    if not env_vars:
+        return [], []
+    safe = ci_variable_values(env_vars)
+    variables = [name for name, value in env_vars.items() if value in safe]
+    secrets = [name for name, value in env_vars.items() if value not in safe]
+    return variables, secrets
+
+
+# Below this length the replacement does more damage than the leak: a
+# two-character value ("80", "qa") occurs inside ordinary prose constantly,
+# and a bug report with every other word rewritten is not a bug report.
+# Real credentials comfortably clear this; ports and short usernames do
+# not, and those are not what the guard is for.
+_MIN_REDACTABLE_LENGTH = 6
+
+
+def redactable_items(
     env_vars: Mapping[str, str] | None,
     *,
     keep: Iterable[str] = (),
-) -> frozenset[str]:
-    """Environment values to blank out of outbound text, minus ``keep``.
+) -> dict[str, str]:
+    """``{name: value}`` for every environment value that must not leave, minus ``keep``.
 
-    Both exits — the exploratory action log and an outbound ticket — hold
-    the same rule: *every* environment value is a candidate credential,
-    except the ones naming the application itself.  A URL is something a
-    bug report has to be allowed to name, and redacting it would gut the
-    report while protecting nothing.
+    Every environment value is a candidate credential except the ones
+    naming the application itself.  Which ones those are is the caller's to
+    decide, because the three exits differ on **who is reading**:
 
-    The two callers differ, deliberately, on what "the application" means,
-    which is why ``keep`` is the caller's to compute rather than something
-    this function decides:
+    * ``diagnose_and_fix_script`` — a model that was already handed
+      ``env_var_names`` and is looking at a script that reads
+      ``os.environ["BASE_URL"]``.  ``$BASE_URL`` fully resolves for it, so
+      nothing is kept;
+    * ``create_issue`` — a human opening a ticket, who may have no idea
+      what ``$BASE_URL`` is set to.  A bug report about a page has to be
+      allowed to name the page, so every http(s) value is kept
+      (:func:`url_values`);
+    * the exploratory action log — same reasoning, narrowed: that run
+      knows exactly which variables its charters were pointed at, so it
+      keeps those and nothing else.
 
-    * the exploratory task keeps the run's **nominated base URLs** — it
-      knows exactly which variables the charters were pointed at;
-    * export keeps **every** http(s) value (:func:`url_values`) — it has
-      no run to ask, and a URL left unredacted is the safer error there.
-
-    Collapsing those into one rule would silently change what gets
-    redacted at one of the two exits.
+    Collapsing these into one rule would silently change what is hidden at
+    one of the three exits.
     """
     if not env_vars:
-        return frozenset()
-    return frozenset(set(env_vars.values()) - set(keep))
+        return {}
+    kept = set(keep)
+    return {name: value for name, value in env_vars.items() if value not in kept}
+
+
+def redact(text: str, secrets: Mapping[str, str]) -> str:
+    """Replace each environment value in ``text`` with ``$NAME``.
+
+    The variable's **name**, not a blanking placeholder, because redaction
+    that destroys information buys safety by making the text useless:
+    ``Connection refused to ***`` cannot be diagnosed, and it was the
+    reason the diagnosis prompt had to be handed raw URLs at all.
+    ``Connection refused to $BASE_URL`` is at least as useful — more so to
+    a reader holding the variable names, since it links the failure to the
+    line that produced it — and it keeps ``$PROD_URL`` and ``$BASE_URL``
+    distinguishable where one shared placeholder collapses them.
+
+    Substring matching, unlike the exploratory action log's exact match on
+    a whole tool argument: prose leaks a credential mid-sentence ("logged
+    in as admin/hunter2…") rather than as the entire value.  The cost is
+    false positives, which is what ``_MIN_REDACTABLE_LENGTH`` bounds.
+
+    Which values arrive here is the caller's decision — see
+    :func:`redactable_items`.
+    """
+    if not text:
+        return text
+    # Longest value first, so a value containing another does not leave the
+    # shorter one's replacement embedded in a half-rewritten string. Ties
+    # break on the name, or two variables sharing one value would redact
+    # differently between runs and the same stderr would not reproduce.
+    ordered = sorted(secrets.items(), key=lambda item: (-len(item[1]), item[0]))
+    for name, value in ordered:
+        if value and len(value) >= _MIN_REDACTABLE_LENGTH:
+            text = text.replace(value, f"${name}")
+    return text
 
 
 def os_environment() -> str:

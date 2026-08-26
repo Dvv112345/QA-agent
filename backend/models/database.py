@@ -72,6 +72,10 @@ class Sprint(SQLModel, table=True):
     issue_tracker: Optional["IssueTrackerConfig"] = Relationship(
         back_populates="sprint", sa_relationship_kwargs={"uselist": False}
     )
+    cicd_config: Optional["CicdConfig"] = Relationship(
+        back_populates="sprint", sa_relationship_kwargs={"uselist": False}
+    )
+    cicd_exports: list["CicdExport"] = Relationship(back_populates="sprint")
 
     @property
     def requirements(self) -> list["Requirement"]:
@@ -429,6 +433,17 @@ class TestCase(SQLModel, table=True):
     # run ends PASSED or FAILED (app bug) — never on ERROR (self-heal
     # exhausted, still looks broken; a future run should regenerate fresh).
     script: str | None = Field(default=None)
+    # What the cached script was written against, stamped at the same moment
+    # the script is cached. Read by `services/cicd_eligibility.py` through the
+    # *same* `outdated_reasons` comparison the run badges use, so "out of
+    # date" cannot come to mean two different things.
+    #
+    # NULL means the script predates staleness tracking, and its staleness is
+    # therefore unknowable — which reads as **stale** rather than as a third
+    # per-case state (unknown and stale share one remedy: re-run the case).
+    script_requirement_revision: int | None = Field(default=None)
+    script_plan_revision: int | None = Field(default=None)
+    script_env_revision: int | None = Field(default=None)
 
     test_plan: Optional["TestPlan"] = Relationship(back_populates="all_cases")
 
@@ -1362,3 +1377,226 @@ class ExploratoryFinding(SQLModel, table=True):
         know whether to ask for it.
         """
         return self.screenshot_path is not None
+
+
+# ── CI/CD export ──────────────────────────────────────────────────────
+#
+# A sprint's cached Playwright scripts become a pull request against the
+# sprint's own repository: our verified scripts committed verbatim, plus CI
+# files an LLM authors by reading the repo's existing conventions.
+
+
+class CicdProvider(str, Enum):
+    """Which CI system the exported job is written for.
+
+    Both ship as a **GitHub pull request** — Jenkins differs in what is
+    written (a Groovy stage rather than a workflow job), not in how it is
+    delivered. That is why a provider switch does not invalidate the stored
+    credential: it is a GitHub write token either way.
+    """
+
+    GITHUB_ACTIONS = "github_actions"
+    JENKINS = "jenkins"
+
+
+class CicdConfig(SQLModel, table=True):
+    """One sprint's CI/CD export connection — provider plus a write token.
+
+    Mirrors ``IssueTrackerConfig``, with one column deliberately absent:
+    there is no ``target``.  The destination is always the sprint's own
+    repository, derived from ``Repo.github_link``, so there is nothing for a
+    form to name and nothing for a typo to redirect.
+
+    The token is verified against the live repository's ``permissions.push``
+    on **every** save — a stronger claim than the tracker's "can I file an
+    issue here", and checked at save time so a read-only token is refused
+    before an LLM call has been spent on it.  ``verified_at`` records when
+    that last succeeded; it is displayed, never branched on, and there is
+    deliberately no background re-verification.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", unique=True, index=True)
+    provider: str  # CicdProvider value
+    # Fernet-encrypted, exactly like Repo.github_token and
+    # IssueTrackerConfig.api_token: never serialized, never logged,
+    # decrypted only to build an outbound request. This one is
+    # write-scoped, which makes it the highest-privilege credential the
+    # application holds.
+    access_token: str
+    # Free text describing the CI environment the suite will run against
+    # (self-hosted runner, container image, service dependencies). Handed to
+    # the model as context; never parsed.
+    ci_environment_hint: str | None = Field(default=None)
+    verified_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Sprint | None = Relationship(back_populates="cicd_config")
+
+
+class CicdExportStatus(str, Enum):
+    """Lifecycle status of one export attempt.
+
+    The same four states as every other job-backed row, so ``RowSpec`` and
+    ``SweepSpec`` apply unchanged.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class CicdExport(SQLModel, table=True):
+    """One export attempt — the row an RQ job operates on.
+
+    ::
+
+                        POST /cicd-exports
+                                │
+                                ▼
+                           ┌─────────┐   enqueue_rows best-effort
+                           │ PENDING │◄────────────────────────────┐
+                           └────┬────┘                             │
+                                │ task picks it up                 │ retry_count
+                                ▼                                  │ < MAX_AUTO_RETRIES
+                           ┌─────────┐                             │
+                        ┌─▶│ RUNNING │──── raise ─▶ record_failure ─┤
+            restart     │  └────┬────┘                             │
+            (uncapped)  │       │ commit + PR                      ▼
+                        │       ▼                             ┌────────┐
+                        │  ┌───────────┐                      │ FAILED │
+                        │  │ COMPLETED │                      └────┬───┘
+                        │  └───────────┘                           │
+                        └──────────────────────────────────────────┘
+                           (refused while RUNNING; a fresh branch each
+                            attempt is what makes a retry idempotent)
+
+          SWEEP INTERACTION — inactive_sprint_ok=True
+            _sweep_inactive_sprints   skipped   ── a finished sprint may export
+            finish_sprint loop        skipped   ── same reason
+            _sweep_pending            RUNS, without the Sprint.active predicate
+            _sweep_stale_heartbeats   RUNS      ── never had a Sprint join
+                                                  ↑ full crash recovery retained
+
+    Gating only the first two would strand a ``pending`` export forever on a
+    finished sprint after a Redis outage: the inactive sweeps skip it, the
+    heartbeat sweep only sees ``running`` rows, and ``_sweep_pending``'s
+    ``Sprint.active`` predicate hides it. Restart re-pends it into the same
+    hole.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    # Copied from CicdConfig at creation — the config is editable, and this
+    # export was authored for one provider's conventions.
+    provider: str  # CicdProvider value
+    # What the user picked, as a JSON list of TestCase ids.
+    #
+    # Distinct from `items`, which are *receipts* written only after the
+    # commit succeeds: between creation and completion the job needs to know
+    # what was asked for, and on a failed export `items` is empty by design.
+    # The job re-derives eligibility from the database and intersects, so a
+    # case archived between selection and job start is skipped rather than
+    # fatal.
+    selected_case_ids_json: str | None = Field(default=None)
+    # ── receipts, all written only after the commit succeeds ──
+    branch_name: str | None = Field(default=None)
+    commit_sha: str | None = Field(default=None)
+    pr_number: int | None = Field(default=None)
+    pr_url: str | None = Field(default=None)
+    ci_file_paths_json: str | None = Field(default=None)  # JSON list of committed CI paths
+    dropped_paths_json: str | None = Field(default=None)  # JSON list refused by the allowlist
+    variable_names_json: str | None = Field(default=None)  # JSON list of CI variable names
+    secret_names_json: str | None = Field(default=None)  # JSON list of CI secret names
+    pr_title: str | None = Field(default=None)
+    notes: str | None = Field(default=None)  # the model's own caveats, verbatim
+    # ── machinery (identical to ExploratoryRun / TestExecution) ──
+    status: str = Field(default=CicdExportStatus.PENDING)
+    retry_count: int = Field(default=0)
+    job_id: str | None = Field(default=None)
+    last_heartbeat: datetime | None = Field(default=None)
+    error: str | None = Field(default=None)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Sprint | None = Relationship(back_populates="cicd_exports")
+    items: list["CicdExportItem"] = Relationship(
+        back_populates="cicd_export",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "CicdExportItem.id",
+        },
+    )
+
+    @property
+    def selected_case_ids(self) -> list[int]:
+        """The ids the user picked — decoded once, here."""
+        return json.loads(self.selected_case_ids_json) if self.selected_case_ids_json else []
+
+    @property
+    def case_count(self) -> int:
+        """How many test cases this export shipped.
+
+        A property so the response coerces straight off the row rather than
+        being composed field by field (``Repo.has_access_token``'s
+        precedent).
+        """
+        return len(self.items)
+
+    @property
+    def ci_file_paths(self) -> list[str]:
+        """Committed CI file paths — decoded once, here."""
+        return json.loads(self.ci_file_paths_json) if self.ci_file_paths_json else []
+
+    @property
+    def dropped_paths(self) -> list[str]:
+        """Paths the validation gate refused, so the page can name them."""
+        return json.loads(self.dropped_paths_json) if self.dropped_paths_json else []
+
+    @property
+    def variable_names(self) -> list[str]:
+        """CI **variable** names the team must create — never their values."""
+        return json.loads(self.variable_names_json) if self.variable_names_json else []
+
+    @property
+    def secret_names(self) -> list[str]:
+        """CI **secret** names the team must create — never their values."""
+        return json.loads(self.secret_names_json) if self.secret_names_json else []
+
+
+class CicdExportItem(SQLModel, table=True):
+    """One test case shipped by one export — a receipt, not a work unit.
+
+    Written only after the commit succeeds, which is why ``CICD_EXPORT_SPEC``
+    carries no ``child_spec``: an export that fails part-way leaves no items
+    to strand.
+
+    ``case_title`` and ``requirement_name`` are **copied** rather than
+    reached through the FK. Cases are archived wholesale on every plan
+    revision and requirements are soft-deleted, so a receipt that joined for
+    its text would start reading differently — or emptily — long after the
+    PR it describes was merged.
+    """
+
+    __test__ = False  # this row is about a test case, not a test
+
+    id: int | None = Field(default=None, primary_key=True)
+    cicd_export_id: int = Field(foreign_key="cicdexport.id", index=True)
+    test_case_id: int = Field(foreign_key="testcase.id", index=True)
+    case_title: str
+    requirement_name: str
+    committed_path: str
+
+    cicd_export: Optional["CicdExport"] = Relationship(back_populates="items")

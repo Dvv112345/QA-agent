@@ -1,0 +1,16 @@
+name: Deploy to staging
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, deploy]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish
+        run: ./scripts/deploy.sh
+        env:
+          DEPLOY_URL: ${{ vars.STAGING_URL }}
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}

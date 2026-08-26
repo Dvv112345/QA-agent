@@ -1,0 +1,35 @@
+name: E2E Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements-e2e.txt
+      - name: Install browsers
+        run: playwright install --with-deps chromium
+      - name: Run end-to-end suite
+        run: pytest e2e/
+        env:
+          BASE_URL: ${{ vars.STAGING_URL }}

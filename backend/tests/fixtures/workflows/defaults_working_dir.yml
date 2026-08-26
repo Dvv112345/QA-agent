@@ -1,0 +1,28 @@
+name: Frontend CI
+
+"on":
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: frontend
+
+concurrency:
+  group: frontend
+
+env:
+  NODE_ENV: test
+
+jobs:
+  build:
+    runs-on:
+      group: shared-runners
+      labels: [linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run build
+      - uses: ./.github/actions/report

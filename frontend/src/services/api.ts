@@ -5,6 +5,10 @@ import type {
   ExploratoryRunDetailResponse,
   ExploratoryRunResponse,
   ExploratorySessionResponse,
+  CicdConfig,
+  CicdConfigInput,
+  CicdEligibility,
+  CicdExport,
   IssueTrackerConfig,
   IssueTrackerConfigInput,
   ReadmeStatusResponse,
@@ -489,4 +493,59 @@ export async function exportExploratoryRunFindings(
     method: 'POST',
   })
   return handleResponse<ExploratoryRunDetailResponse>(response)
+}
+
+// ── CI/CD export ──────────────────────────────────────────────────────
+
+export async function fetchCicdConfig(sprintId: number): Promise<CicdConfig | null> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/cicd-config`)
+  return handleResponse<CicdConfig | null>(response)
+}
+
+export async function saveCicdConfig(
+  sprintId: number,
+  config: CicdConfigInput,
+): Promise<CicdConfig> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/cicd-config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  return handleResponse<CicdConfig>(response)
+}
+
+export async function deleteCicdConfig(sprintId: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/cicd-config`, {
+    method: 'DELETE',
+  })
+  await handleResponse(response)
+}
+
+export async function fetchCicdEligibility(sprintId: number): Promise<CicdEligibility> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/cicd-eligibility`)
+  return handleResponse<CicdEligibility>(response)
+}
+
+export async function fetchCicdExports(sprintId: number): Promise<CicdExport[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/cicd-exports`)
+  return handleResponse<CicdExport[]>(response)
+}
+
+export async function createCicdExport(
+  sprintId: number,
+  testCaseIds: number[],
+): Promise<CicdExport> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/cicd-exports`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ test_case_ids: testCaseIds }),
+  })
+  return handleResponse<CicdExport>(response)
+}
+
+export async function restartCicdExport(exportId: number): Promise<CicdExport> {
+  const response = await fetch(`${API_BASE}/api/cicd-exports/${exportId}/restart`, {
+    method: 'POST',
+  })
+  return handleResponse<CicdExport>(response)
 }

@@ -50,6 +50,8 @@ from backend.config import (
 from backend.database import new_session
 from backend.models.database import (
     SPRINT_FINISHED_ERROR,
+    CicdExport,
+    CicdExportStatus,
     ExploratoryRun,
     ExploratoryRunStatus,
     Requirement,
@@ -112,6 +114,21 @@ class SweepSpec:
     # requirement before spending any LLM call, so enqueuing one costs a
     # no-op job and converges, which is the cheaper mistake.
     scope_query: Callable[[SelectOfScalar], SelectOfScalar]
+    # Whether this row type may run on a *finished* sprint. True only for
+    # CicdExport: exporting verified scripts to CI is exactly what a team
+    # wants once the testing is done.
+    #
+    # Read at **three** sites, not two. The two inactive-sprint sweeps skip
+    # such a spec, and `_sweep_pending` additionally drops its `Sprint.active`
+    # predicate for it — without that third one a pending export on a
+    # finished sprint is invisible to every sweep: the inactive sweeps skip
+    # it, the heartbeat sweep only sees `running` rows, and the pending sweep
+    # filters it out. After a Redis outage it would sit `pending` forever,
+    # with Restart re-pending it into the same hole.
+    #
+    # Defaulting to False means the four existing specs need no edit and the
+    # one exception declares itself.
+    inactive_sprint_ok: bool = False
 
 
 SWEEP_SPECS: tuple[SweepSpec, ...] = (
@@ -180,6 +197,22 @@ SWEEP_SPECS: tuple[SweepSpec, ...] = (
         # Joins straight to Sprint — unlike plans and executions, an
         # exploratory run carries its own sprint_id.
         scope_query=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
+    ),
+    SweepSpec(
+        model=CicdExport,
+        label="CI/CD export",
+        pending_status=CicdExportStatus.PENDING,
+        running_status=CicdExportStatus.RUNNING,
+        failed_status=CicdExportStatus.FAILED,
+        clear_field=None,
+        enqueue_name="enqueue_cicd_export",
+        stale_error=(
+            "Export worker died repeatedly while processing this export. Use Restart to try again."
+        ),
+        child_spec=None,
+        # Carries its own sprint_id, like ExploratoryRun.
+        scope_query=lambda stmt: stmt.join(Sprint, CicdExport.sprint_id == Sprint.id),
+        inactive_sprint_ok=True,
     ),
 )
 
@@ -254,7 +287,12 @@ def _sweep_inactive_sprints(session, spec: SweepSpec, now: datetime) -> None:
     failed state so nothing stays in-progress forever on a finished
     sprint.  Runs before the stale-heartbeat sweep so such rows are
     failed, not re-pended.
+
+    Skipped entirely for a spec that may run on a finished sprint — see
+    ``SweepSpec.inactive_sprint_ok``.
     """
+    if spec.inactive_sprint_ok:
+        return
     orphaned = fail_in_progress_rows(
         session,
         spec,
@@ -297,14 +335,20 @@ def _sweep_stale_heartbeats(session, spec: SweepSpec, now: datetime) -> None:
 
 
 def _sweep_pending(session, spec: SweepSpec, queue_service: Any, now: datetime) -> None:
-    """Enqueue pending rows without a live RQ job (finished sprints excluded
-    — their rows were failed by the inactive-sprint sweep)."""
+    """Enqueue pending rows without a live RQ job.
+
+    Finished sprints are excluded — their rows were failed by the
+    inactive-sprint sweep — **except** for a spec marked
+    ``inactive_sprint_ok``, whose rows are legitimate there and which that
+    sweep therefore skipped.  Dropping the predicate is what keeps such a
+    row recoverable after a Redis outage; leaving it in makes the row
+    invisible to all three sweeps at once.
+    """
     enqueue: Callable[[int], Any] = getattr(queue_service, spec.enqueue_name)
-    pending = session.exec(
-        spec.scope_query(select(spec.model)).where(
-            spec.model.status == spec.pending_status, Sprint.active
-        )
-    ).all()
+    stmt = spec.scope_query(select(spec.model)).where(spec.model.status == spec.pending_status)
+    if not spec.inactive_sprint_ok:
+        stmt = stmt.where(Sprint.active)
+    pending = session.exec(stmt).all()
     for row in pending:
         if row.job_id:
             existing_job = queue_service.get_job(row.job_id)

@@ -171,11 +171,11 @@ export default function TestRunsPage() {
 
       <p className="test-runs-sprint-name">{sprint.name}</p>
 
-      <div className="issue-tracker-panel">
+      <div className="test-runs-panel">
         {tracker ? (
           <>
-            <span className="issue-tracker-panel-label">{tracker.target_label}</span>
-            <span className="issue-tracker-panel-hint">receives bug findings from a run</span>
+            <span className="test-runs-panel-label">{tracker.target_label}</span>
+            <span className="test-runs-panel-hint">receives bug findings from a run</span>
             <button
               className="btn btn-secondary btn-small"
               onClick={() => setShowTrackerModal(true)}
@@ -185,7 +185,7 @@ export default function TestRunsPage() {
           </>
         ) : (
           <>
-            <span className="issue-tracker-panel-none">No issue tracker connected.</span>
+            <span className="test-runs-panel-none">No issue tracker connected.</span>
             <button
               className="btn btn-secondary btn-small"
               onClick={() => setShowTrackerModal(true)}
@@ -194,6 +194,15 @@ export default function TestRunsPage() {
             </button>
           </>
         )}
+      </div>
+
+      <div className="test-runs-panel">
+        <span className="test-runs-panel-hint">
+          Commit the verified test scripts to this repository&rsquo;s own CI.
+        </span>
+        <Link to={`/sprints/${sprintId}/cicd`} className="btn btn-secondary btn-small">
+          Export scripts to CI/CD
+        </Link>
       </div>
 
       {guarded ? (

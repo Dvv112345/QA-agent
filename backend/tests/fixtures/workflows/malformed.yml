@@ -1,0 +1,10 @@
+name: Broken
+"on":
+  push:
+jobs:
+  build:
+    steps:
+      - run: echo "unterminated
+      -   bad: [indent
+    runs-on: ubuntu-latest
+   nope: *undefined-anchor

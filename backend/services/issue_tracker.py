@@ -23,12 +23,14 @@ Two properties are load-bearing:
 import base64
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import httpx
 
 from backend.config import ISSUE_TRACKER_TIMEOUT
 from backend.models.database import IssueTrackerProvider
+from backend.utils.environment_utils import redact
 from backend.utils.http_utils import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
@@ -40,17 +42,6 @@ _GITHUB_API_ROOT = "https://api.github.com"
 # named anything.  Everything outside this set reads as open, so an exotic
 # workflow costs a duplicate ticket rather than a lost finding.
 _JIRA_DONE_CATEGORY_KEYS = {"done", "completed"}
-
-# Shortest environment value worth redacting from ticket text.  Below it
-# the replacement does more damage than the leak: a two-character value
-# ("80", "qa") occurs inside ordinary prose constantly, and a bug report
-# with every other word blanked is not a bug report.  Real credentials
-# comfortably clear this; ports and short usernames do not, and those are
-# not what the guard is for.
-_MIN_REDACTABLE_LENGTH = 6
-
-_REDACTION_PLACEHOLDER = "***"
-
 
 # ── Public shapes ─────────────────────────────────────────────────────
 
@@ -126,7 +117,7 @@ class FindingReport:
 class FindingContext:
     """Where the finding came from, and what else it stands for.
 
-    ``secret_values`` has no default on purpose.  It is the input to the
+    ``secrets`` has no default on purpose.  It is the input to the
     redaction pass, and a caller that forgot it would file a ticket that
     looks perfectly fine and quietly carries a test credential.  Making
     it required turns that omission into a ``TypeError`` at the call
@@ -138,9 +129,9 @@ class FindingContext:
     run_label: str  # "Scripted run 14" | "Exploratory run 3"
     source_label: str  # test-case title | charter text
     source_kind: str  # "scripted" | "exploratory" — selects the label
-    # The environment values to blank out — so repr=False for the same
-    # reason TrackerConfig.api_token has it.
-    secret_values: frozenset[str] = field(repr=False)
+    # The environment values to rewrite to their variable names — so
+    # repr=False for the same reason TrackerConfig.api_token has it.
+    secrets: Mapping[str, str] = field(repr=False)
     # The other findings this ticket stands for: title, run, and time
     # each. Load-bearing rather than decorative — nothing is ever appended
     # to a ticket afterwards, so this list is its entire record of how
@@ -157,30 +148,7 @@ class FindingContext:
 # ── Redaction ─────────────────────────────────────────────────────────
 
 
-def redact(text: str, secret_values: frozenset[str] | set[str]) -> str:
-    """Blank out test-environment credentials occurring in *text*.
-
-    Substring matching, unlike the exploratory action log's exact match
-    on a whole tool argument: a finding's ``actual`` is prose, and a
-    credential leaks into it mid-sentence ("logged in as
-    admin/hunter2…") rather than as the entire value.  The cost of
-    substring matching is false positives, which is what
-    ``_MIN_REDACTABLE_LENGTH`` bounds.
-
-    Base URLs are excluded by the caller, not here: a bug report about a
-    page has to be allowed to name the page.
-    """
-    if not text:
-        return text
-    # Longest first, so a value that contains another does not leave the
-    # shorter one's replacement embedded in a half-redacted string.
-    for value in sorted(secret_values, key=len, reverse=True):
-        if value and len(value) >= _MIN_REDACTABLE_LENGTH:
-            text = text.replace(value, _REDACTION_PLACEHOLDER)
-    return text
-
-
-def _redact_report(report: FindingReport, secrets: frozenset[str]) -> FindingReport:
+def _redact_report(report: FindingReport, secrets: Mapping[str, str]) -> FindingReport:
     """Every free-text field of a report, redacted in one place."""
     return FindingReport(
         finding_type=report.finding_type,
@@ -590,17 +558,15 @@ def create_issue(config: TrackerConfig, report: FindingReport, context: FindingC
     check or a missing screenshot costs a detail, whereas a create that
     silently did nothing would leave a finding claiming to be filed.
     """
-    safe_report = _redact_report(report, context.secret_values)
+    safe_report = _redact_report(report, context.secrets)
     safe_context = FindingContext(
         sprint_name=context.sprint_name,
         requirement_name=context.requirement_name,
         run_label=context.run_label,
-        source_label=redact(context.source_label, context.secret_values),
+        source_label=redact(context.source_label, context.secrets),
         source_kind=context.source_kind,
-        secret_values=context.secret_values,
-        also_observed=tuple(
-            redact(entry, context.secret_values) for entry in context.also_observed
-        ),
+        secrets=context.secrets,
+        also_observed=tuple(redact(entry, context.secrets) for entry in context.also_observed),
         superseded_key=context.superseded_key,
         extra_labels=context.extra_labels,
     )

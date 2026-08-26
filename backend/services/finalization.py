@@ -43,6 +43,8 @@ from sqlmodel import Session, update
 
 from backend.config import MAX_AUTO_RETRIES
 from backend.models.database import (
+    CicdExport,
+    CicdExportStatus,
     ExploratoryRun,
     ExploratoryRunStatus,
     ExploratorySession,
@@ -161,6 +163,17 @@ EXPLORATORY_RUN_SPEC = RowSpec(
     pending_status=ExploratoryRunStatus.PENDING,
     failed_status=ExploratoryRunStatus.FAILED,
     child_spec=EXPLORATORY_SESSION_SPEC,
+)
+
+# `child_spec=None` is correct rather than an omission: a CicdExport's
+# items are receipts written only after the commit succeeds, not work
+# units walked by a loop. A failed export has no children to strand.
+CICD_EXPORT_SPEC = RowSpec(
+    model=CicdExport,
+    label="CI/CD export",
+    pending_status=CicdExportStatus.PENDING,
+    failed_status=CicdExportStatus.FAILED,
+    child_spec=None,
 )
 
 

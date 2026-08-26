@@ -66,7 +66,7 @@ from backend.services.issue_tracker import (
 )
 from backend.services.llm_prompts import FindingCandidate
 from backend.utils.crypto import decrypt_token
-from backend.utils.environment_utils import redactable_values, url_values
+from backend.utils.environment_utils import redactable_items, url_values
 
 logger = logging.getLogger(__name__)
 
@@ -163,16 +163,18 @@ def _tracker_config(config: IssueTrackerConfig) -> TrackerConfig | None:
     )
 
 
-def _secret_values(sprint: Sprint) -> frozenset[str]:
-    """Environment values to blank out of ticket text.
+def _secrets(sprint: Sprint) -> dict[str, str]:
+    """Environment values to rewrite to their variable names in ticket text.
 
-    Every http(s) value is kept: unlike the exploratory task there is no
-    run here to say which variable was the application's own URL, so the
-    URL shape is the only signal available.
+    Every http(s) value is kept: a ticket is read by a human who may have
+    no idea what ``$BASE_URL`` points at, and a bug report about a page has
+    to be allowed to name the page.  (The diagnosis prompt keeps nothing,
+    because its reader already holds the variable names — see
+    ``redactable_items``.)
     """
     test_env = sprint.test_environment
     env_vars = test_env.env_vars if test_env is not None else None
-    return redactable_values(env_vars, keep=url_values(env_vars))
+    return redactable_items(env_vars, keep=url_values(env_vars))
 
 
 # ── Grouping, and the ticket a group already holds ────────────────────
@@ -442,7 +444,7 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
         return ExportOutcome(failed=len(rows))
 
     target = tracker_row.tracker_target
-    secrets = _secret_values(sprint)
+    secrets = _secrets(sprint)
 
     # One bucket per distinct defect, in row order.
     buckets: dict[tuple, list[Finding]] = {}
@@ -511,7 +513,7 @@ def _export(session: Session, parent: object, *, requested: bool) -> ExportOutco
                 run_label=spec.run_label,
                 source_label=representative.source_label,
                 source_kind=spec.source_kind,
-                secret_values=secrets,
+                secrets=secrets,
                 also_observed=_also_observed(duplicates, spec.run_label),
                 superseded_key=superseded_key,
             )

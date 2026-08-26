@@ -1,7 +1,9 @@
 """Tests for backend/utils/github_utils.py — URL parsing, exceptions, API helpers."""
 
 import base64
+import json as json_lib
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -13,10 +15,16 @@ from backend.utils.github_utils import (
     RepoNotFoundError,
     TokenInvalidError,
     check_readme_exists,
+    check_write_access,
+    create_commit,
+    create_pull_request,
+    create_ref,
+    create_tree,
     download_readme,
     fetch_file,
     fetch_file_tree,
     fetch_repo_metadata,
+    get_branch_sha,
     is_relevant_tree_path,
     parse_github_url,
 )
@@ -369,3 +377,316 @@ class TestFetchFile:
         httpx_mock.add_response(url=self._URL, status_code=500)
         with pytest.raises(GitHubUnavailableError):
             await fetch_file("owner", "repo", "src/app.py")
+
+
+# ── Write helpers (CI/CD export) ─────────────────────────────────────
+
+
+@pytest.fixture
+async def write_client():
+    """One client, as the export's write sequence uses it."""
+    async with httpx.AsyncClient() as client:
+        yield client
+
+
+class TestCheckWriteAccess:
+    """Tests for ``check_write_access()`` — the config-save gate."""
+
+    _URL = "https://api.github.com/repos/owner/repo"
+
+    @pytest.mark.asyncio
+    async def test_true_when_push_is_granted(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, json={"permissions": {"push": True}})
+        assert (await check_write_access("owner", "repo", "ghp_x")).can_push is True
+
+    @pytest.mark.asyncio
+    async def test_false_for_a_read_only_token(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, json={"permissions": {"pull": True, "push": False}})
+        assert (await check_write_access("owner", "repo", "ghp_x")).can_push is False
+
+    @pytest.mark.asyncio
+    async def test_false_when_the_permissions_block_is_absent(self, httpx_mock: HTTPXMock):
+        """GitHub omits it for unauthenticated reads — default to refusing."""
+        httpx_mock.add_response(url=self._URL, json={"full_name": "owner/repo"})
+        assert (await check_write_access("owner", "repo")).can_push is False
+
+    @pytest.mark.asyncio
+    async def test_404_raises_repo_not_found(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, status_code=404)
+        with pytest.raises(RepoNotFoundError):
+            await check_write_access("owner", "repo", "ghp_x")
+
+    @pytest.mark.asyncio
+    async def test_scopes_come_from_the_header(self, httpx_mock: HTTPXMock):
+        """A classic token's grant is reported nowhere in the body."""
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"permissions": {"push": True}},
+            headers={"X-OAuth-Scopes": "repo, workflow"},
+        )
+
+        access = await check_write_access("owner", "repo", "ghp_x")
+
+        assert access.scopes == frozenset({"repo", "workflow"})
+        assert access.lacks("workflow") is False
+
+    @pytest.mark.asyncio
+    async def test_a_pushable_token_can_still_lack_the_workflow_scope(self, httpx_mock: HTTPXMock):
+        """The exact shape that failed: push granted, workflow files refused."""
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"permissions": {"admin": True, "push": True}},
+            headers={"X-OAuth-Scopes": "repo"},
+        )
+
+        access = await check_write_access("owner", "repo", "ghp_x")
+
+        assert access.can_push is True
+        assert access.lacks("workflow") is True
+
+    @pytest.mark.asyncio
+    async def test_an_empty_scope_header_still_reports_a_grant(self, httpx_mock: HTTPXMock):
+        """A classic token with no scopes says so — that is not "unknown"."""
+        httpx_mock.add_response(
+            url=self._URL,
+            json={"permissions": {"push": True}},
+            headers={"X-OAuth-Scopes": ""},
+        )
+
+        access = await check_write_access("owner", "repo", "ghp_x")
+
+        assert access.scopes == frozenset()
+        assert access.lacks("workflow") is True
+
+    @pytest.mark.asyncio
+    async def test_a_credential_reporting_no_scopes_is_never_declared_lacking(
+        self, httpx_mock: HTTPXMock
+    ):
+        """Fine-grained PATs send no header — unknown must not read as missing."""
+        httpx_mock.add_response(url=self._URL, json={"permissions": {"push": True}})
+
+        access = await check_write_access("owner", "repo", "github_pat_x")
+
+        assert access.scopes is None
+        assert access.lacks("workflow") is False
+
+
+class TestWriteSequence:
+    """Tests for the tree -> commit -> ref -> PR helpers."""
+
+    @pytest.mark.asyncio
+    async def test_get_branch_sha_reads_the_ref_object(self, write_client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/git/ref/heads/main",
+            json={"object": {"sha": "base-sha"}},
+        )
+        sha = await get_branch_sha(write_client, "owner", "repo", "main", "ghp_x")
+        assert sha == "base-sha"
+
+    @pytest.mark.asyncio
+    async def test_get_branch_sha_raises_when_the_ref_carries_no_commit(
+        self, write_client, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/git/ref/heads/main", json={}
+        )
+        with pytest.raises(GitHubError, match="no commit to build on"):
+            await get_branch_sha(write_client, "owner", "repo", "main", "ghp_x")
+
+    @pytest.mark.asyncio
+    async def test_create_tree_sends_inline_content_and_a_base_tree(
+        self, write_client, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/git/trees",
+            method="POST",
+            json={"sha": "tree-sha"},
+        )
+
+        sha = await create_tree(
+            write_client,
+            "owner",
+            "repo",
+            "base-sha",
+            {"qa-agent-tests/a_1/b_2.py": "print(1)\n"},
+            "ghp_x",
+        )
+
+        assert sha == "tree-sha"
+        payload = json_lib.loads(httpx_mock.get_requests()[-1].content)
+        # base_tree is what makes the commit an addition rather than a tree
+        # replacing everything else in the repository.
+        assert payload["base_tree"] == "base-sha"
+        entry = payload["tree"][0]
+        assert entry == {
+            "path": "qa-agent-tests/a_1/b_2.py",
+            "mode": "100644",
+            "type": "blob",
+            "content": "print(1)\n",
+        }
+        assert "sha" not in entry  # inline content, not a blob reference
+
+    @pytest.mark.asyncio
+    async def test_create_tree_makes_no_blob_request(self, write_client, httpx_mock: HTTPXMock):
+        """N files still cost one request — there is deliberately no create_blob."""
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/git/trees",
+            method="POST",
+            json={"sha": "tree-sha"},
+        )
+
+        await create_tree(
+            write_client, "owner", "repo", "base-sha", {"a.py": "1", "b.py": "2", "c.py": "3"}, "t"
+        )
+
+        urls = [str(request.url) for request in httpx_mock.get_requests()]
+        assert not any("/git/blobs" in url for url in urls)
+        assert len(urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_commit_sends_tree_and_parent(self, write_client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/git/commits",
+            method="POST",
+            json={"sha": "commit-sha"},
+        )
+
+        sha = await create_commit(
+            write_client, "owner", "repo", "Add QA tests", "tree-sha", "base-sha", "ghp_x"
+        )
+
+        assert sha == "commit-sha"
+        payload = json_lib.loads(httpx_mock.get_requests()[-1].content)
+        assert payload == {"message": "Add QA tests", "tree": "tree-sha", "parents": ["base-sha"]}
+
+    @pytest.mark.asyncio
+    async def test_create_ref_sends_a_full_refs_heads_path(
+        self, write_client, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/git/refs",
+            method="POST",
+            json={"ref": "refs/heads/qa-agent/sprint-1"},
+        )
+
+        await create_ref(write_client, "owner", "repo", "qa-agent/sprint-1", "commit-sha", "ghp_x")
+
+        payload = json_lib.loads(httpx_mock.get_requests()[-1].content)
+        assert payload == {"ref": "refs/heads/qa-agent/sprint-1", "sha": "commit-sha"}
+
+    @pytest.mark.asyncio
+    async def test_create_ref_422_is_a_clean_error_carrying_githubs_message(
+        self, write_client, httpx_mock: HTTPXMock
+    ):
+        """Two workers racing a restart can pick the same branch name."""
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/git/refs",
+            method="POST",
+            status_code=422,
+            json={"message": "Reference already exists"},
+        )
+
+        with pytest.raises(GitHubError, match="Reference already exists"):
+            await create_ref(
+                write_client, "owner", "repo", "qa-agent/sprint-1", "commit-sha", "ghp_x"
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_pull_request_returns_number_and_url(
+        self, write_client, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/pulls",
+            method="POST",
+            json={"number": 7, "html_url": "https://github.com/owner/repo/pull/7"},
+        )
+
+        result = await create_pull_request(
+            write_client, "owner", "repo", "QA tests", "body", "qa-agent/x", "main", "ghp_x"
+        )
+
+        assert result == {"number": 7, "html_url": "https://github.com/owner/repo/pull/7"}
+        payload = json_lib.loads(httpx_mock.get_requests()[-1].content)
+        assert payload["head"] == "qa-agent/x"
+        assert payload["base"] == "main"
+
+
+class TestWriteErrorMapping:
+    """A failed write maps to the same exception hierarchy a read does."""
+
+    _URL = "https://api.github.com/repos/owner/repo/git/trees"
+
+    async def _create_tree(self, client):
+        return await create_tree(client, "owner", "repo", "base", {"a.py": "1"}, "ghp_x")
+
+    @pytest.mark.asyncio
+    async def test_401_with_token_raises_token_invalid(self, write_client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, method="POST", status_code=401)
+        with pytest.raises(TokenInvalidError):
+            await self._create_tree(write_client)
+
+    @pytest.mark.asyncio
+    async def test_404_raises_repo_not_found(self, write_client, httpx_mock: HTTPXMock):
+        """A write has no `allow_404` analogue — absence is never a value here."""
+        httpx_mock.add_response(url=self._URL, method="POST", status_code=404)
+        with pytest.raises(RepoNotFoundError):
+            await self._create_tree(write_client)
+
+    @pytest.mark.asyncio
+    async def test_404_on_a_workflow_file_names_the_workflow_scope(
+        self, write_client, httpx_mock: HTTPXMock
+    ):
+        """GitHub's own answer is a bare 404 — the path is the only evidence.
+
+        Pinned because the plain mapping sends the reader to check whether
+        the repository exists, which the reads that precede this call have
+        already answered.
+        """
+        httpx_mock.add_response(url=self._URL, method="POST", status_code=404)
+
+        with pytest.raises(GitHubError) as exc:
+            await create_tree(
+                write_client,
+                "owner",
+                "repo",
+                "base",
+                {"qa-agent-tests/a.py": "1", ".github/workflows/qa.yml": "on: push"},
+                "ghp_x",
+            )
+
+        assert "workflow" in str(exc.value)
+        assert not isinstance(exc.value, RepoNotFoundError)
+
+    @pytest.mark.asyncio
+    async def test_403_raises_rate_limited(self, write_client, httpx_mock: HTTPXMock):
+        """GitHub rate-limits writes harder than reads, and this turns into a retry."""
+        httpx_mock.add_response(url=self._URL, method="POST", status_code=403)
+        with pytest.raises(RateLimitedError):
+            await self._create_tree(write_client)
+
+    @pytest.mark.asyncio
+    async def test_500_raises_unavailable(self, write_client, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(url=self._URL, method="POST", status_code=500)
+        with pytest.raises(GitHubUnavailableError):
+            await self._create_tree(write_client)
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises_unavailable(self, write_client, httpx_mock: HTTPXMock):
+        httpx_mock.add_exception(httpx.TimeoutException("too slow"))
+        with pytest.raises(GitHubUnavailableError):
+            await self._create_tree(write_client)
+
+
+class TestRequestStaysAGetForReads:
+    """Widening ``_request`` with a method must not change read behaviour."""
+
+    @pytest.mark.asyncio
+    async def test_get_still_issues_a_get(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo",
+            json={"full_name": "owner/repo", "default_branch": "main"},
+        )
+
+        await fetch_repo_metadata("owner", "repo")
+
+        assert httpx_mock.get_requests()[-1].method == "GET"

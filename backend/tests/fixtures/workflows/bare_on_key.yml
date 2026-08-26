@@ -1,0 +1,20 @@
+# The trigger key is written bare, so YAML 1.1 parses it as the boolean
+# `True` rather than the string "on". Every reader of a workflow document
+# has to look under both keys.
+name: Nightly smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 2 * * *"
+
+jobs:
+  smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run smoke

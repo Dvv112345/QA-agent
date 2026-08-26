@@ -1017,3 +1017,157 @@ class TestDefectGroupingWiring:
 
         assert _reload_execution(db_session, execution.id).status == TestExecutionStatus.COMPLETED
         assert exported == [execution.id]
+
+
+class TestScriptRevisionStamps:
+    """A cached script records what it was written against.
+
+    Stamped only where the script is cached, so "has a cached script" keeps
+    meaning "ran to a verdict" and the stamps cannot drift from the text
+    they describe.  `services/cicd_eligibility.py` reads them.
+    """
+
+    def _stamps(self, db_session, case):
+        db_session.expire_all()
+        row = db_session.get(TestCase, case.id)
+        return (
+            row.script_requirement_revision,
+            row.script_plan_revision,
+            row.script_env_revision,
+        )
+
+    def test_a_passing_case_stamps_all_three_revisions(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        expected = (
+            requirement.content_revision,
+            plan.content_revision,
+            sprint.test_environment.content_revision,
+        )
+
+        execute_test_task(execution.id)
+
+        assert self._stamps(db_session, cases[0]) == expected
+
+    def test_an_app_bug_case_stamps_them_too(self, db_session, llm_stub, script_runner_stub):
+        """The script was right — it caught a real bug — so it is cached and stamped."""
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        script_runner_stub.default_result = ScriptRunResult(
+            exit_code=1, stdout="", stderr="assertion failed", timed_out=False
+        )
+        llm_stub.diagnosis_result = ScriptDiagnosisResult(
+            classification="app_bug", fixed_script=None, explanation="Login genuinely broken."
+        )
+
+        execute_test_task(execution.id)
+
+        results = _reload_case_execs(db_session, execution.id)
+        assert results[0].status == TestCaseExecutionStatus.FAILED
+        assert self._stamps(db_session, cases[0]) == (
+            requirement.content_revision,
+            plan.content_revision,
+            sprint.test_environment.content_revision,
+        )
+
+    def test_an_errored_case_stamps_nothing(self, db_session, llm_stub, script_runner_stub):
+        """Self-heal exhausted — nothing is cached, so there is nothing to describe."""
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        script_runner_stub.default_result = ScriptRunResult(
+            exit_code=1, stdout="", stderr="still broken", timed_out=False
+        )
+        llm_stub.diagnosis_result = ScriptDiagnosisResult(
+            classification="script_bug", fixed_script="print('still wrong')", explanation="Bad."
+        )
+
+        execute_test_task(execution.id)
+
+        results = _reload_case_execs(db_session, execution.id)
+        assert results[0].status == TestCaseExecutionStatus.ERROR
+        assert self._stamps(db_session, cases[0]) == (None, None, None)
+
+    def test_a_rerun_after_an_edit_restamps_the_new_revisions(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        """The stamp follows the script, so an edited requirement is reflected."""
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        execute_test_task(execution.id)
+
+        requirement.content_revision += 1
+        db_session.add(requirement)
+        db_session.commit()
+        # The new run must copy the *new* revision, or the task correctly
+        # refuses to run it as superseded.
+        second, _ = _seed_execution(
+            db_session,
+            sprint,
+            requirement,
+            cases,
+            requirement_revision=requirement.content_revision,
+            plan_revision=plan.content_revision,
+            env_revision=sprint.test_environment.content_revision,
+        )
+        execute_test_task(second.id)
+
+        assert self._stamps(db_session, cases[0])[0] == requirement.content_revision
+
+
+class TestDiagnosisSecrets:
+    """The task hands the diagnosis call the values its subprocess injected.
+
+    Captured output is the one LLM input in this application that can carry
+    a live environment value: the script ran with the confirmed variables
+    in its environment, so a traceback or an echoed response can reproduce
+    one verbatim. The rewriting itself happens inside
+    ``llm.diagnose_and_fix_script`` — see ``TestDiagnosisRedaction`` in
+    ``test_llm.py``; this pins that the task supplies what that needs.
+    """
+
+    def _seed(self, db_session):
+        sprint, requirement, plan, cases = _seed_setup(db_session)
+        sprint.test_environment.env_vars_json = json.dumps(
+            {"BASE_URL": "https://app.test", "PASSWORD": "s3cr3t-passw0rd"}
+        )
+        db_session.add(sprint.test_environment)
+        db_session.commit()
+        return sprint, requirement, plan, cases
+
+    def _failing(self, script_runner_stub, stderr="boom"):
+        script_runner_stub.default_result = ScriptRunResult(
+            exit_code=1, stdout="", stderr=stderr, timed_out=False
+        )
+
+    def test_the_task_passes_every_env_value_keyed_by_name(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        """Nothing is kept: the reader already holds the names."""
+        sprint, requirement, plan, cases = self._seed(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        self._failing(script_runner_stub)
+
+        execute_test_task(execution.id)
+
+        assert llm_stub.diagnose_calls[0]["secrets"] == {
+            "BASE_URL": "https://app.test",
+            "PASSWORD": "s3cr3t-passw0rd",
+        }
+
+    def test_the_stored_output_keeps_the_real_values(
+        self, db_session, llm_stub, script_runner_stub
+    ):
+        """Only the prompt is rewritten — the run page shows what happened."""
+        sprint, requirement, plan, cases = self._seed(db_session)
+        execution, _ = _seed_execution(db_session, sprint, requirement, cases)
+        self._failing(script_runner_stub, stderr="login failed for admin/s3cr3t-passw0rd")
+        llm_stub.diagnosis_result = ScriptDiagnosisResult(
+            classification="app_bug", fixed_script=None, explanation="Login is broken."
+        )
+
+        execute_test_task(execution.id)
+
+        results = _reload_case_execs(db_session, execution.id)
+        assert "s3cr3t-passw0rd" in results[0].output

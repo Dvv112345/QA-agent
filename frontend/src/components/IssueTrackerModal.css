@@ -91,29 +91,3 @@
 .issue-tracker-actions .btn-danger {
   margin-left: auto;
 }
-
-/* ── Connect panel on the test-runs page ── */
-
-.issue-tracker-panel {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  padding: 0.75rem 1rem;
-  margin-bottom: 1rem;
-  background: var(--surface-recessed);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 0.875rem;
-}
-
-.issue-tracker-panel-label {
-  font-weight: 600;
-}
-
-/* `-none` reads as the disconnected state, so the connected panel's
-   descriptive text gets its own name rather than borrowing it. */
-.issue-tracker-panel-none,
-.issue-tracker-panel-hint {
-  color: var(--text);
-}

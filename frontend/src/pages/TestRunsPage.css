@@ -108,3 +108,34 @@
   margin: 0;
   font-size: 1.1rem;
 }
+
+/* ── Side panels: the issue tracker, and the CI/CD export ──
+   Two panels, one shape. They live here rather than in a component's own
+   stylesheet because this page is what renders them: the tracker panel was
+   styled from `IssueTrackerModal.css`, which worked only because the page
+   happens to import the modal — the same latent break `.session-badge`
+   already had. */
+
+.test-runs-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.test-runs-panel-label {
+  font-weight: 600;
+}
+
+/* `-none` reads as the disconnected state, so the connected panel's
+   descriptive text gets its own name rather than borrowing it. */
+.test-runs-panel-none,
+.test-runs-panel-hint {
+  color: var(--text);
+}
