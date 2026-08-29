@@ -617,12 +617,18 @@ def _tool(name: str, description: str, properties: dict, required: list[str]) ->
 
 _REF = {"type": "string", "description": "Element ref from a recent snapshot, e.g. 'e12'."}
 
-# The exploratory tool surface. Deliberately excludes read_file: this loop's
-# whole job is judging whether observed behaviour is wrong, which is exactly
-# where handing the model the implementation corrupts the oracle (see the
-# CLAUDE.md gotcha). It also keeps the session free of asyncio.run, which
-# cannot coexist with Playwright's sync API in one thread.
-BROWSER_TOOLS = [
+# The navigation half of the browser surface — everything that moves around
+# a page and reads it, and nothing that reaches a verdict. Deliberately
+# excludes read_file: both loops that use these judge whether observed
+# behaviour is wrong, which is exactly where handing the model the
+# implementation corrupts the oracle (see the CLAUDE.md gotcha). It also
+# keeps the session free of asyncio.run, which cannot coexist with
+# Playwright's sync API in one thread.
+#
+# Split out so the two loops can be offered different surfaces. This is a
+# decomposition, not a second copy: the ten tools below keep exactly one
+# description each, and a change to `click` reaches both callers.
+_NAVIGATION_TOOLS = [
     _tool(
         "snapshot",
         "Capture the current page's accessibility tree, including a ref for "
@@ -683,6 +689,15 @@ BROWSER_TOOLS = [
         {},
         [],
     ),
+]
+
+# What only an exploratory session gets. `record_finding` is the reason the
+# split exists: a model that can record a finding is a model that can invent
+# one, and a nonfunctional run's whole claim is that its findings came from a
+# tool. Omitting the *executor* would not have achieved that — the model
+# would still be offered the tool and still call it — so the exclusion has to
+# be here, in the schema that goes on the wire.
+_EXPLORATORY_TOOLS = [
     _tool(
         "record_finding",
         "Record a bug or issue you have observed. Captures a screenshot of the "
@@ -732,6 +747,27 @@ BROWSER_TOOLS = [
         ["notes"],
     ),
 ]
+
+# What only a nonfunctional run gets: a way to say the itinerary is walked.
+# There is no recording tool here at all, because the checks run themselves
+# on arrival at every URL — see `nonfunctional_tool_registry`.
+_NONFUNCTIONAL_TOOLS = [
+    _tool(
+        "finish_itinerary",
+        "End the run because you have visited every part of the feature worth "
+        "examining. Say briefly which screens you reached and which you could not.",
+        {
+            "notes": {
+                "type": "string",
+                "description": "Where you went and anything you could not reach.",
+            }
+        },
+        ["notes"],
+    ),
+]
+
+BROWSER_TOOLS = [*_NAVIGATION_TOOLS, *_EXPLORATORY_TOOLS]
+NONFUNCTIONAL_TOOLS = [*_NAVIGATION_TOOLS, *_NONFUNCTIONAL_TOOLS]
 
 
 def charter_context(
@@ -811,6 +847,296 @@ def exploration_summary_context(
             f"stop reason: {session.stop_reason or '(unknown)'}\n"
             f"Notes:\n{session.session_notes or '(no notes recorded)'}\n"
             f"Findings:\n{findings}"
+        )
+    return parts
+
+
+# ── Nonfunctional testing ─────────────────────────────────────────────
+#
+# The oracle is inverted here relative to every other prompt in this file.
+# Elsewhere the model decides whether something is wrong; here the tools
+# do, and the model's entire job is to walk the feature and, afterwards,
+# to describe in readable English what a tool already found and already
+# graded. None of these prompts asks for a verdict, and none of the
+# response schemas has a field one could be written into.
+
+NONFUNCTIONAL_SYSTEM_PROMPT = (
+    "You are a QA engineer walking through one feature of a web application "
+    "so that automated checks can examine every screen it touches.\n\n"
+    "WHAT YOU ARE FOR: accessibility, performance and security checks run "
+    "AUTOMATICALLY at every URL you land on. You do not run them, you cannot "
+    "see their results, and you are not asked to judge the application. Your "
+    "only job is COVERAGE: reach the screens this feature actually consists "
+    "of, so the checks are run somewhere worth running them.\n\n"
+    "You are not looking for bugs and you have no way to report one. If "
+    "something looks broken, that is not your concern here — keep walking "
+    "the feature. A screen you never reached is checked by nothing, and "
+    "that is the only failure mode you control.\n\n"
+    "WHERE YOU ARE: the browser is already open on the application under "
+    "test. You may only type a URL that is in the allowed list, but you may "
+    "follow the application's own links off it.\n\n"
+    "START by calling snapshot to see the page. Every element you interact "
+    "with needs a ref from a recent snapshot; refs change when the page "
+    "changes, so take a fresh snapshot after anything that navigates or "
+    "re-renders.\n\n"
+    "HOW TO COVER A FEATURE: go through it the way the test plan describes "
+    "it — the main screens, the forms, the states you reach after "
+    "submitting. Prefer breadth over depth: two more screens reached is "
+    "worth more here than one screen studied closely, because each new URL "
+    "is a whole catalogue of checks that would otherwise never run. "
+    "Revisiting a URL you have already been to adds nothing.\n\n"
+    "CREDENTIALS: never type a real password or token literally — use "
+    "fill_secret with the name of the environment variable, and the value is "
+    "filled in for you without ever being shown to you.\n\n"
+    "RESTRAINT: this is a shared test environment. Sign in, navigate, and "
+    "submit the forms the feature is about, but do not bulk-delete data or "
+    "repeatedly hammer destructive operations.\n\n"
+    "FINISHING: call finish_itinerary once you have reached the screens this "
+    "feature consists of, saying where you went and what you could not "
+    "reach. If your action budget runs out first you will be asked for that "
+    "summary instead."
+)
+
+ITINERARY_WRAPUP_PROMPT = (
+    "Your action budget is exhausted. Say briefly where you went and what "
+    "you could not reach, so a reader knows which parts of the feature were "
+    "examined and which were not. Report only what you actually visited. "
+    'Respond with a JSON object of the shape {"notes": string}.'
+)
+
+NONFUNCTIONAL_PLAN_SYSTEM_PROMPT = (
+    "You are a QA lead setting up a nonfunctional testing run for one "
+    "requirement of a web application. You propose; a human then edits and "
+    "approves everything you say, so be concrete and be honest about what "
+    "does not apply.\n\n"
+    "You decide three things.\n\n"
+    "1. WHICH DOMAINS APPLY. For each of accessibility, performance and "
+    "security, say whether examining this requirement is worthwhile and why "
+    "in one sentence. Mark a domain inapplicable only when it genuinely is "
+    "— a requirement with no user interface has no accessibility surface, "
+    "for instance. Do not mark one inapplicable merely because the "
+    "requirement does not mention it: almost nothing does.\n\n"
+    "2. WHICH BASE URLS the run should work from, chosen from the "
+    "environment variable names you are given. ORDER MATTERS: the browser "
+    "opens on the first one, so it must be the browsable application. Every "
+    "name you give must be one of the names listed, and must hold an "
+    "http(s) URL.\n\n"
+    "3. WHICH LOAD PROFILES to propose, if any. A load profile sends many "
+    "requests to ONE url over a short window, to see how the environment "
+    "behaves under concurrent use. Rules you must follow:\n"
+    "- Prefer safe methods (GET, HEAD, OPTIONS). They only read, so they can "
+    "run anywhere.\n"
+    "- Propose a non-safe method (POST, PUT, PATCH, DELETE) only when the "
+    "requirement is genuinely about a write path, and expect it to be "
+    "refused unless the human has declared the environment disposable.\n"
+    "- Every url must be on one of the origins you nominated above.\n"
+    "- Never put a credential in a body. Reference an environment variable "
+    "as $NAME and it is substituted at send time without you seeing it.\n"
+    "- Propose nothing at all rather than something arbitrary. An empty list "
+    "is a perfectly good answer for a requirement that is not about load.\n\n"
+    "Concurrency, duration and total request count are capped by "
+    "configuration and will be clamped down silently, so propose modest "
+    "numbers and never argue for larger ones.\n\n"
+    "Respond with a JSON object of the shape "
+    '{"domains": [{"domain": "accessibility"|"performance"|"security", '
+    '"applicable": bool, "rationale": string}], '
+    '"base_url_env_vars": [string, ...], '
+    '"load_profiles": [{"url": string, "method": string, "body": string|null, '
+    '"concurrency": int, "duration_seconds": int, "total_request_cap": int, '
+    '"rationale": string}]}.'
+)
+
+NONFUNCTIONAL_TRIAGE_SYSTEM_PROMPT = (
+    "You are a QA engineer writing up violations that automated tools found "
+    "in a web application. Each item below was found by a tool — axe-core "
+    "for accessibility, a fixed rule table for security — and has ALREADY "
+    "been graded for severity by that tool.\n\n"
+    "You are not deciding whether these are real, and you are not deciding "
+    "how serious they are. Both of those are settled. You are turning a "
+    "rule id and a list of elements into a report a developer can act on "
+    "without knowing the tool.\n\n"
+    "For each item write:\n"
+    "- title: one line naming the problem in plain language, not the rule id\n"
+    "- steps_to_reproduce: how to see it, one step per line, unnumbered — "
+    "start from the URL given and name the elements involved\n"
+    "- expected: what the page should do, in terms of the person affected "
+    "rather than the rule\n"
+    "- actual: what it does instead, quoting the specific elements\n\n"
+    "Say only what the evidence supports. Do not speculate about the cause, "
+    "do not suggest a fix you cannot verify, and never write that something "
+    "is minor, cosmetic, or safe to ignore — that is a severity judgement "
+    "and it is not yours to make here.\n\n"
+    "Every item carries an `id`. Respond with a JSON object of the shape "
+    '{"findings": [{"id": string, "title": string, '
+    '"steps_to_reproduce": string, "expected": string, "actual": string}]}, '
+    "keyed by that id. Return one entry per item you were given."
+)
+
+NONFUNCTIONAL_SUMMARY_SYSTEM_PROMPT = (
+    "You are a senior QA lead summarising a completed nonfunctional testing "
+    "run for one requirement. You are given which URLs were examined, what "
+    "each domain found at each of them, the measured performance figures, "
+    "and the load profiles that were applied.\n\n"
+    "Write a short narrative: what was covered, what the checks found, and "
+    "where the risk now sits. Report the numbers as measurements, not as "
+    "verdicts — there is no threshold here that anything passed or failed, "
+    "and inventing one would be a judgement about somebody else's capacity "
+    "planning.\n\n"
+    "A domain recorded as `failed_to_run` or `not_applicable` at a URL was "
+    "NOT clean there: say so plainly rather than counting it as a pass. "
+    "Summarise only what the run actually did.\n\n"
+    'Respond with a JSON object of the shape {"summary": string}.'
+)
+
+
+@dataclass(frozen=True)
+class ViolationLike:
+    """One raw violation as the triage prompt sees it.
+
+    Plain fields rather than a row or a service dataclass, keeping
+    ``services/llm.py`` free of both — the same arrangement
+    ``TestCaseLike`` and ``FindingCandidate`` already use.
+
+    Note what is absent: **severity**. The tool graded it, and a field the
+    model can see is a field it will argue with.
+    """
+
+    id: str
+    domain: str
+    rule: str
+    url: str
+    summary: str
+    nodes: list[str]
+
+
+@dataclass(frozen=True)
+class TargetLike:
+    """One examined URL, as the summary prompt sees it."""
+
+    url: str
+    kind: str
+    status: str
+    outcomes: dict[str, str | None]
+    metrics: dict
+    finding_count: int
+
+
+@dataclass(frozen=True)
+class LoadProfileLike:
+    """One applied load profile, as the summary prompt sees it.
+
+    Carries no ``body``: a body may hold a ``$NAME`` placeholder whose value
+    is a credential, and the summary has nothing to say about it anyway.
+    """
+
+    url: str
+    method: str
+    status: str
+    requests_sent: int
+    results: dict
+
+
+def nonfunctional_plan_context(
+    name: str,
+    description: str,
+    covered_cases: list[TestCaseLike],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+) -> list[str]:
+    """User-prompt blocks for the run-setup proposal."""
+    parts = context_sections(readme, file_tree)
+    parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
+    if covered_cases:
+        covered = "\n".join(f"- {case.title}: {case.expected_result}" for case in covered_cases)
+        parts.append(f"Approved test cases for this requirement:\n{covered}")
+    parts.append("Available test environment variable names:\n" + bullets(env_var_names))
+    return parts
+
+
+def nonfunctional_itinerary_context(
+    name: str,
+    description: str,
+    covered_cases: list[TestCaseLike],
+    base_urls: list[str],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+) -> list[str]:
+    """User-prompt blocks for the navigation loop."""
+    parts = context_sections(readme, file_tree)
+    parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
+    if covered_cases:
+        covered = "\n".join(f"- {case.title}\n  steps:\n{case.steps}" for case in covered_cases)
+        parts.append(
+            "The approved test plan for this requirement — walk the screens "
+            f"these describe:\n{covered}"
+        )
+    if base_urls:
+        listed = "\n".join(
+            f"- {url}" + ("  (the browser is already open here)" if index == 0 else "")
+            for index, url in enumerate(base_urls)
+        )
+        parts.append(
+            f"Application under test:\n{listed}\n"
+            "Typing a URL outside these origins is refused; following the "
+            "application's own links off them is allowed."
+        )
+    parts.append("Environment variable names available to fill_secret:\n" + bullets(env_var_names))
+    return parts
+
+
+def nonfunctional_triage_context(violations: list[ViolationLike]) -> list[str]:
+    """User-prompt blocks for one triage batch."""
+    parts = []
+    for violation in violations:
+        elements = "\n".join(f"  - {node}" for node in violation.nodes) or "  (none listed)"
+        parts.append(
+            f"id: {violation.id}\n"
+            f"domain: {violation.domain}\n"
+            f"rule: {violation.rule}\n"
+            f"url: {violation.url}\n"
+            f"what the tool reported: {violation.summary}\n"
+            f"elements involved:\n{elements}"
+        )
+    return parts
+
+
+def nonfunctional_summary_context(
+    name: str,
+    description: str,
+    targets: list[TargetLike],
+    load_profiles: list[LoadProfileLike],
+) -> list[str]:
+    """User-prompt blocks for the run summary."""
+    parts = [f"Requirement name: {name}\nRequirement description:\n{description}"]
+    for target in targets:
+        outcomes = (
+            "\n".join(
+                f"  - {domain}: {outcome or 'not selected'}"
+                for domain, outcome in target.outcomes.items()
+            )
+            or "  (none)"
+        )
+        metrics = (
+            "\n".join(f"  - {key}: {value}" for key, value in sorted(target.metrics.items()))
+            or "  (not measured)"
+        )
+        parts.append(
+            f"Examined {target.kind}: {target.url}\n"
+            f"Status: {target.status}; findings recorded: {target.finding_count}\n"
+            f"Per-domain outcome:\n{outcomes}\n"
+            f"Measured:\n{metrics}"
+        )
+    for profile in load_profiles:
+        results = (
+            "\n".join(f"  - {key}: {value}" for key, value in sorted(profile.results.items()))
+            or "  (no result)"
+        )
+        parts.append(
+            f"Load profile: {profile.method} {profile.url}\n"
+            f"Status: {profile.status}; requests sent: {profile.requests_sent}\n"
+            f"Result:\n{results}"
         )
     return parts
 

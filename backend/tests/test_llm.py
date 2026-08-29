@@ -7,7 +7,7 @@ import httpx
 import openai
 import pytest
 
-from backend.services import llm
+from backend.services import llm, llm_prompts
 from backend.services.llm import (
     ClarityResult,
     LLMError,
@@ -2255,3 +2255,410 @@ class TestDiagnosisRedaction:
         prompt = self._prompt(monkeypatch, stderr="plain failure", secrets={})
 
         assert "plain failure" in prompt
+
+
+# ── Nonfunctional testing ═════════════════════════════════════════════
+
+
+def _run_nonfunctional(tools, monkeypatch=None, max_actions=30, rounds=None, **kwargs):
+    return llm.run_nonfunctional_loop(
+        name="Export reports",
+        description="Users can export reports as CSV",
+        covered_cases=[
+            TestCaseLike(
+                title="Export a report",
+                preconditions="Signed in with a report available",
+                steps="Open reports\nClick Export",
+                expected_result="A CSV downloads",
+                case_type="functional",
+                priority="high",
+            )
+        ],
+        base_urls=["https://app.test"],
+        env_var_names=["APP_URL", "ADMIN_PASSWORD"],
+        readme=None,
+        file_tree=None,
+        tools=tools,
+        max_actions=max_actions,
+        snapshot_window=3,
+        on_round=(rounds.append) if rounds is not None else (lambda _actions: None),
+        **kwargs,
+    )
+
+
+class TestToolSchemaSplit:
+    """The oracle guarantee lives in the request body, not in a dict."""
+
+    def test_the_nonfunctional_request_offers_no_record_finding(self, monkeypatch):
+        client = _scripted(
+            monkeypatch, [_acting(_tool_call("c1", "finish_itinerary", notes="Walked it."))]
+        )
+
+        _run_nonfunctional({"snapshot": lambda: "page"})
+
+        offered = {tool["function"]["name"] for tool in client.requests[0]["tools"]}
+        assert "record_finding" not in offered
+        assert "finish_session" not in offered
+        assert "finish_itinerary" in offered
+        assert "navigate" in offered
+
+    def test_the_exploratory_request_still_offers_the_full_set(self, monkeypatch):
+        client = _scripted(
+            monkeypatch, [_acting(_tool_call("c1", "finish_session", notes="Explored."))]
+        )
+
+        _run_loop({"snapshot": lambda: "page"})
+
+        offered = {tool["function"]["name"] for tool in client.requests[0]["tools"]}
+        assert "record_finding" in offered
+        assert "finish_session" in offered
+
+    def test_the_forced_wrap_up_sends_each_loop_its_own_schema(self, monkeypatch):
+        """Both `create` call sites, not just the acting one."""
+        exploratory = _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _answering(json.dumps({"notes": "done"})),
+            ],
+        )
+        _run_loop({"snapshot": lambda: "page"}, max_actions=1)
+        wrapup = {tool["function"]["name"] for tool in exploratory.requests[-1]["tools"]}
+        assert "record_finding" in wrapup
+
+        nonfunctional = _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _answering(json.dumps({"notes": "done"})),
+            ],
+        )
+        _run_nonfunctional({"snapshot": lambda: "page"}, max_actions=1)
+        wrapup = {tool["function"]["name"] for tool in nonfunctional.requests[-1]["tools"]}
+        assert "record_finding" not in wrapup
+
+    def test_the_two_loops_share_the_navigation_tool_descriptions(self):
+        exploratory = {tool["function"]["name"]: tool for tool in llm_prompts.BROWSER_TOOLS}
+        nonfunctional = {tool["function"]["name"]: tool for tool in llm_prompts.NONFUNCTIONAL_TOOLS}
+
+        for name in ("snapshot", "navigate", "click", "fill_secret", "read_console"):
+            assert exploratory[name] is nonfunctional[name]
+
+
+class TestRunNonfunctionalLoop:
+    def test_it_uses_its_own_system_prompt(self, monkeypatch):
+        client = _scripted(
+            monkeypatch, [_acting(_tool_call("c1", "finish_itinerary", notes="Walked it."))]
+        )
+
+        _run_nonfunctional({"snapshot": lambda: "page"})
+
+        system = client.requests[0]["messages"][0]["content"]
+        assert system == llm_prompts.NONFUNCTIONAL_SYSTEM_PROMPT
+        # Reusing the exploratory prompt would spend three paragraphs
+        # teaching two tools this loop is not offered.
+        assert "record_finding" not in system
+        assert "finish_session" not in system
+
+    def test_finish_itinerary_terminates_the_loop(self, monkeypatch):
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "finish_itinerary", notes="Reached both screens.")),
+            ],
+        )
+
+        result = _run_nonfunctional({"snapshot": lambda: "page"})
+
+        assert result.stop_reason == llm.STOP_CHARTER_COMPLETE
+        assert result.notes == "Reached both screens."
+        assert result.actions_used == 1
+
+    def test_every_navigation_call_costs_an_action(self, monkeypatch):
+        """No free tool here — there is nothing to make free."""
+        _scripted(
+            monkeypatch,
+            [
+                _acting(_tool_call("c1", "snapshot")),
+                _acting(_tool_call("c2", "snapshot")),
+                _answering(json.dumps({"notes": "budget gone"})),
+            ],
+        )
+
+        result = _run_nonfunctional({"snapshot": lambda: "page"}, max_actions=2)
+
+        assert result.actions_used == 2
+        assert result.stop_reason == llm.STOP_ACTION_CAP
+
+    def test_the_test_plan_steps_reach_the_prompt(self, monkeypatch):
+        client = _scripted(monkeypatch, [_acting(_tool_call("c1", "finish_itinerary", notes="ok"))])
+
+        _run_nonfunctional({"snapshot": lambda: "page"})
+
+        user = client.requests[0]["messages"][1]["content"]
+        assert "Click Export" in user
+        assert "https://app.test" in user
+
+
+class TestGenerateNonfunctionalPlan:
+    def _payload(self, **overrides):
+        payload = {
+            "domains": [
+                {"domain": "accessibility", "applicable": True, "rationale": "It has a UI."},
+                {"domain": "security", "applicable": True, "rationale": "It is authenticated."},
+                {"domain": "performance", "applicable": False, "rationale": "No load path."},
+            ],
+            "base_url_env_vars": ["APP_URL"],
+            "load_profiles": [
+                {
+                    "url": "https://app.test/api/reports",
+                    "method": "GET",
+                    "body": None,
+                    "concurrency": 2,
+                    "duration_seconds": 10,
+                    "total_request_cap": 50,
+                    "rationale": "The export endpoint is the hot path.",
+                }
+            ],
+        }
+        payload.update(overrides)
+        return json.dumps(payload)
+
+    def _call(self):
+        return llm.generate_nonfunctional_plan(
+            name="Export reports",
+            description="Users can export reports",
+            covered_cases=[],
+            env_var_names=["APP_URL"],
+            readme=None,
+            file_tree=None,
+        )
+
+    def test_parses_a_well_formed_response(self, stub_client):
+        stub_client.content = self._payload()
+
+        result = self._call()
+
+        assert [d.domain for d in result.domains] == [
+            "accessibility",
+            "security",
+            "performance",
+        ]
+        assert result.base_url_env_vars == ["APP_URL"]
+        assert result.load_profiles[0].method == "GET"
+
+    def test_no_nominated_url_raises(self, stub_client):
+        stub_client.content = self._payload(base_url_env_vars=[])
+
+        with pytest.raises(LLMError, match="environment variable"):
+            self._call()
+
+    def test_no_applicable_domain_raises(self, stub_client):
+        stub_client.content = self._payload(
+            domains=[{"domain": "accessibility", "applicable": False, "rationale": "no UI"}]
+        )
+
+        with pytest.raises(LLMError, match="applicable domain"):
+            self._call()
+
+    def test_malformed_output_raises(self, stub_client):
+        stub_client.content = "not json"
+
+        with pytest.raises(LLMError):
+            self._call()
+
+
+def _violation(index: int, nodes=("img",)) -> llm_prompts.ViolationLike:
+    return llm_prompts.ViolationLike(
+        id=f"v{index}",
+        domain="accessibility",
+        rule="image-alt",
+        url="https://app.test/login",
+        summary="Images must have alternative text",
+        nodes=list(nodes),
+    )
+
+
+class TestTriageNonfunctionalFindings:
+    def test_responses_are_keyed_by_id_not_by_position(self, stub_client):
+        stub_client.content = json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "v2",
+                        "title": "Second",
+                        "steps_to_reproduce": "s",
+                        "expected": "e",
+                        "actual": "a",
+                    },
+                    {
+                        "id": "v1",
+                        "title": "First",
+                        "steps_to_reproduce": "s",
+                        "expected": "e",
+                        "actual": "a",
+                    },
+                ]
+            }
+        )
+
+        written = llm.triage_nonfunctional_findings([_violation(1), _violation(2)])
+
+        assert written["v1"].title == "First"
+        assert written["v2"].title == "Second"
+
+    def test_a_missing_entry_leaves_that_violation_alone(self, stub_client):
+        """The gap must not re-label its neighbour."""
+        stub_client.content = json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "v1",
+                        "title": "First",
+                        "steps_to_reproduce": "s",
+                        "expected": "e",
+                        "actual": "a",
+                    }
+                ]
+            }
+        )
+
+        written = llm.triage_nonfunctional_findings([_violation(1), _violation(2)])
+
+        assert set(written) == {"v1"}
+
+    def test_an_id_we_never_sent_is_dropped(self, stub_client):
+        stub_client.content = json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "invented",
+                        "title": "T",
+                        "steps_to_reproduce": "s",
+                        "expected": "e",
+                        "actual": "a",
+                    }
+                ]
+            }
+        )
+
+        assert llm.triage_nonfunctional_findings([_violation(1)]) == {}
+
+    def test_the_schema_has_nowhere_to_put_a_severity(self, stub_client):
+        stub_client.content = json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "v1",
+                        "title": "T",
+                        "steps_to_reproduce": "s",
+                        "expected": "e",
+                        "actual": "a",
+                        "severity": "low",
+                    }
+                ]
+            }
+        )
+
+        written = llm.triage_nonfunctional_findings([_violation(1)])
+
+        assert not hasattr(written["v1"], "severity")
+
+    def test_a_failing_call_costs_prose_and_not_the_run(self, monkeypatch):
+        class _Boom:
+            def __init__(self):
+                self.chat = SimpleNamespace(
+                    completions=SimpleNamespace(
+                        create=lambda **kwargs: (_ for _ in ()).throw(
+                            openai.APIError("down", request=None, body=None)
+                        )
+                    )
+                )
+
+        monkeypatch.setattr(llm, "_get_client", lambda: _Boom())
+
+        assert llm.triage_nonfunctional_findings([_violation(1)]) == {}
+
+    def test_an_oversized_payload_is_chunked_rather_than_sent_whole(self, stub_client):
+        stub_client.content = json.dumps({"findings": []})
+        violations = [_violation(n, nodes=["x" * 500]) for n in range(6)]
+
+        llm.triage_nonfunctional_findings(violations, max_chars=1000)
+
+        assert len(stub_client.requests) > 1
+
+    def test_one_oversized_violation_still_goes_out(self, stub_client):
+        stub_client.content = json.dumps({"findings": []})
+
+        llm.triage_nonfunctional_findings([_violation(1, nodes=["x" * 5000])], max_chars=100)
+
+        assert len(stub_client.requests) == 1
+
+    def test_nothing_to_triage_makes_no_call(self, stub_client):
+        assert llm.triage_nonfunctional_findings([]) == {}
+        assert stub_client.requests == []
+
+
+class TestSummarizeNonfunctional:
+    def _targets(self):
+        return [
+            llm_prompts.TargetLike(
+                url="https://app.test/login",
+                kind="page",
+                status="completed",
+                outcomes={"accessibility": "violations", "security": "clean"},
+                metrics={"load_ms": 340},
+                finding_count=2,
+            )
+        ]
+
+    def _profiles(self, body_carrying=False):
+        return [
+            llm_prompts.LoadProfileLike(
+                url="https://app.test/api",
+                method="POST" if body_carrying else "GET",
+                status="completed",
+                requests_sent=20,
+                results={"p95_ms": 180},
+            )
+        ]
+
+    def test_parses_a_summary(self, stub_client):
+        stub_client.content = json.dumps({"summary": "Two accessibility violations on login."})
+
+        result = llm.summarize_nonfunctional(
+            "Export", "Users export", self._targets(), self._profiles()
+        )
+
+        assert result.summary.startswith("Two accessibility")
+
+    def test_a_blank_summary_is_retried_then_raises(self, stub_client):
+        stub_client.content = json.dumps({"summary": "   "})
+
+        with pytest.raises(LLMError):
+            llm.summarize_nonfunctional("Export", "Users export", self._targets(), [])
+
+        assert len(stub_client.requests) == llm._SUMMARY_ATTEMPTS
+
+    def test_the_prompt_carries_no_request_body(self, stub_client):
+        stub_client.content = json.dumps({"summary": "ok"})
+
+        llm.summarize_nonfunctional(
+            "Export", "Users export", self._targets(), self._profiles(body_carrying=True)
+        )
+
+        prompt = _user_prompt(stub_client)
+        assert "POST https://app.test/api" in prompt
+        assert "body" not in prompt.lower()
+
+    def test_on_attempt_heartbeats_per_attempt(self, stub_client):
+        stub_client.content = json.dumps({"summary": ""})
+        beats: list[int] = []
+
+        with pytest.raises(LLMError):
+            llm.summarize_nonfunctional(
+                "Export", "Users export", self._targets(), [], on_attempt=lambda: beats.append(1)
+            )
+
+        assert len(beats) == llm._SUMMARY_ATTEMPTS
