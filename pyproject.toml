@@ -49,6 +49,14 @@ dependencies = [
     # interpreter it was just run with. 0.18 is the floor: `YAML()` is the
     # only round-trip API from that release on.
     "ruamel.yaml>=0.18,<0.19",
+    # axe-core, wrapped for Playwright. The accessibility oracle: it decides
+    # both what is a violation and how severe it is, which is what keeps the
+    # model out of that judgement entirely. The pip package is preferred over
+    # vendoring axe.min.js because it tracks upstream axe-core releases — and
+    # because the file is 559 KB, over pre-commit's 500 KB cap. MIT itself;
+    # the axe-core it bundles is MPL-2.0, which is file-level copyleft and
+    # fine for a tool that redistributes no modified sources.
+    "axe-playwright-python>=0.1.8,<0.2",
 ]
 
 [project.optional-dependencies]
