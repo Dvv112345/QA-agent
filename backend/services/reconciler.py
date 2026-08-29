@@ -54,6 +54,8 @@ from backend.models.database import (
     CicdExportStatus,
     ExploratoryRun,
     ExploratoryRunStatus,
+    NonfunctionalRun,
+    NonfunctionalRunStatus,
     Requirement,
     RequirementStatus,
     Sprint,
@@ -64,6 +66,8 @@ from backend.models.database import (
 )
 from backend.services.finalization import (
     EXPLORATORY_SESSION_SPEC,
+    LOAD_PROFILE_SPEC,
+    NONFUNCTIONAL_TARGET_SPEC,
     TEST_CASE_SPEC,
     ChildSpec,
     abandon_unreached_children,
@@ -198,6 +202,25 @@ SWEEP_SPECS: tuple[SweepSpec, ...] = (
         # Joins straight to Sprint — unlike plans and executions, an
         # exploratory run carries its own sprint_id.
         scope_query=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
+    ),
+    SweepSpec(
+        model=NonfunctionalRun,
+        label="Nonfunctional run",
+        pending_status=NonfunctionalRunStatus.PENDING,
+        running_status=NonfunctionalRunStatus.RUNNING,
+        failed_status=NonfunctionalRunStatus.FAILED,
+        clear_field=None,
+        enqueue_name="enqueue_nonfunctional_run",
+        stale_error=(
+            "Nonfunctional worker died repeatedly while processing this run. "
+            "Use Restart to try again."
+        ),
+        # Both child types — the URLs it examined and the traffic it
+        # applied. See NONFUNCTIONAL_RUN_SPEC for why a settled load
+        # profile still must not be re-sent.
+        child_specs=(NONFUNCTIONAL_TARGET_SPEC, LOAD_PROFILE_SPEC),
+        # Carries its own sprint_id, like ExploratoryRun.
+        scope_query=lambda stmt: stmt.join(Sprint, NonfunctionalRun.sprint_id == Sprint.id),
     ),
     SweepSpec(
         model=CicdExport,

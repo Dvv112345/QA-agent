@@ -31,6 +31,7 @@ from backend.config import (
     EXPLORATORY_JOB_TIMEOUT,
     JOB_RESULT_TTL,
     JOB_TIMEOUT,
+    NONFUNCTIONAL_JOB_TIMEOUT,
     REDIS_DB,
     REDIS_HOST,
     REDIS_PASSWORD,
@@ -58,6 +59,7 @@ GENERATE_TEST_PLAN_TASK = "backend.tasks.generate_test_plan.generate_test_plan_t
 EXECUTE_TEST_TASK = "backend.tasks.execute_test.execute_test_task"
 EXPLORE_REQUIREMENT_TASK = "backend.tasks.explore_requirement.explore_requirement_task"
 CICD_EXPORT_TASK = "backend.tasks.export_cicd.export_cicd_task"
+NONFUNCTIONAL_RUN_TASK = "backend.tasks.run_nonfunctional.run_nonfunctional_task"
 
 # ── Module-level singleton ────────────────────────────────────────────────
 _queue_service: QueueService | None = None
@@ -211,6 +213,20 @@ class QueueService:
             exploratory_run_id,
             EXPLORATORY_JOB_TIMEOUT,
             "exploratory run",
+        )
+
+    def enqueue_nonfunctional_run(self, nonfunctional_run_id: int) -> rq.job.Job | None:
+        """Enqueue a nonfunctional run job and return the RQ Job handle.
+
+        One job covers the whole run — the itinerary, every target's
+        catalogue, and every load profile serially — so this timeout must
+        span all three rather than a single target.
+        """
+        return self._enqueue(
+            NONFUNCTIONAL_RUN_TASK,
+            nonfunctional_run_id,
+            NONFUNCTIONAL_JOB_TIMEOUT,
+            "nonfunctional run",
         )
 
     def enqueue_cicd_export(self, cicd_export_id: int) -> rq.job.Job | None:

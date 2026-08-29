@@ -49,6 +49,11 @@ from backend.models.database import (
     ExploratoryRunStatus,
     ExploratorySession,
     ExploratorySessionStatus,
+    NonfunctionalChildStatus,
+    NonfunctionalLoadProfile,
+    NonfunctionalRun,
+    NonfunctionalRunStatus,
+    NonfunctionalTarget,
     Requirement,
     RequirementStatus,
     TestCaseExecution,
@@ -104,6 +109,31 @@ EXPLORATORY_SESSION_SPEC = ChildSpec(
     pending_status=ExploratorySessionStatus.PENDING,
     running_status=ExploratorySessionStatus.RUNNING,
     skipped_status=ExploratorySessionStatus.SKIPPED,
+)
+
+
+NONFUNCTIONAL_TARGET_SPEC = ChildSpec(
+    model=NonfunctionalTarget,
+    label="examined URL",
+    parent_fk="nonfunctional_run_id",
+    pending_status=NonfunctionalChildStatus.PENDING,
+    running_status=NonfunctionalChildStatus.RUNNING,
+    skipped_status=NonfunctionalChildStatus.SKIPPED,
+)
+
+# `skipped` here does **not** mean "safe to re-run", unlike every other
+# child spec in this module. A target re-examined costs a page load; a load
+# profile re-sent costs real traffic on somebody's environment, and for a
+# non-safe method it costs duplicated writes. The never-re-send invariant is
+# carried by `NonfunctionalLoadProfile.requests_sent > 0`, which the task
+# checks before every profile — not by this status.
+LOAD_PROFILE_SPEC = ChildSpec(
+    model=NonfunctionalLoadProfile,
+    label="load profile",
+    parent_fk="nonfunctional_run_id",
+    pending_status=NonfunctionalChildStatus.PENDING,
+    running_status=NonfunctionalChildStatus.RUNNING,
+    skipped_status=NonfunctionalChildStatus.SKIPPED,
 )
 
 
@@ -176,6 +206,18 @@ CICD_EXPORT_SPEC = RowSpec(
     pending_status=CicdExportStatus.PENDING,
     failed_status=CicdExportStatus.FAILED,
     child_specs=(),
+)
+
+
+# The first row type with two kinds of child, which is what `child_specs`
+# was widened for: a run walks the URLs it examined and the load profiles it
+# applied, and both must be settled when it fails.
+NONFUNCTIONAL_RUN_SPEC = RowSpec(
+    model=NonfunctionalRun,
+    label="Nonfunctional run",
+    pending_status=NonfunctionalRunStatus.PENDING,
+    failed_status=NonfunctionalRunStatus.FAILED,
+    child_specs=(NONFUNCTIONAL_TARGET_SPEC, LOAD_PROFILE_SPEC),
 )
 
 

@@ -183,6 +183,19 @@ def _is_private_host(host: str) -> bool:
     return False
 
 
+def allowed_origins_for(base_urls: list[str]) -> set[tuple[str, str]]:
+    """The origins a run's profiles may be aimed at.
+
+    Deliberately the browser's own rule, imported rather than re-derived:
+    a load profile and a typed navigation are the same question about the
+    same run — may this reach that host — and two answers to it is the shape
+    of bug that only shows up in production.
+    """
+    from backend.services.browser_session import allowed_origins
+
+    return allowed_origins(base_urls)
+
+
 def refusal_for(url: str, allowed: set[tuple[str, str]] | None = None) -> str | None:
     """Why this URL may not be loaded, or ``None`` if it may.
 
