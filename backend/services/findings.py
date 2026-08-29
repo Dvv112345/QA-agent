@@ -28,14 +28,17 @@ asymmetry is in the schema, not in the counting rule.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
 from backend.models.database import (
+    DefectPool,
     ExploratoryRun,
     ExploratorySession,
     FindingType,
+    NonfunctionalRun,
+    NonfunctionalTarget,
     Sprint,
     TestCaseExecutionStatus,
     TestExecution,
@@ -80,13 +83,19 @@ class Finding:
     screenshot_path: str | None
     source_label: str  # test-case title | charter text
     requirement_id: int | None
+    # Which pool of distinct defects this finding groups in. Derived here,
+    # once, from `RunKind.pool` — `finding_grouping` filters the known
+    # defects by it and `qa_metrics` partitions the bug count by it, and
+    # two derivations of one fact is the `reference_map` failure this
+    # codebase already recorded once.
+    pool: str
     # Whether the work that produced this finding reached a verdict.
     # Always true on the exploratory side: a finding exists only because
     # the model recorded one.
     terminal: bool
 
 
-def _from_case(case, requirement_id: int | None) -> Finding:
+def _from_case(case, requirement_id: int | None, pool: str) -> Finding:
     return Finding(
         row=case,
         finding_type=case.finding_type,
@@ -102,11 +111,12 @@ def _from_case(case, requirement_id: int | None) -> Finding:
         screenshot_path=None,  # scripted runs capture no screenshot
         source_label=case.test_case.title if case.test_case else "",
         requirement_id=requirement_id,
+        pool=pool,
         terminal=case.status in TERMINAL_CASE_STATUSES,
     )
 
 
-def _from_exploratory(finding, charter: str, requirement_id: int | None) -> Finding:
+def _from_exploratory(finding, charter: str, requirement_id: int | None, pool: str) -> Finding:
     return Finding(
         row=finding,
         finding_type=finding.finding_type,
@@ -122,35 +132,193 @@ def _from_exploratory(finding, charter: str, requirement_id: int | None) -> Find
         screenshot_path=finding.screenshot_path,
         source_label=charter,
         requirement_id=requirement_id,
+        pool=pool,
         terminal=True,
     )
+
+
+def _from_nonfunctional(finding, target_url: str, requirement_id: int | None, pool: str) -> Finding:
+    """One tool-found violation, under the shared names.
+
+    ``source_label`` is the URL rather than a test-case title or a charter,
+    because that is what identifies this finding to a reader: the rule and
+    the page it broke on are the whole address of a nonfunctional defect.
+    """
+    return Finding(
+        row=finding,
+        finding_type=finding.finding_type,
+        severity=finding.severity,
+        title=finding.title,
+        steps_to_reproduce=finding.steps_to_reproduce,
+        expected=finding.expected,
+        actual=finding.actual,
+        environment=finding.environment,
+        tracker_issue_key=finding.tracker_issue_key,
+        tracker_target=finding.tracker_target,
+        defect_group_id=finding.defect_group_id,
+        screenshot_path=finding.screenshot_path,
+        source_label=target_url,
+        requirement_id=requirement_id,
+        pool=pool,
+        terminal=True,
+    )
+
+
+@dataclass(frozen=True)
+class RunKind:
+    """One finding-carrying row type, and everything dispatch needs of it.
+
+    Three modules used to answer "what kind of run is this?" with their own
+    ``isinstance`` chain — ``findings._walk``, ``findings.sprint_for`` and
+    ``finding_export._spec_for`` — so a new run mode meant editing three
+    places in three files. That failed in practice the first time it was
+    tried: two were updated and the export one was missed, which does not
+    raise. It answers **200 with zero tickets filed**, evidenced only by a
+    warning in a worker log.
+
+    So there is one table. A row type that is not in it cannot be walked,
+    cannot resolve a sprint and cannot export — consistently, and with one
+    place to add the next one.
+
+    The fields split into two halves. ``walk`` and ``pool`` apply to every
+    entry. The rest apply only to the level a *job* owns, which is the unit
+    grouping and export operate on: an intermediate level (a ``TestRun``
+    above its executions, an ``ExploratorySession`` below its run) carries
+    ``None`` there and is walk-only.
+    """
+
+    model: type
+    walk: Callable[[RunKind, Any], Iterator[Finding]]
+    pool: str = DefectPool.FUNCTIONAL
+    # Job-owned levels only — see above.
+    sprint: Callable[[Any], Sprint | None] | None = None
+    export_findings: Callable[[Any], bool] | None = None
+    run_label: Callable[[Any], str] | None = None
+    source_kind: str = ""
+    requirement_name: Callable[[Any], str] | None = None
+
+    @property
+    def exportable(self) -> bool:
+        return self.sprint is not None
+
+
+def _walk_test_run(kind: RunKind, run: TestRun) -> Iterator[Finding]:
+    for execution in run.executions:
+        yield from _walk_test_execution(kind, execution)
+
+
+def _walk_test_execution(kind: RunKind, execution: TestExecution) -> Iterator[Finding]:
+    for case in execution.cases:
+        yield _from_case(case, execution.requirement_id, kind.pool)
+
+
+def _walk_exploratory_run(kind: RunKind, run: ExploratoryRun) -> Iterator[Finding]:
+    for exploratory_session in run.sessions:
+        for finding in exploratory_session.findings:
+            yield _from_exploratory(
+                finding, exploratory_session.charter, run.requirement_id, kind.pool
+            )
+
+
+def _walk_exploratory_session(kind: RunKind, row: ExploratorySession) -> Iterator[Finding]:
+    run = row.exploratory_run
+    requirement_id = run.requirement_id if run is not None else None
+    for finding in row.findings:
+        yield _from_exploratory(finding, row.charter, requirement_id, kind.pool)
+
+
+def _walk_nonfunctional_run(kind: RunKind, run: NonfunctionalRun) -> Iterator[Finding]:
+    for target in run.targets:
+        for finding in target.findings:
+            yield _from_nonfunctional(finding, target.url, run.requirement_id, kind.pool)
+
+
+def _walk_nonfunctional_target(kind: RunKind, target: NonfunctionalTarget) -> Iterator[Finding]:
+    run = target.nonfunctional_run
+    requirement_id = run.requirement_id if run is not None else None
+    for finding in target.findings:
+        yield _from_nonfunctional(finding, target.url, requirement_id, kind.pool)
+
+
+def _test_execution_sprint(execution: TestExecution) -> Sprint | None:
+    # Reached through the *run*, never through the requirement: a superseded
+    # execution may have an archived or deleted requirement, and that is
+    # precisely a path where there are still real findings to group and file.
+    run = execution.test_run
+    return run.sprint if run is not None else None
+
+
+RUN_KINDS: tuple[RunKind, ...] = (
+    RunKind(model=TestRun, walk=_walk_test_run),
+    RunKind(
+        model=TestExecution,
+        walk=_walk_test_execution,
+        sprint=_test_execution_sprint,
+        export_findings=lambda execution: bool(
+            execution.test_run is not None and execution.test_run.export_findings
+        ),
+        run_label=lambda execution: (
+            f"Scripted run {execution.test_run.id}"
+            if execution.test_run is not None
+            else "Scripted run"
+        ),
+        source_kind="scripted",
+        requirement_name=lambda execution: execution.requirement_name,
+    ),
+    RunKind(
+        model=ExploratoryRun,
+        walk=_walk_exploratory_run,
+        sprint=lambda run: run.sprint,
+        export_findings=lambda run: bool(run.export_findings),
+        run_label=lambda run: f"Exploratory run {run.id}",
+        source_kind="exploratory",
+        requirement_name=lambda run: run.requirement_name,
+    ),
+    RunKind(model=ExploratorySession, walk=_walk_exploratory_session),
+    RunKind(
+        model=NonfunctionalRun,
+        walk=_walk_nonfunctional_run,
+        pool=DefectPool.NONFUNCTIONAL,
+        sprint=lambda run: run.sprint,
+        export_findings=lambda run: bool(run.export_findings),
+        run_label=lambda run: f"Nonfunctional run {run.id}",
+        source_kind="nonfunctional",
+        requirement_name=lambda run: run.requirement_name,
+    ),
+    RunKind(
+        model=NonfunctionalTarget,
+        walk=_walk_nonfunctional_target,
+        pool=DefectPool.NONFUNCTIONAL,
+    ),
+)
+
+
+def kind_for(parent: object) -> RunKind | None:
+    """The registry entry for *parent*, or None with a warning.
+
+    The single ``isinstance`` dispatch in this application. Order matters
+    only in that no two entries' models are related by inheritance, which
+    they are not.
+    """
+    for kind in RUN_KINDS:
+        if isinstance(parent, kind.model):
+            return kind
+    logger.warning("Cannot read findings from %r — unknown parent type", type(parent))
+    return None
 
 
 def _walk(parent: object) -> Iterator[Finding]:
     """Every finding under *parent*, in the order the run produced them.
 
-    Accepts either level of either carrier's hierarchy, because the
-    callers sit at different levels: the run pages hold a whole run, the
-    export and grouping passes hold the unit one job owns, and the
-    metrics panel walks sessions one at a time.
+    Accepts either level of any carrier's hierarchy, because the callers
+    sit at different levels: the run pages hold a whole run, the export and
+    grouping passes hold the unit one job owns, and the metrics panel walks
+    sessions one at a time.
     """
-    if isinstance(parent, TestRun):
-        for execution in parent.executions:
-            yield from _walk(execution)
-    elif isinstance(parent, TestExecution):
-        for case in parent.cases:
-            yield _from_case(case, parent.requirement_id)
-    elif isinstance(parent, ExploratoryRun):
-        for exploratory_session in parent.sessions:
-            for finding in exploratory_session.findings:
-                yield _from_exploratory(finding, exploratory_session.charter, parent.requirement_id)
-    elif isinstance(parent, ExploratorySession):
-        run = parent.exploratory_run
-        requirement_id = run.requirement_id if run is not None else None
-        for finding in parent.findings:
-            yield _from_exploratory(finding, parent.charter, requirement_id)
-    else:
-        logger.warning("Cannot read findings from %r — unknown parent type", type(parent))
+    kind = kind_for(parent)
+    if kind is None:
+        return
+    yield from kind.walk(kind, parent)
 
 
 def iter_findings(
@@ -194,14 +362,10 @@ def iter_findings(
 def sprint_for(parent: object) -> Sprint | None:
     """The sprint whose defects *parent*'s findings join.
 
-    A ``TestExecution`` is reached through its **run**, never through its
-    requirement: a superseded execution may have an archived or deleted
-    requirement, and that is precisely a path where there are still real
-    findings to group and file.
+    Answered by the registry, so "which sprint" and "which findings" cannot
+    disagree about what kind of thing they were given.
     """
-    if isinstance(parent, TestExecution):
-        run = parent.test_run
-        return run.sprint if run is not None else None
-    if isinstance(parent, ExploratoryRun):
-        return parent.sprint
-    return None
+    kind = kind_for(parent)
+    if kind is None or kind.sprint is None:
+        return None
+    return kind.sprint(parent)

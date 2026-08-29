@@ -13,6 +13,8 @@ from backend.database import get_session
 from backend.models.database import (
     ExploratoryRun,
     ExploratorySession,
+    NonfunctionalRun,
+    NonfunctionalTarget,
     Repo,
     Requirement,
     Sprint,
@@ -245,6 +247,13 @@ async def get_sprint_qa_metrics(
             selectinload(Sprint.exploratory_runs)
             .selectinload(ExploratoryRun.sessions)
             .selectinload(ExploratorySession.findings),
+            # The third chain. Deliberately stops at the findings: the
+            # metrics never read `metrics_json` or `results_json`, and
+            # loading those blobs on a 2.5 s poll would pay for data the
+            # panel discards.
+            selectinload(Sprint.nonfunctional_runs)
+            .selectinload(NonfunctionalRun.targets)
+            .selectinload(NonfunctionalTarget.findings),
         )
     ).first()
     if sprint is None:

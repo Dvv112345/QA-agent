@@ -81,6 +81,18 @@ def _assign(session: Session, parent: object) -> None:
         logger.warning("Cannot group findings: no sprint reachable from %r", parent)
         return
 
+    # Which pool of defects these findings join. Read off the findings
+    # themselves — `Finding.pool` is derived once, in `findings.RunKind` —
+    # rather than re-decided here from the parent type, because
+    # `qa_metrics` partitions its bug count by the same field and two
+    # derivations of one fact is a failure this codebase has already had.
+    #
+    # A functional bug and an accessibility violation are never the same
+    # defect, and asking an LLM whether "login rejects a valid password"
+    # and "the login button has no accessible name" describe one problem
+    # would get an unstable answer to a question with an obvious one.
+    pool = rows[0].pool
+
     # Serialize concurrent passes on this sprint. The deployment runs
     # several workers and one TestRun fans out into a job per
     # TestExecution, so siblings routinely finish together — and what they
@@ -97,11 +109,18 @@ def _assign(session: Session, parent: object) -> None:
     # siblings of one run, and released with the transaction if a worker
     # dies. SQLAlchemy renders FOR UPDATE on PostgreSQL and omits it on
     # SQLite, so the test engine needs no branch here.
+    #
+    # Known and accepted since pools were added: the lock is on the sprint
+    # row, so a nonfunctional pass now serializes behind every sibling
+    # scripted pass even though the two read disjoint lists and could not
+    # collide. Correct, just slower — each wait is bounded by one
+    # OPENAI_TIMEOUT. A pool-scoped lock is the fix if it ever bites; it is
+    # not worth a second locking rule today.
     session.exec(select(Sprint).where(Sprint.id == sprint.id).with_for_update()).first()
 
     known = session.exec(
         select(DefectGroup)
-        .where(DefectGroup.sprint_id == sprint.id)
+        .where(DefectGroup.sprint_id == sprint.id, DefectGroup.pool == pool)
         # Newest first: `_prefilter` builds its lookup with `setdefault`,
         # so the first entry for a repeated normalized text wins, and the
         # most recently created group is the right tie-break.
@@ -139,6 +158,7 @@ def _assign(session: Session, parent: object) -> None:
             representative = candidates[group.representative]
             target = DefectGroup(
                 sprint_id=sprint.id,
+                pool=pool,
                 title=representative.title,
                 expected=representative.expected,
                 actual=representative.actual,
@@ -154,8 +174,9 @@ def _assign(session: Session, parent: object) -> None:
 
     session.commit()
     logger.info(
-        "Grouped %d finding(s) for %r: %d new defect(s), %d joining a known one",
+        "Grouped %d %s finding(s) for %r: %d new defect(s), %d joining a known one",
         len(rows),
+        pool,
         parent,
         created,
         joined,

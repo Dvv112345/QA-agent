@@ -48,10 +48,13 @@ import logging
 from dataclasses import dataclass
 
 from backend.models.database import (
+    DefectPool,
     ExploratoryRunStatus,
     ExploratorySessionStatus,
     FindingSeverity,
     FindingType,
+    NonfunctionalChildStatus,
+    NonfunctionalRunStatus,
     RequirementStatus,
     TestCaseExecutionStatus,
     TestExecutionStatus,
@@ -123,6 +126,9 @@ class _Counted:
     findings: list[Finding]
     scripted_requirements: set[int]
     explored_requirements: set[int]
+    # requirement_id -> URLs a completed nonfunctional run examined
+    urls_by_requirement: dict[int, set[str]]
+    examined_requirements: set[int]
     excluded_running: int
     excluded_failed: int
 
@@ -139,6 +145,8 @@ def _collect(sprint) -> _Counted:
         findings=[],
         scripted_requirements=set(),
         explored_requirements=set(),
+        urls_by_requirement={},
+        examined_requirements=set(),
         excluded_running=0,
         excluded_failed=0,
     )
@@ -194,6 +202,26 @@ def _collect(sprint) -> _Counted:
             )
             counted.explored_requirements.add(run.requirement_id)
             counted.findings.extend(iter_findings(exploratory_session))
+
+    for run in sprint.nonfunctional_runs:
+        if run.status != NonfunctionalRunStatus.COMPLETED:
+            if run.status == NonfunctionalRunStatus.FAILED:
+                counted.excluded_failed += 1
+            else:
+                counted.excluded_running += 1
+            continue
+        # Counted like scripted cases rather than like exploratory
+        # sessions: a URL examined twice across two runs is one thing
+        # examined, and a run that re-walked the same feature has not
+        # covered more of it.
+        urls = counted.urls_by_requirement.setdefault(run.requirement_id, set())
+        for target in run.targets:
+            if target.status != NonfunctionalChildStatus.COMPLETED:
+                continue
+            urls.add(target.url)
+        if urls:
+            counted.examined_requirements.add(run.requirement_id)
+        counted.findings.extend(iter_findings(run))
 
     return counted
 
@@ -254,7 +282,12 @@ def _empty(sprint_id: int) -> dict:
         "executions_errored": 0,
         "exploratory_sessions": 0,
         "requirements_explored": 0,
+        "urls_examined": 0,
+        "requirements_examined": 0,
         "bug_count": 0,
+        "functional_bug_count": 0,
+        "nonfunctional_bug_count": 0,
+        "bugs_by_domain": {},
         "issue_count": 0,
         "high_severity_bug_count": 0,
         "requirements_covered": 0,
@@ -270,7 +303,18 @@ def _empty(sprint_id: int) -> dict:
 def _compute(sprint) -> dict:
     counted = _collect(sprint)
 
-    bug_groups = _group([f for f in counted.findings if f.finding_type == FindingType.BUG])
+    bugs = [f for f in counted.findings if f.finding_type == FindingType.BUG]
+    bug_groups = _group(bugs)
+    # Partitioned by pool, not re-derived from which list a row landed in:
+    # `Finding.pool` comes from `findings.RunKind`, the same place
+    # `finding_grouping` reads it, so the panel and the grouping pass cannot
+    # disagree about what a nonfunctional defect is.
+    functional_groups = [
+        group for group in bug_groups if all(f.pool == DefectPool.FUNCTIONAL for f in group)
+    ]
+    nonfunctional_groups = [
+        group for group in bug_groups if any(f.pool == DefectPool.NONFUNCTIONAL for f in group)
+    ]
     # Issues are counted raw, never grouped — see `_compute`'s sibling rule in
     # the module docstring. An issue says testing was obstructed, not that the
     # product is wrong, so "how many distinct defects" is not a question it
@@ -278,9 +322,19 @@ def _compute(sprint) -> dict:
     issue_findings = [f for f in counted.findings if f.finding_type == FindingType.ISSUE]
 
     distinct_cases = sum(len(cases) for cases in counted.cases_by_requirement.values())
-    covered = counted.scripted_requirements | counted.explored_requirements
+    covered = (
+        counted.scripted_requirements
+        | counted.explored_requirements
+        | counted.examined_requirements
+    )
 
     bug_count = len(bug_groups)
+    # The densities divide by the functional count alone (decision 12): a
+    # nonfunctional run finds violations per *page*, not per test case, so
+    # feeding them into "bugs per test case" would move a number whose
+    # denominator never saw them. The headline still reports the total —
+    # a real accessibility defect is a real defect.
+    functional_bug_count = len(functional_groups)
 
     return {
         **_empty(sprint.id),
@@ -291,7 +345,12 @@ def _compute(sprint) -> dict:
         "executions_errored": counted.executions_errored,
         "exploratory_sessions": sum(counted.sessions_by_requirement.values()),
         "requirements_explored": len(counted.explored_requirements),
+        "urls_examined": sum(len(urls) for urls in counted.urls_by_requirement.values()),
+        "requirements_examined": len(counted.examined_requirements),
         "bug_count": bug_count,
+        "functional_bug_count": functional_bug_count,
+        "nonfunctional_bug_count": len(nonfunctional_groups),
+        "bugs_by_domain": _bugs_by_domain(nonfunctional_groups),
         "issue_count": len(issue_findings),
         # A group is high-severity when *any* member reported it so — the
         # highest severity among them, mirroring how
@@ -315,12 +374,28 @@ def _compute(sprint) -> dict:
         "requirements_total": sum(
             1 for r in sprint.requirements if r.status == RequirementStatus.CONFIRMED
         ),
-        "bugs_per_requirement": _density(bug_count, len(covered)),
-        "bugs_per_test_case": _density(bug_count, distinct_cases),
+        "bugs_per_requirement": _density(functional_bug_count, len(covered)),
+        "bugs_per_test_case": _density(functional_bug_count, distinct_cases),
         "per_requirement": _per_requirement(sprint, counted, bug_groups, issue_findings, covered),
         "excluded_runs_running": counted.excluded_running,
         "excluded_runs_failed": counted.excluded_failed,
     }
+
+
+def _bugs_by_domain(nonfunctional_groups: list[list[Finding]]) -> dict[str, int]:
+    """Distinct nonfunctional defects per domain.
+
+    Keyed off the finding row rather than the normalized ``Finding``,
+    because ``domain`` is the one field only this carrier has — the shared
+    shape has nothing to say about it. A group is counted once per domain
+    it touches, which is the same rule the per-requirement breakdown uses
+    and for the same reason: a defect that spans two is genuinely in both.
+    """
+    counts: dict[str, int] = {}
+    for group in nonfunctional_groups:
+        for domain in {getattr(f.row, "domain", None) for f in group} - {None}:
+            counts[domain] = counts.get(domain, 0) + 1
+    return counts
 
 
 def _per_requirement(

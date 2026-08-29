@@ -709,8 +709,27 @@ class SprintMetricsResponse(SQLModel):
     # and a 3-step script are not the same unit.
     exploratory_sessions: int
     requirements_explored: int
+    # ── nonfunctional ──
+    # URLs, not sessions or cases: a nonfunctional run's unit of work is a
+    # page or endpoint examined, and a URL examined twice across two runs
+    # is one thing examined. Never summed with either count above.
+    urls_examined: int = 0
+    requirements_examined: int = 0
     # ── defects (distinct, after collapse) ──
+    # `bug_count` is the total and stays the headline: an accessibility
+    # violation a tool found is a real defect. The split below exists
+    # because only the functional half belongs in a density — a
+    # nonfunctional run finds violations per *page*, so dividing them by
+    # test cases moves a number whose denominator never saw them.
+    #
+    # The two halves add to the total, and a test pins that.
     bug_count: int
+    functional_bug_count: int = 0
+    nonfunctional_bug_count: int = 0
+    # Distinct nonfunctional defects per domain (accessibility / security).
+    # Performance is absent by design and not by omission: it is measured
+    # and stored, never judged, so it produces no defect to count.
+    bugs_by_domain: dict[str, int] = {}
     issue_count: int
     # A group's severity is the **highest** among its members, mirroring
     # how ``finding_dedup.elect_representative`` picks the report that
@@ -730,7 +749,8 @@ class SprintMetricsResponse(SQLModel):
     requirements_covered: int
     requirements_total: int
     # None when the denominator is zero, so the UI renders "—" and there is
-    # no divide guard in TSX.
+    # no divide guard in TSX. Both divide `functional_bug_count`, not
+    # `bug_count` — see the note on the split above.
     bugs_per_requirement: float | None = None
     bugs_per_test_case: float | None = None
     # ── breakdown ──

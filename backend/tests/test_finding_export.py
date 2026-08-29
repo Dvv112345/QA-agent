@@ -16,6 +16,7 @@ from backend.models.database import (
     DefectGroup,
     DefectGroupTicket,
     ExploratoryRunStatus,
+    FindingType,
     IssueTrackerConfig,
     RequirementStatus,
     TestCaseExecutionStatus,
@@ -961,3 +962,94 @@ def test_duplicates_contribute_no_attachment(db_session, tracker, tmp_path):
     finding_export.export_findings(db_session, run)
 
     assert len(tracker.attachments) == 1
+
+
+# ── The third run mode ════════════════════════════════════════════════
+
+
+def _nonfunctional_run(db_session, *, export_findings=True, finding_count=1, **finding_kwargs):
+    from backend.models.database import NonfunctionalRunStatus
+    from backend.tests.test_nonfunctional_models import (
+        _seed_nonfunctional_finding,
+        _seed_nonfunctional_run,
+        _seed_nonfunctional_target,
+    )
+
+    sprint = _seed_sprint(db_session)
+    _seed_environment(db_session, sprint)
+    _seed_tracker(db_session, sprint)
+    requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+    run = _seed_nonfunctional_run(
+        db_session,
+        sprint,
+        requirement,
+        status=NonfunctionalRunStatus.COMPLETED,
+        export_findings=export_findings,
+    )
+    target = _seed_nonfunctional_target(db_session, run)
+    for index in range(finding_count):
+        _seed_nonfunctional_finding(db_session, target, position=index, **finding_kwargs)
+    db_session.refresh(run)
+    return sprint, run
+
+
+class TestNonfunctionalExport:
+    """The gap the plan found: `_spec_for` had no branch and said nothing."""
+
+    def test_a_nonfunctional_runs_bugs_reach_the_tracker(self, db_session, tracker):
+        """Through the **real** `_spec_for` — not a monkeypatched export."""
+        _sprint, run = _nonfunctional_run(db_session)
+
+        outcome = finding_export.export_findings(db_session, run)
+
+        assert outcome.filed == 1
+        assert len(tracker.created) == 1
+        _config, report, context = tracker.created[0]
+        assert "Images have no alternative text" in report.title
+        assert context.source_kind == "nonfunctional"
+        db_session.expire_all()
+        finding = db_session.get(type(run.targets[0].findings[0]), run.targets[0].findings[0].id)
+        assert finding.tracker_issue_key
+
+    def test_the_run_label_names_the_mode(self, db_session, tracker):
+        _sprint, run = _nonfunctional_run(db_session)
+
+        finding_export.export_findings(db_session, run)
+
+        context = tracker.created[0][2]
+        assert context.run_label == f"Nonfunctional run {run.id}"
+        # The URL is the source label here — a rule and the page it broke
+        # on is the whole address of a nonfunctional defect.
+        assert context.source_label.startswith("https://")
+
+    def test_the_toggle_governs_the_automatic_half(self, db_session, tracker):
+        _sprint, run = _nonfunctional_run(db_session, export_findings=False)
+
+        outcome = finding_export.export_findings(db_session, run)
+
+        assert outcome.filed == 0
+        assert tracker.created == []
+
+    def test_requested_bypasses_the_toggle(self, db_session, tracker):
+        _sprint, run = _nonfunctional_run(db_session, export_findings=False)
+
+        outcome = finding_export.export_findings(db_session, run, requested=True)
+
+        assert outcome.filed == 1
+
+    def test_an_issue_finding_is_never_filed(self, db_session, tracker):
+        _sprint, run = _nonfunctional_run(db_session, finding_type=FindingType.ISSUE)
+
+        outcome = finding_export.export_findings(db_session, run)
+
+        assert outcome.filed == 0
+        assert tracker.created == []
+
+    def test_two_findings_of_one_rule_file_one_ticket(self, db_session, tracker):
+        """The deterministic prefilter collapses identical text."""
+        _sprint, run = _nonfunctional_run(db_session, finding_count=2)
+
+        outcome = finding_export.export_findings(db_session, run)
+
+        assert outcome.filed == 1
+        assert len(tracker.created) == 1
