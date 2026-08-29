@@ -86,19 +86,27 @@ class StorageService:
         return os.path.abspath(prd_path)
 
     def store_screenshot(
-        self, png: bytes, directory: str, session_id: int, position: int
+        self, png: bytes, directory: str, kind: str, owner_id: int, position: int
     ) -> str | None:
-        """Persist an exploratory finding's screenshot if offline mode is active.
+        """Persist a finding's screenshot if offline mode is active.
 
         Returns the path, or ``None`` when ``STORE_OFFLINE`` is disabled — in
         which case findings simply carry no screenshot.  That is the normal
         outcome for that setting, not an error: callers must treat ``None`` as
         "no image available" rather than a failure.
+
+        ``kind`` is part of the key, not decoration.  Two different carriers
+        own screenshots now — an exploratory session and a nonfunctional
+        target — and their ids are independent sequences, so exploratory
+        session 7 and nonfunctional target 7 in one sprint would otherwise
+        write the *same file*.  The second wins, and the screenshot endpoint
+        then serves one carrier's image as evidence for the other's bug.
+        Wrong evidence on a bug report is worse than none.
         """
         if not self._offline:
             return None
 
-        session_dir = os.path.join(self._base, directory, "exploratory", f"session_{session_id}")
+        session_dir = os.path.join(self._base, directory, kind, f"session_{owner_id}")
         os.makedirs(session_dir, exist_ok=True)
 
         screenshot_path = os.path.join(session_dir, f"finding_{position}.png")

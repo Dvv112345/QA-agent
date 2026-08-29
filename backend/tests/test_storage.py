@@ -59,7 +59,9 @@ class TestStorePrd:
 
 class TestStoreScreenshot:
     def test_writes_under_session_directory(self, offline_service, tmp_path):
-        path = offline_service.store_screenshot(b"PNGDATA", "sprint-1", session_id=12, position=3)
+        path = offline_service.store_screenshot(
+            b"PNGDATA", "sprint-1", "exploratory", owner_id=12, position=3
+        )
 
         assert path is not None
         assert os.path.isfile(path)
@@ -67,13 +69,28 @@ class TestStoreScreenshot:
         with open(path, "rb") as fh:
             assert fh.read() == b"PNGDATA"
 
+    def test_the_same_owner_id_under_two_kinds_writes_two_files(self, offline_service):
+        """`kind` is part of the key: id sequences are independent per carrier.
+
+        Without it, exploratory session 7 and nonfunctional target 7 in one
+        sprint collide and one serves the other's image as evidence.
+        """
+        exploratory = offline_service.store_screenshot(b"A", "sprint-1", "exploratory", 7, 0)
+        nonfunctional = offline_service.store_screenshot(b"B", "sprint-1", "nonfunctional", 7, 0)
+
+        assert exploratory != nonfunctional
+        with open(exploratory, "rb") as fh:
+            assert fh.read() == b"A"
+        with open(nonfunctional, "rb") as fh:
+            assert fh.read() == b"B"
+
     def test_returns_none_when_offline_disabled(self, online_service):
         """STORE_OFFLINE=false means findings simply carry no screenshot.
 
         That is the documented outcome of the setting, not a failure — the
         caller must persist the finding regardless.
         """
-        assert online_service.store_screenshot(b"PNGDATA", "sprint-1", 12, 0) is None
+        assert online_service.store_screenshot(b"PNGDATA", "sprint-1", "exploratory", 12, 0) is None
 
 
 class TestConstruction:

@@ -6,6 +6,8 @@ handling, the never-raise contract) and manual e2e verifies that the
 Playwright calls underneath actually drive a page.
 """
 
+import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -578,3 +580,301 @@ class TestLifecycle:
             raise RuntimeError("session body blew up")
 
         assert closed == ["browser", "playwright"]
+
+
+# ── Nonfunctional extensions ══════════════════════════════════════════
+
+
+class _FakeRequest:
+    def __init__(self, url, resource_type="xhr"):
+        self.url = url
+        self.resource_type = resource_type
+
+    def is_navigation_request(self):
+        return self.resource_type == "document"
+
+
+class _FakeResponse:
+    def __init__(self, url, status=200, headers=None, resource_type="document"):
+        self.url = url
+        self.status = status
+        self.headers = headers or {}
+        self.request = _FakeRequest(url, resource_type)
+
+
+class TestOnNavigatedHook:
+    def _session_with_hook(self, page, **kwargs):
+        calls: list[tuple[str, float]] = []
+
+        def hook(url, deadline):
+            calls.append((url, deadline))
+            return "Examined."
+
+        session = _session(page, on_navigated=hook, **kwargs)
+        return session, calls
+
+    def test_fires_once_on_a_real_url_change(self):
+        page = _FakePage()
+        session, calls = self._session_with_hook(page)
+
+        result = session.navigate("https://app.test/reports")
+
+        assert [url for url, _ in calls] == ["https://app.test/reports"]
+        assert "Examined." in result
+
+    def test_does_not_fire_when_the_url_did_not_change(self):
+        page = _FakePage(url="https://app.test/reports")
+        session, calls = self._session_with_hook(page)
+
+        session.click("e3")  # no action_navigates_to — same page
+
+        assert calls == []
+
+    def test_fires_for_a_link_driven_navigation(self):
+        page = _FakePage()
+        page.action_navigates_to = "https://app.test/next"
+        session, calls = self._session_with_hook(page)
+
+        session.click("e3")
+
+        assert [url for url, _ in calls] == ["https://app.test/next"]
+
+    def test_does_not_fire_for_an_off_origin_redirect_navigate_undoes(self):
+        """Ordering is load-bearing: the catalogue must not run on a third party."""
+        page = _FakePage()
+        page.redirect_to = "https://evil.test/landed"
+        session, calls = self._session_with_hook(page)
+
+        result = session.navigate("https://app.test/redirector")
+
+        assert result.startswith("ERROR:")
+        assert calls == []
+
+    def test_a_callback_that_raises_does_not_break_the_executor(self):
+        page = _FakePage()
+        page.action_navigates_to = "https://app.test/next"
+
+        def boom(url, deadline):
+            raise OSError("No space left on device")
+
+        session = _session(page, on_navigated=boom)
+
+        result = session.click("e3")
+
+        assert isinstance(result, str)
+        assert not result.startswith("ERROR:")
+
+    def test_the_callback_is_given_a_deadline_from_the_catalogue_budget(self):
+        page = _FakePage()
+        session, calls = self._session_with_hook(page, catalogue_timeout=30)
+
+        session.navigate("https://app.test/reports")
+
+        _url, deadline = calls[0]
+        assert 0 < deadline - time.monotonic() <= 30
+
+    def test_an_overrunning_callback_is_logged_and_still_returns(self, caplog):
+        page = _FakePage()
+
+        def slow(url, deadline):
+            time.sleep(0.02)
+            return "Examined."
+
+        session = _session(page, on_navigated=slow, catalogue_timeout=0)
+
+        with caplog.at_level("WARNING"):
+            result = session.navigate("https://app.test/reports")
+
+        assert "over its 0s budget" in caplog.text
+        assert "Examined." in result
+
+    def test_a_session_without_a_hook_behaves_exactly_as_before(self):
+        page = _FakePage()
+        assert _session(page).navigate("https://app.test/x").endswith("to see the page.")
+
+
+class TestEndpointDiscovery:
+    def test_a_successful_xhr_is_captured(self):
+        session = _session(_FakePage())
+
+        session._record_request(_FakeRequest("https://app.test/api/items"))
+
+        assert session.discovered_endpoints == ["https://app.test/api/items"]
+
+    def test_a_failed_request_reaches_the_console_and_not_the_endpoint_set(self):
+        session = _session(_FakePage())
+
+        session._record_request_failure(
+            SimpleNamespace(url="https://app.test/api/items", failure="net::ERR")
+        )
+
+        assert session.discovered_endpoints == []
+        assert "request failed" in session.read_console()
+
+    def test_draining_the_console_does_not_empty_the_endpoint_set(self):
+        session = _session(_FakePage())
+        session._record_request(_FakeRequest("https://app.test/api/items"))
+        session._record_console(SimpleNamespace(type="error", text="boom"))
+
+        session.read_console()
+
+        assert session.discovered_endpoints == ["https://app.test/api/items"]
+
+    def test_documents_images_and_scripts_are_not_endpoints(self):
+        session = _session(_FakePage())
+
+        for kind in ("document", "image", "script", "stylesheet"):
+            session._record_request(_FakeRequest(f"https://app.test/{kind}", resource_type=kind))
+
+        assert session.discovered_endpoints == []
+
+    def test_off_origin_calls_are_skipped(self):
+        session = _session(_FakePage())
+
+        session._record_request(_FakeRequest("https://analytics.example.com/collect"))
+
+        assert session.discovered_endpoints == []
+
+    def test_endpoints_dedupe_and_stay_bounded(self):
+        session = _session(_FakePage())
+
+        for _ in range(3):
+            session._record_request(_FakeRequest("https://app.test/api/items#frag"))
+        for n in range(browser_session.MAX_DISCOVERED_ENDPOINTS + 10):
+            session._record_request(_FakeRequest(f"https://app.test/api/{n}"))
+
+        assert session.discovered_endpoints[0] == "https://app.test/api/items"
+        assert len(session.discovered_endpoints) == browser_session.MAX_DISCOVERED_ENDPOINTS
+
+
+class TestCheckHeaders:
+    def test_reads_the_captured_document_response(self):
+        page = _FakePage(url="https://app.test/login")
+        page.context = SimpleNamespace(
+            cookies=lambda: [
+                {"name": "session", "value": "s3cr3t", "secure": True, "httpOnly": True}
+            ]
+        )
+        session = _session(page)
+        session._record_response(_FakeResponse("https://app.test/login", 200, {"Server": "nginx"}))
+
+        outcome = session.check_headers()
+
+        assert outcome.ok
+        assert outcome.data["status"] == 200
+        assert outcome.data["headers"] == {"Server": "nginx"}
+        assert outcome.data["cookies"] == [
+            {"name": "session", "secure": True, "httpOnly": True, "sameSite": None}
+        ]
+        # Names and flags only — the value never leaves the browser.
+        assert "s3cr3t" not in json.dumps(outcome.data)
+
+    def test_no_captured_response_is_an_error_rather_than_a_clean_read(self):
+        page = _FakePage(url="https://app.test/spa-route")
+        session = _session(page)
+
+        outcome = session.check_headers()
+
+        assert not outcome.ok
+        assert "no document response" in outcome.error
+
+    def test_a_body_sample_is_read_only_for_an_error_response(self):
+        page = _FakePage(url="https://app.test/boom")
+        page.context = SimpleNamespace(cookies=lambda: [])
+        page.content = lambda: "Traceback (most recent call last):"
+        session = _session(page)
+
+        session._record_response(_FakeResponse("https://app.test/boom", 500))
+        assert "Traceback" in session.check_headers().data["body_sample"]
+
+        session._record_response(_FakeResponse("https://app.test/boom", 200))
+        assert session.check_headers().data["body_sample"] == ""
+
+
+class TestAccessibilityAndPerformance:
+    def test_a_refused_axe_run_returns_an_outcome_rather_than_raising(self, monkeypatch):
+        import sys
+
+        class _Axe:
+            def run(self, page):
+                raise RuntimeError("Execution context was destroyed")
+
+        monkeypatch.setitem(
+            sys.modules, "axe_playwright_python.sync_playwright", SimpleNamespace(Axe=_Axe)
+        )
+
+        outcome = _session(_FakePage()).scan_accessibility()
+
+        assert not outcome.ok
+        assert "axe could not run" in outcome.error
+
+    def test_performance_timings_come_back_as_data(self):
+        page = _FakePage()
+        page.evaluate = lambda script: {"ttfb_ms": 12, "load_ms": 340}
+        session = _session(page)
+
+        outcome = session.measure_performance()
+
+        assert outcome.ok
+        assert outcome.data["load_ms"] == 340
+
+    def test_an_unreadable_page_reports_failed_rather_than_zero(self):
+        page = _FakePage()
+
+        def boom(script):
+            raise PlaywrightError("Execution context was destroyed")
+
+        page.evaluate = boom
+
+        outcome = _session(page).measure_performance()
+
+        assert not outcome.ok
+
+    def test_a_strange_evaluate_result_is_an_error(self):
+        page = _FakePage()
+        page.evaluate = lambda script: "undefined"
+
+        assert not _session(page).measure_performance().ok
+
+
+class TestCookiesForLoad:
+    def test_returns_name_to_value(self):
+        page = _FakePage()
+        page.context = SimpleNamespace(
+            cookies=lambda: [{"name": "session", "value": "abc"}, {"name": "", "value": "x"}]
+        )
+
+        assert _session(page).cookies_for_load() == {"session": "abc"}
+
+    def test_a_browser_that_cannot_answer_gives_no_cookies(self):
+        page = _FakePage()
+
+        assert _session(page).cookies_for_load() == {}
+
+    def test_cookie_values_never_appear_in_an_executor_return_string(self):
+        page = _FakePage(url="https://app.test/x")
+        page.context = SimpleNamespace(cookies=lambda: [{"name": "s", "value": "s3cr3t"}])
+        session = _session(page)
+
+        returned = " ".join(
+            [
+                session.snapshot(),
+                session.navigate("https://app.test/y"),
+                session.click("e3"),
+                session.read_console(),
+            ]
+        )
+
+        assert "s3cr3t" not in returned
+
+
+class TestNonfunctionalRegistry:
+    def test_it_omits_record_finding(self):
+        registry = _session(_FakePage()).nonfunctional_tool_registry()
+
+        assert "record_finding" not in registry
+        assert "navigate" in registry
+        assert "snapshot" in registry
+
+    def test_the_exploratory_registry_is_untouched(self):
+        assert "record_finding" in _session(_FakePage()).tool_registry()
