@@ -64,6 +64,7 @@ class Sprint(SQLModel, table=True):
     )
     test_runs: list["TestRun"] = Relationship(back_populates="sprint")
     exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="sprint")
+    nonfunctional_runs: list["NonfunctionalRun"] = Relationship(back_populates="sprint")
     # The sprint's distinct defects. Deliberately *not* eager-loaded by the
     # metrics endpoint: it counts `defect_group_id` on rows it already
     # loads and never dereferences one, so the panel needs counts rather
@@ -164,6 +165,17 @@ class Sprint(SQLModel, table=True):
         """Whether at least one exploratory run has been started for this sprint."""
         return any(self.exploratory_runs)
 
+    @property
+    def has_nonfunctional_runs(self) -> bool:
+        """Whether at least one nonfunctional run has been started for this sprint.
+
+        A property rather than something the route composes, so it coerces
+        straight off the row like its two siblings. Not a gate: the run
+        stage's gate is unchanged, and this only drives the third list's
+        empty state.
+        """
+        return any(self.nonfunctional_runs)
+
 
 class RequirementStatus(str, Enum):
     """Lifecycle status of a requirement's clarity analysis."""
@@ -234,6 +246,7 @@ class Requirement(SQLModel, table=True):
     )
     test_executions: list["TestExecution"] = Relationship(back_populates="requirement")
     exploratory_runs: list["ExploratoryRun"] = Relationship(back_populates="requirement")
+    nonfunctional_runs: list["NonfunctionalRun"] = Relationship(back_populates="requirement")
 
     @property
     def clarification_cap_reached(self) -> bool:
@@ -576,6 +589,24 @@ class FindingSeverity(str, Enum):
         return value if value in {member.value for member in cls} else cls.MEDIUM.value
 
 
+class DefectPool(str, Enum):
+    """Which pool of distinct defects a group belongs to.
+
+    Functional bugs (a feature is wrong) and nonfunctional ones (a rule a
+    tool checks was broken) are never the same defect, and grouping them
+    together would ask an LLM to decide whether "login rejects a valid
+    password" and "the login button has no accessible name" describe one
+    problem. They do not, and the answer would not be stable.
+
+    Kept as a column on the group rather than derived from its members at
+    read time: ``finding_grouping`` filters the known-defect read by it
+    before the LLM sees anything, so it has to be queryable.
+    """
+
+    FUNCTIONAL = "functional"
+    NONFUNCTIONAL = "nonfunctional"
+
+
 class DefectGroup(SQLModel, table=True):
     """One distinct defect in a sprint — what several findings describe.
 
@@ -606,6 +637,13 @@ class DefectGroup(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    # Which pool this defect belongs to. Indexed because every grouping
+    # pass filters the sprint's known defects by it before matching.
+    # Rows written before this column existed are backfilled to
+    # `functional` by a migration — a NULL here would drop the group out
+    # of every known-defect read and silently re-open a defect that
+    # already exists.
+    pool: str = Field(default=DefectPool.FUNCTIONAL, index=True)
     title: str
     expected: str
     actual: str
@@ -1376,6 +1414,371 @@ class ExploratoryFinding(SQLModel, table=True):
         and the image is served by its own endpoint. Clients only need to
         know whether to ask for it.
         """
+        return self.screenshot_path is not None
+
+
+# ── Nonfunctional testing ─────────────────────────────────────────────
+#
+# The third run mode. A run covers one requirement, drives a real browser
+# through the approved plan's steps, and runs a fixed catalogue —
+# accessibility, single-request performance, passive security — at every
+# URL it lands on. Approved load profiles then run last.
+#
+# The oracle is inverted relative to the other two modes: the *tools*
+# decide what is a violation and how severe it is, and the model only
+# navigates and writes prose. That is why nothing below has a column an
+# LLM verdict could land in.
+
+
+class NonfunctionalRunStatus(str, Enum):
+    """Lifecycle of one requirement's nonfunctional run.
+
+    The same four states as ``ExploratoryRunStatus``, for the same reason:
+    the run is the row an RQ job operates on.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class NonfunctionalChildStatus(str, Enum):
+    """Outcome of one target or one load profile within a run.
+
+    Shared by both child types because they mean the same thing on each:
+    ``ERROR`` is the machinery breaking, ``SKIPPED`` is never reached at
+    all — written only by ``services/finalization.py``, exactly like its
+    two older twins.
+
+    One caution specific to a load profile: ``SKIPPED`` there does **not**
+    mean "safe to re-run". A profile that already put traffic on the host
+    is never re-sent whatever its status says; the invariant is carried by
+    ``NonfunctionalLoadProfile.requests_sent``, not by this column.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
+
+class NonfunctionalDomain(str, Enum):
+    """What the catalogue examines at each target.
+
+    Fixed and small by design: every selected domain runs at every target,
+    so "we did not look" is never a possible reading of a clean result.
+    """
+
+    ACCESSIBILITY = "accessibility"
+    PERFORMANCE = "performance"
+    SECURITY = "security"
+
+
+class DomainOutcome(str, Enum):
+    """What one domain found at one target — four-valued, not two.
+
+    ``NOT_APPLICABLE`` and ``FAILED_TO_RUN`` exist because collapsing
+    either into ``CLEAN`` states something false: accessibility does not
+    apply to a JSON endpoint, and an axe injection a strict CSP refused
+    found nothing *because it never ran*. A recorded outcome, never a
+    silent skip.
+    """
+
+    CLEAN = "clean"
+    VIOLATIONS = "violations"
+    NOT_APPLICABLE = "not_applicable"
+    FAILED_TO_RUN = "failed_to_run"
+
+
+class TargetKind(str, Enum):
+    """Whether a target is a rendered page or an API endpoint.
+
+    Endpoints are discovered from the browser's own XHR/fetch traffic, so
+    they are URLs the application itself calls rather than anything
+    guessed or crawled.
+    """
+
+    PAGE = "page"
+    ENDPOINT = "endpoint"
+
+
+class LoadMethod(str, Enum):
+    """HTTP method a load profile may use, split by whether it is *safe*.
+
+    "Safe" is the HTTP sense: the request is a read, so repeating it two
+    thousand times changes nothing but the load. Non-safe methods change
+    data, which is why they need the disposable-environment declaration
+    and a much lower ceiling — see ``NonfunctionalRun.environment_disposable``.
+    """
+
+    GET = "GET"
+    HEAD = "HEAD"
+    OPTIONS = "OPTIONS"
+    POST = "POST"
+    PUT = "PUT"
+    PATCH = "PATCH"
+    DELETE = "DELETE"
+
+    @classmethod
+    def safe_methods(cls) -> set[str]:
+        """The read-only methods, allowed on any confirmed origin."""
+        return {cls.GET.value, cls.HEAD.value, cls.OPTIONS.value}
+
+    @classmethod
+    def is_safe(cls, method: str | None) -> bool:
+        """Whether *method* only reads. Unknown methods are **not** safe.
+
+        Resolving the doubt toward "non-safe" is the cheap mistake: it
+        costs a refusal the user can act on, where the other direction
+        costs writes against an environment nobody declared disposable.
+        """
+        return (method or "").upper() in cls.safe_methods()
+
+
+class NonfunctionalRun(SQLModel, table=True):
+    """One requirement's nonfunctional run — list entity and RQ job row in one.
+
+    Fuses the two levels exactly as ``ExploratoryRun`` does, and for the
+    same reason: a run covers one requirement, so there is nothing above it
+    to group.
+
+    Carries **two** child row types rather than one — the targets it
+    examined and the load profiles it applied — which is what
+    ``finalization.RowSpec.child_specs`` was widened for.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    sprint_id: int = Field(foreign_key="sprint.id", index=True)
+    requirement_id: int = Field(foreign_key="requirement.id", index=True)
+    # What this run examined against, copied at creation — see
+    # ExploratoryRun's identical trio.
+    requirement_revision: int = Field(default=0)
+    plan_revision: int = Field(default=0)
+    env_revision: int = Field(default=0)
+    # Comma-joined env-var names holding the application URLs this run may
+    # reach. Also the coverage floor: every one of them is seeded as a
+    # target before the model navigates anywhere. Comma-joined for the same
+    # reason as ExploratoryRun.base_url_env_vars_csv.
+    base_url_env_vars_csv: str
+    # Comma-joined NonfunctionalDomain values the user approved. Every one
+    # of them runs at every target.
+    domains_csv: str
+    # Whether the user declared this environment disposable — the gate on
+    # non-safe load methods, and the only thing that unlocks the second,
+    # lower ceiling tier. Stored on the run because it describes what this
+    # run was permitted to do, which a later config change must not rewrite.
+    environment_disposable: bool = Field(default=False)
+    # Best-effort synthesis, recoverable via the summarize endpoint. See
+    # ExploratoryRun.summary — the findings are the deliverable, not this.
+    summary: str | None = Field(default=None)
+    # See TestRun.export_findings — decided at run start, read at completion.
+    export_findings: bool = Field(default=False)
+    # ── machinery (identical to ExploratoryRun) ──
+    status: str = Field(default=NonfunctionalRunStatus.PENDING)
+    retry_count: int = Field(default=0)
+    job_id: str | None = Field(default=None)
+    last_heartbeat: datetime | None = Field(default=None)
+    error: str | None = Field(default=None)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    sprint: Sprint | None = Relationship(back_populates="nonfunctional_runs")
+    requirement: Optional["Requirement"] = Relationship(back_populates="nonfunctional_runs")
+    targets: list["NonfunctionalTarget"] = Relationship(
+        back_populates="nonfunctional_run",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "NonfunctionalTarget.position",
+        },
+    )
+    load_profiles: list["NonfunctionalLoadProfile"] = Relationship(
+        back_populates="nonfunctional_run",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "NonfunctionalLoadProfile.position",
+        },
+    )
+
+    @property
+    def base_url_env_vars(self) -> list[str]:
+        """Decoded ``base_url_env_vars_csv`` — see ``ExploratoryRun``'s twin."""
+        return [name for name in self.base_url_env_vars_csv.split(",") if name]
+
+    @property
+    def domains(self) -> list[str]:
+        """Decoded ``domains_csv`` — the single accessor for the domain list."""
+        return [domain for domain in self.domains_csv.split(",") if domain]
+
+    @property
+    def requirement_name(self) -> str:
+        """Name of the requirement this run examines (serialized for run cards)."""
+        return self.requirement.name if self.requirement is not None else ""
+
+    @property
+    def requirement_deleted(self) -> bool:
+        """See ``TestExecution.requirement_deleted`` — badge wording only."""
+        return self.requirement is None or self.requirement.archived
+
+    @property
+    def outdated_reasons(self) -> list[str]:
+        """Upstream artifacts that changed since this run executed."""
+        return outdated_reasons(
+            self.requirement,
+            self.sprint.test_environment if self.sprint is not None else None,
+            requirement_revision=self.requirement_revision,
+            plan_revision=self.plan_revision,
+            env_revision=self.env_revision,
+        )
+
+    @property
+    def outdated(self) -> bool:
+        """See ``TestExecution.outdated`` — backend-only, gates restart."""
+        return bool(self.outdated_reasons)
+
+    @property
+    def bug_findings(self) -> list["NonfunctionalFinding"]:
+        """Every finding in this run reporting the product being wrong."""
+        # See TestRun.bug_findings for why this import is deferred.
+        from backend.services.findings import iter_findings
+
+        return [finding.row for finding in iter_findings(self, bugs_only=True)]
+
+
+class NonfunctionalTarget(SQLModel, table=True):
+    """One URL the run examined, and what each domain found there.
+
+    A child row with its own status for resumability but no job machinery,
+    exactly like ``ExploratorySession``.
+
+    The per-domain outcome columns are the point of the table: decision 6
+    says the full catalogue runs at every target, so each domain owes an
+    answer here whether or not it found anything. A NULL outcome means the
+    target was never reached, not that the domain was clean.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    nonfunctional_run_id: int = Field(foreign_key="nonfunctionalrun.id", index=True)
+    position: int
+    url: str
+    kind: str = Field(default=TargetKind.PAGE)
+    status: str = Field(default=NonfunctionalChildStatus.PENDING)
+    error: str | None = Field(default=None)
+    # DomainOutcome per domain — None when that domain was not selected for
+    # the run, so "not selected" and "found nothing" stay distinguishable.
+    a11y_outcome: str | None = Field(default=None)
+    security_outcome: str | None = Field(default=None)
+    performance_outcome: str | None = Field(default=None)
+    # Measured performance for this target: timings and Core Web Vitals.
+    # Data only — decision 11 keeps performance out of findings entirely,
+    # so nothing here ever becomes a defect or a ticket.
+    metrics_json: str | None = Field(default=None)
+    # One page screenshot, taken while the page is still on screen. Every
+    # finding from this target copies the path: findings are created later,
+    # at triage, when the page is long gone.
+    screenshot_path: str | None = Field(default=None)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    nonfunctional_run: Optional["NonfunctionalRun"] = Relationship(back_populates="targets")
+    findings: list["NonfunctionalFinding"] = Relationship(
+        back_populates="target",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "NonfunctionalFinding.position",
+        },
+    )
+
+
+class NonfunctionalLoadProfile(SQLModel, table=True):
+    """One approved load profile and the traffic it actually applied.
+
+    The second child type, and the one with a rule no other row in this
+    application has: **a profile that already sent traffic is never
+    re-sent**, whatever its status says. A restart re-examines targets
+    freely — re-reading a page costs nothing — but re-issuing a profile
+    duplicates real requests against someone's environment, and for a
+    non-safe method that means duplicated writes. ``requests_sent > 0`` is
+    the invariant; ``status`` is not.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    nonfunctional_run_id: int = Field(foreign_key="nonfunctionalrun.id", index=True)
+    position: int
+    url: str
+    method: str = Field(default=LoadMethod.GET)
+    # Request body, with `$NAME` placeholders resolved against the sprint's
+    # env vars **inside** the load runner. Stored with the placeholders, so
+    # no credential ever lands in this column.
+    body: str | None = Field(default=None)
+    concurrency: int = Field(default=1)
+    duration_seconds: int = Field(default=10)
+    total_request_cap: int = Field(default=100)
+    status: str = Field(default=NonfunctionalChildStatus.PENDING)
+    # How many requests actually reached the host. The never-re-send
+    # invariant reads this and nothing else.
+    requests_sent: int = Field(default=0)
+    # Aggregated LoadResult — percentiles, throughput, status distribution.
+    # Data only, exactly like NonfunctionalTarget.metrics_json.
+    results_json: str | None = Field(default=None)
+    error: str | None = Field(default=None)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    nonfunctional_run: Optional["NonfunctionalRun"] = Relationship(back_populates="load_profiles")
+
+
+class NonfunctionalFinding(SQLModel, table=True):
+    """One violation a tool found at one target.
+
+    Deliberately keyed by ``(rule, url)`` upstream: every node that broke a
+    rule on a page is listed *inside* one finding rather than filed as
+    twenty. ``severity`` comes from axe's own ``impact`` or the passive
+    security table — never from a model, which is why the triage response
+    schema has no severity field at all.
+
+    ``rule`` and ``domain`` are what make a finding traceable back to the
+    tool that produced it; everything else is the shared ``FindingBase``
+    shape the one frontend card renders.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    nonfunctional_target_id: int = Field(foreign_key="nonfunctionaltarget.id", index=True)
+    position: int
+    domain: str  # NonfunctionalDomain value
+    rule: str  # axe rule id, or the passive-security rule name
+    finding_type: str  # FindingType value
+    severity: str  # FindingSeverity value
+    title: str
+    steps_to_reproduce: str
+    expected: str
+    actual: str
+    # Copied from the target's page screenshot — see NonfunctionalTarget.
+    screenshot_path: str | None = Field(default=None)
+    environment: str | None = Field(default=None)
+    # ── issue-tracker receipt — see TestCaseExecution's identical block ──
+    tracker_issue_key: str | None = Field(default=None)
+    tracker_issue_url: str | None = Field(default=None)
+    tracker_error: str | None = Field(default=None)
+    tracker_target: str | None = Field(default=None)
+    tracker_is_duplicate: bool = Field(default=False)
+    defect_group_id: int | None = Field(default=None, foreign_key="defectgroup.id", index=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+    target: Optional["NonfunctionalTarget"] = Relationship(back_populates="findings")
+
+    @property
+    def has_screenshot(self) -> bool:
+        """See ``ExploratoryFinding.has_screenshot`` — the path is never serialized."""
         return self.screenshot_path is not None
 
 

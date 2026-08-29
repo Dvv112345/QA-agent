@@ -178,10 +178,12 @@ _SPRINT_LOAD_OPTIONS = (
     selectinload(Sprint.all_requirements).selectinload(Requirement.test_plan),
     selectinload(Sprint.test_environment),
     selectinload(Sprint.repo),
-    # `has_test_runs` / `has_exploratory_runs` ask only whether the
-    # collection is non-empty, so neither chain needs its children here.
+    # `has_test_runs` / `has_exploratory_runs` / `has_nonfunctional_runs`
+    # ask only whether the collection is non-empty, so no chain needs its
+    # children here.
     selectinload(Sprint.test_runs),
     selectinload(Sprint.exploratory_runs),
+    selectinload(Sprint.nonfunctional_runs),
 )
 
 

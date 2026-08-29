@@ -64,6 +64,7 @@ class SprintResponse(SQLModel):
     test_plans_complete: bool = False
     has_test_runs: bool = False
     has_exploratory_runs: bool = False
+    has_nonfunctional_runs: bool = False
 
 
 class SprintUpdateRequest(SQLModel):
@@ -485,6 +486,173 @@ class ExploratoryRunCreateRequest(SQLModel):
     requirement_id: int
     charters: list[CharterDraft]
     base_url_env_vars: list[str]
+    # See TestRunCreateRequest.export_findings.
+    export_findings: bool = False
+
+
+# ── Nonfunctional testing ─────────────────────────────────────────────
+
+
+class NonfunctionalFindingResponse(FindingBase):
+    """One tool-found violation, in the shape the shared card renders.
+
+    ``domain`` and ``rule`` are the two fields the other two finding
+    sources have nothing to say about: they name the tool and the check
+    that produced this, which is what makes a nonfunctional finding
+    traceable rather than merely asserted.
+    """
+
+    id: int
+    position: int
+    domain: str
+    rule: str
+    url: str = ""
+    has_screenshot: bool = False
+    created_at: datetime
+
+
+class NonfunctionalTargetResponse(SQLModel):
+    """One URL and what each selected domain found there.
+
+    The three outcome fields are ``None`` when the domain was not selected
+    for the run — "not selected", "clean" and "could not run" are three
+    different answers and the panel says which.
+    """
+
+    id: int
+    position: int
+    url: str
+    kind: str
+    status: str
+    error: str | None = None
+    a11y_outcome: str | None = None
+    security_outcome: str | None = None
+    performance_outcome: str | None = None
+    # Parsed ``metrics_json`` — timings and Core Web Vitals. Data only:
+    # performance never becomes a finding, a defect, or a ticket.
+    metrics: dict = {}
+    finding_count: int = 0
+    updated_at: datetime
+
+
+class NonfunctionalLoadProfileResponse(SQLModel):
+    """One profile and the traffic it actually applied.
+
+    ``body`` is deliberately echoed with its ``$NAME`` placeholders
+    unresolved — that is how it is stored, and resolution happens inside
+    the load runner precisely so no resolved value is ever serialized.
+    """
+
+    id: int
+    position: int
+    url: str
+    method: str
+    body: str | None = None
+    concurrency: int
+    duration_seconds: int
+    total_request_cap: int
+    status: str
+    requests_sent: int = 0
+    # Parsed ``results_json`` — percentiles, throughput, status counts.
+    results: dict = {}
+    error: str | None = None
+    updated_at: datetime
+
+
+class NonfunctionalRunResponse(ExportRollup, OutdatedFields):
+    """List-page shape — aggregates computed at response time, never stored."""
+
+    id: int
+    sprint_id: int
+    requirement_id: int
+    requirement_name: str
+    status: str
+    domains: list[str] = []
+    environment_disposable: bool = False
+    summary: str | None = None
+    error: str | None = None
+    target_count: int = 0
+    load_profile_count: int = 0
+    bug_count: int = 0
+    issue_count: int = 0
+    high_severity_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class NonfunctionalRunDetailResponse(NonfunctionalRunResponse):
+    """The list shape plus what only the detail page needs.
+
+    Inherits rather than restating — see ``ExploratoryRunDetailResponse``.
+    """
+
+    base_url_env_vars: list[str] = []
+    targets: list[NonfunctionalTargetResponse] = []
+    load_profiles: list[NonfunctionalLoadProfileResponse] = []
+    findings: list[NonfunctionalFindingResponse] = []
+
+
+class LoadProfileDraft(SQLModel):
+    """One proposed load profile — request and response shape both.
+
+    ``rationale`` is the model's, and travels one way: it explains the
+    proposal to the user and is never read back as a permission.
+    """
+
+    url: str
+    method: str = "GET"
+    body: str | None = None
+    concurrency: int = 1
+    duration_seconds: int = 10
+    total_request_cap: int = 100
+    rationale: str = ""
+
+
+class DomainProposal(SQLModel):
+    """One domain the model thinks applies here, and why."""
+
+    domain: str
+    applicable: bool = True
+    rationale: str = ""
+
+
+class NonfunctionalPlanDraftResponse(SQLModel):
+    """What the setup modal reviews before a run exists.
+
+    Everything here is a *proposal*: the create route re-validates all of
+    it as user input, because by then it has been through a form.
+    """
+
+    requirement_id: int
+    requirement_name: str
+    domains: list[DomainProposal] = []
+    base_url_env_vars: list[str] = []
+    load_profiles: list[LoadProfileDraft] = []
+    # Ceilings for each tier, so the modal never restates a config literal
+    # (Convention #10). The unsafe pair is what the disposable declaration
+    # unlocks.
+    max_concurrency: int = 0
+    max_duration_seconds: int = 0
+    max_total_requests: int = 0
+    unsafe_max_concurrency: int = 0
+    unsafe_max_total_requests: int = 0
+    safe_methods: list[str] = []
+
+
+class NonfunctionalPlanGenerateRequest(SQLModel):
+    requirement_id: int
+
+
+class NonfunctionalRunCreateRequest(SQLModel):
+    requirement_id: int
+    domains: list[str]
+    base_url_env_vars: list[str]
+    load_profiles: list[LoadProfileDraft] = []
+    # The user's declaration that this environment can be damaged and
+    # rebuilt. The only thing that permits a non-safe load method, and
+    # stored on the run so a later change cannot rewrite what this run was
+    # allowed to do.
+    environment_disposable: bool = False
     # See TestRunCreateRequest.export_findings.
     export_findings: bool = False
 
