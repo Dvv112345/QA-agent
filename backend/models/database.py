@@ -1580,7 +1580,7 @@ class CicdExportItem(SQLModel, table=True):
     """One test case shipped by one export — a receipt, not a work unit.
 
     Written only after the commit succeeds, which is why ``CICD_EXPORT_SPEC``
-    carries no ``child_spec``: an export that fails part-way leaves no items
+    carries no ``child_specs``: an export that fails part-way leaves no items
     to strand.
 
     ``case_title`` and ``requirement_name`` are **copied** rather than

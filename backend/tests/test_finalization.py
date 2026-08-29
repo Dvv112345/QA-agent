@@ -14,6 +14,7 @@ assertions describe the behaviour the tasks actually get.
 
 import pytest
 
+import backend.services.finalization as finalization
 from backend.config import MAX_AUTO_RETRIES
 from backend.models.database import (
     ExploratoryRun,
@@ -273,6 +274,64 @@ class TestAbandonUnreachedChildren:
 
     def test_a_none_parent_id_is_a_no_op(self, db_session):
         abandon_unreached_children(db_session, EXPLORATORY_SESSION_SPEC, None, "reason")
+
+
+class TestMultipleChildSpecs:
+    """A parent may drive more than one kind of child row.
+
+    No shipped parent does yet — a nonfunctional run walks targets *and*
+    load profiles — so the loop is pinned through a spy rather than through
+    a contrived foreign-key collision: what matters is that every spec in
+    the tuple is applied, once, on the failing branch only.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            finalization,
+            "abandon_unreached_children",
+            lambda session, spec, parent_id, reason: calls.append((spec, parent_id, reason)),
+        )
+        return calls
+
+    def _two_spec_row_spec(self):
+        return finalization.RowSpec(
+            model=TestExecution,
+            label="Two-child run",
+            pending_status=TestExecutionStatus.PENDING,
+            failed_status=TestExecutionStatus.FAILED,
+            child_specs=(TEST_CASE_SPEC, EXPLORATORY_SESSION_SPEC),
+        )
+
+    def test_fail_row_settles_both_child_types(self, db_session, monkeypatch):
+        calls = self._spy(monkeypatch)
+        execution, *_ = _execution_with_cases(db_session)
+
+        fail_row(db_session, self._two_spec_row_spec(), execution, "Superseded.")
+
+        assert [spec for spec, _, _ in calls] == [TEST_CASE_SPEC, EXPLORATORY_SESSION_SPEC]
+        assert {parent_id for _, parent_id, _ in calls} == {execution.id}
+
+    def test_record_failure_settles_both_only_at_the_cap(self, db_session, monkeypatch):
+        calls = self._spy(monkeypatch)
+        spec = self._two_spec_row_spec()
+        execution, *_ = _execution_with_cases(db_session)
+
+        record_failure(db_session, spec, execution.id, RuntimeError("boom"))
+        assert calls == []  # under the cap the next attempt resumes there
+
+        db_session.expire_all()
+        row = db_session.get(TestExecution, execution.id)
+        row.retry_count = MAX_AUTO_RETRIES - 1
+        db_session.add(row)
+        db_session.commit()
+
+        record_failure(db_session, spec, execution.id, RuntimeError("boom"))
+        assert [child_spec for child_spec, _, _ in calls] == [
+            TEST_CASE_SPEC,
+            EXPLORATORY_SESSION_SPEC,
+        ]
 
 
 @pytest.mark.parametrize(

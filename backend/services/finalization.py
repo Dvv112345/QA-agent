@@ -130,9 +130,11 @@ class RowSpec:
     label: str
     pending_status: str
     failed_status: str
-    # Child rows to settle whenever this row reaches `failed_status`.
-    # None for Requirement/TestPlan, which have no children.
-    child_spec: ChildSpec | None = None
+    # Child row types to settle whenever this row reaches `failed_status`.
+    # Empty for Requirement/TestPlan, which have no children; a tuple
+    # rather than a single spec because a run may drive more than one kind
+    # of child row (a nonfunctional run walks targets *and* load profiles).
+    child_specs: tuple[ChildSpec, ...] = ()
 
 
 REQUIREMENT_SPEC = RowSpec(
@@ -154,7 +156,7 @@ TEST_EXECUTION_SPEC = RowSpec(
     label="Test execution",
     pending_status=TestExecutionStatus.PENDING,
     failed_status=TestExecutionStatus.FAILED,
-    child_spec=TEST_CASE_SPEC,
+    child_specs=(TEST_CASE_SPEC,),
 )
 
 EXPLORATORY_RUN_SPEC = RowSpec(
@@ -162,10 +164,10 @@ EXPLORATORY_RUN_SPEC = RowSpec(
     label="Exploratory run",
     pending_status=ExploratoryRunStatus.PENDING,
     failed_status=ExploratoryRunStatus.FAILED,
-    child_spec=EXPLORATORY_SESSION_SPEC,
+    child_specs=(EXPLORATORY_SESSION_SPEC,),
 )
 
-# `child_spec=None` is correct rather than an omission: a CicdExport's
+# An empty `child_specs` is correct rather than an omission: a CicdExport's
 # items are receipts written only after the commit succeeds, not work
 # units walked by a loop. A failed export has no children to strand.
 CICD_EXPORT_SPEC = RowSpec(
@@ -173,7 +175,7 @@ CICD_EXPORT_SPEC = RowSpec(
     label="CI/CD export",
     pending_status=CicdExportStatus.PENDING,
     failed_status=CicdExportStatus.FAILED,
-    child_spec=None,
+    child_specs=(),
 )
 
 
@@ -202,8 +204,8 @@ def record_failure(session: Session, spec: RowSpec, row_id: int, exc: Exception)
     if row.retry_count >= MAX_AUTO_RETRIES:
         row.status = spec.failed_status
         row.error = str(exc)[:ERROR_SUMMARY_MAX_CHARS]
-        if spec.child_spec is not None:
-            abandon_unreached_children(session, spec.child_spec, row_id, row.error)
+        for child_spec in spec.child_specs:
+            abandon_unreached_children(session, child_spec, row_id, row.error)
     else:
         # Back to pending — the reconciler re-enqueues it.
         row.status = spec.pending_status
@@ -227,8 +229,8 @@ def fail_row(session: Session, spec: RowSpec, row, error: str) -> None:
     row.last_heartbeat = None
     row.updated_at = now()
     session.add(row)
-    if spec.child_spec is not None:
-        abandon_unreached_children(session, spec.child_spec, row.id, error)
+    for child_spec in spec.child_specs:
+        abandon_unreached_children(session, child_spec, row.id, error)
     session.commit()
 
 
