@@ -11,6 +11,11 @@ import type {
   CicdExport,
   IssueTrackerConfig,
   IssueTrackerConfigInput,
+  LoadProfileDraft,
+  NonfunctionalDomain,
+  NonfunctionalPlanDraftResponse,
+  NonfunctionalRunDetailResponse,
+  NonfunctionalRunResponse,
   ReadmeStatusResponse,
   RepoResponse,
   RequirementInput,
@@ -451,6 +456,90 @@ export async function summarizeExploratoryRun(
 
 export function findingScreenshotUrl(findingId: number): string {
   return `${API_BASE}/api/exploratory-findings/${findingId}/screenshot`
+}
+
+// ── Nonfunctional testing ────────────────────────────────────────────
+
+export async function generateNonfunctionalPlan(
+  sprintId: number,
+  requirementId: number,
+): Promise<NonfunctionalPlanDraftResponse> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/nonfunctional-plan/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requirement_id: requirementId }),
+  })
+  return handleResponse<NonfunctionalPlanDraftResponse>(response)
+}
+
+export async function createNonfunctionalRun(
+  sprintId: number,
+  requirementId: number,
+  domains: NonfunctionalDomain[],
+  baseUrlEnvVars: string[],
+  loadProfiles: LoadProfileDraft[],
+  environmentDisposable: boolean,
+  exportFindings = false,
+): Promise<NonfunctionalRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/nonfunctional-runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requirement_id: requirementId,
+      domains,
+      base_url_env_vars: baseUrlEnvVars,
+      load_profiles: loadProfiles,
+      environment_disposable: environmentDisposable,
+      export_findings: exportFindings,
+    }),
+  })
+  return handleResponse<NonfunctionalRunDetailResponse>(response)
+}
+
+export async function fetchNonfunctionalRuns(
+  sprintId: number,
+): Promise<NonfunctionalRunResponse[]> {
+  const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/nonfunctional-runs`)
+  return handleResponse<NonfunctionalRunResponse[]>(response)
+}
+
+export async function fetchNonfunctionalRun(
+  runId: number,
+): Promise<NonfunctionalRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/nonfunctional-runs/${runId}`)
+  return handleResponse<NonfunctionalRunDetailResponse>(response)
+}
+
+export async function restartNonfunctionalRun(
+  runId: number,
+): Promise<NonfunctionalRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/nonfunctional-runs/${runId}/restart`, {
+    method: 'POST',
+  })
+  return handleResponse<NonfunctionalRunDetailResponse>(response)
+}
+
+export async function summarizeNonfunctionalRun(
+  runId: number,
+): Promise<NonfunctionalRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/nonfunctional-runs/${runId}/summarize`, {
+    method: 'POST',
+  })
+  return handleResponse<NonfunctionalRunDetailResponse>(response)
+}
+
+export async function exportNonfunctionalRunFindings(
+  runId: number,
+): Promise<NonfunctionalRunDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/nonfunctional-runs/${runId}/export-findings`, {
+    method: 'POST',
+  })
+  return handleResponse<NonfunctionalRunDetailResponse>(response)
+}
+
+/** Its own endpoint: nonfunctional findings are a separate carrier. */
+export function nonfunctionalFindingScreenshotUrl(findingId: number): string {
+  return `${API_BASE}/api/nonfunctional-findings/${findingId}/screenshot`
 }
 
 // ── Issue tracker ────────────────────────────────────────────────────

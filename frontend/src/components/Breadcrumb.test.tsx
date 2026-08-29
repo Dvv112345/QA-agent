@@ -98,6 +98,20 @@ const CASES: Array<{
     publishes: ['run'],
   },
   {
+    pattern: '/sprints/:id/nonfunctional-runs/:runId',
+    url: '/sprints/7/nonfunctional-runs/3',
+    chain: [
+      'Sprints',
+      'Sprint',
+      'Test Environment',
+      'Test Plans',
+      'Test Runs',
+      'Nonfunctional Run',
+    ],
+    ahead: [],
+    publishes: ['run'],
+  },
+  {
     pattern: '/sprints/:id/exploratory-sessions/:sessionId',
     url: '/sprints/7/exploratory-sessions/9',
     chain: [

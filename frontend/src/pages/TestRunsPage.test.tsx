@@ -13,6 +13,7 @@ vi.mock('../services/api', async (importOriginal) => {
     fetchTestPlans: vi.fn(),
     createTestRun: vi.fn(),
     fetchExploratoryRuns: vi.fn(),
+    fetchNonfunctionalRuns: vi.fn(),
     fetchIssueTracker: vi.fn(),
     fetchSprintMetrics: vi.fn(),
     saveIssueTracker: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../services/api', async (importOriginal) => {
 import {
   createTestRun,
   fetchExploratoryRuns,
+  fetchNonfunctionalRuns,
   fetchIssueTracker,
   fetchSprint,
   fetchSprintMetrics,
@@ -35,6 +37,7 @@ const mockFetchTestRuns = fetchTestRuns as ReturnType<typeof vi.fn>
 const mockFetchTestPlans = fetchTestPlans as ReturnType<typeof vi.fn>
 const mockCreateTestRun = createTestRun as ReturnType<typeof vi.fn>
 const mockFetchExploratoryRuns = fetchExploratoryRuns as ReturnType<typeof vi.fn>
+const mockFetchNonfunctionalRuns = fetchNonfunctionalRuns as ReturnType<typeof vi.fn>
 const mockFetchIssueTracker = fetchIssueTracker as ReturnType<typeof vi.fn>
 const mockFetchSprintMetrics = fetchSprintMetrics as ReturnType<typeof vi.fn>
 
@@ -48,7 +51,12 @@ function makeMetrics(overrides: Partial<SprintMetrics> = {}): SprintMetrics {
     executions_errored: 0,
     exploratory_sessions: 0,
     requirements_explored: 0,
+    urls_examined: 0,
+    requirements_examined: 0,
     bug_count: 0,
+    functional_bug_count: 0,
+    nonfunctional_bug_count: 0,
+    bugs_by_domain: {},
     issue_count: 0,
     high_severity_bug_count: 0,
     requirements_covered: 0,
@@ -79,6 +87,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     test_plans_complete: true,
     has_test_runs: false,
     has_exploratory_runs: false,
+    has_nonfunctional_runs: false,
     ...overrides,
   }
 }
@@ -142,6 +151,7 @@ describe('TestRunsPage', () => {
     mockFetchTestRuns.mockResolvedValue([])
     mockFetchTestPlans.mockResolvedValue([])
     mockFetchExploratoryRuns.mockResolvedValue([])
+    mockFetchNonfunctionalRuns.mockResolvedValue([])
     mockFetchIssueTracker.mockResolvedValue(null)
     mockFetchSprintMetrics.mockResolvedValue(makeMetrics())
   })
@@ -281,6 +291,7 @@ describe('TestRunsPage — exploratory list', () => {
     mockFetchTestRuns.mockResolvedValue([])
     mockFetchTestPlans.mockResolvedValue([])
     mockFetchExploratoryRuns.mockResolvedValue([])
+    mockFetchNonfunctionalRuns.mockResolvedValue([])
     mockFetchSprint.mockResolvedValue(makeSprint())
     // clearAllMocks clears calls but keeps implementations, so a config
     // set by one test would otherwise leak into the next.
@@ -473,6 +484,7 @@ describe('TestRunsPage — QA metrics panel', () => {
     mockFetchTestRuns.mockResolvedValue([])
     mockFetchTestPlans.mockResolvedValue([])
     mockFetchExploratoryRuns.mockResolvedValue([])
+    mockFetchNonfunctionalRuns.mockResolvedValue([])
     mockFetchIssueTracker.mockResolvedValue(null)
     mockFetchSprintMetrics.mockResolvedValue(makeMetrics())
   })
@@ -625,5 +637,140 @@ describe('TestRunsPage — QA metrics panel', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('TestRunsPage — nonfunctional runs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockFetchSprint.mockResolvedValue(makeSprint())
+    mockFetchTestRuns.mockResolvedValue([])
+    mockFetchTestPlans.mockResolvedValue([])
+    mockFetchExploratoryRuns.mockResolvedValue([])
+    mockFetchNonfunctionalRuns.mockResolvedValue([])
+    mockFetchIssueTracker.mockResolvedValue(null)
+    mockFetchSprintMetrics.mockResolvedValue(makeMetrics())
+  })
+
+  function makeNonfunctionalRun(overrides = {}) {
+    return {
+      id: 9,
+      sprint_id: 1,
+      requirement_id: 11,
+      requirement_name: 'Export reports',
+      status: 'completed' as const,
+      domains: ['accessibility', 'security'],
+      environment_disposable: false,
+      summary: null,
+      error: null,
+      outdated_reasons: [],
+      requirement_deleted: false,
+      target_count: 4,
+      load_profile_count: 1,
+      bug_count: 3,
+      issue_count: 0,
+      high_severity_count: 1,
+      created_at: '2026-08-29T00:00:00Z',
+      updated_at: '2026-08-29T00:00:00Z',
+      export_findings: false,
+      exported_finding_count: 0,
+      exported_issue_count: 0,
+      export_error_count: 0,
+      unexported_finding_count: 0,
+      export_groups: [],
+      ...overrides,
+    }
+  }
+
+  it('renders the third list and links to its detail page', async () => {
+    mockFetchNonfunctionalRuns.mockResolvedValue([makeNonfunctionalRun()])
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('Nonfunctional Checks')).toBeInTheDocument())
+    const link = screen.getByRole('link', { name: /Export reports/ })
+    expect(link).toHaveAttribute('href', '/sprints/1/nonfunctional-runs/9')
+    expect(screen.getByText('accessibility, security')).toBeInTheDocument()
+    expect(screen.getByText('3 bugs')).toBeInTheDocument()
+  })
+
+  it('shows an empty state when the mode has never been used', async () => {
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('No nonfunctional runs yet.')).toBeInTheDocument())
+  })
+
+  it('keeps existing nonfunctional runs visible once the gate closes again', async () => {
+    // The regression the plan named: `guarded` counted two lists, so a run
+    // of the third mode vanished behind the gate notice the moment a plan
+    // went back to draft.
+    mockFetchSprint.mockResolvedValue(makeSprint({ test_plans_complete: false }))
+    mockFetchNonfunctionalRuns.mockResolvedValue([makeNonfunctionalRun()])
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('Nonfunctional Checks')).toBeInTheDocument())
+    expect(screen.queryByText('Approve every test plan first.')).not.toBeInTheDocument()
+    // The gate is still shut, so no new run may be started.
+    expect(
+      screen.queryByRole('button', { name: 'Start nonfunctional testing' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('polls while a nonfunctional run is still working', async () => {
+    vi.useFakeTimers()
+    try {
+      mockFetchNonfunctionalRuns.mockResolvedValue([makeNonfunctionalRun({ status: 'running' })])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(mockFetchNonfunctionalRuns).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(mockFetchNonfunctionalRuns).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps polling through a nonfunctional export window', async () => {
+    vi.useFakeTimers()
+    try {
+      // Terminal, but the tickets have not landed — `EXPORT_GRACE_TICKS`
+      // has to cover the third mode too, or the bug count on the panel
+      // stops one poll short of the truth.
+      mockFetchNonfunctionalRuns.mockResolvedValue([
+        makeNonfunctionalRun({ export_findings: true, unexported_finding_count: 2 }),
+      ])
+      renderPage()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(mockFetchNonfunctionalRuns).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500)
+      })
+      expect(mockFetchNonfunctionalRuns).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('opens the setup modal from the section header', async () => {
+    mockFetchTestPlans.mockResolvedValue([])
+    renderPage()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Start nonfunctional testing' }),
+      ).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Start nonfunctional testing' }))
+
+    expect(screen.getByText('Start nonfunctional testing', { selector: 'h2' })).toBeInTheDocument()
   })
 })

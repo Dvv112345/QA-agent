@@ -13,8 +13,11 @@
  */
 import type {
   CicdExportStatus,
+  DomainOutcome,
   ExploratoryRunStatus,
   ExploratorySessionStatus,
+  NonfunctionalChildStatus,
+  NonfunctionalRunStatus,
   TestCaseExecutionStatus,
   TestExecutionStatus,
 } from './types'
@@ -49,6 +52,35 @@ export const SESSION_STATUS_LABELS: Record<ExploratorySessionStatus, string> = {
   completed: 'Completed',
   error: 'Error',
   skipped: 'Not explored',
+}
+
+/** Nonfunctional runs — "Examining" is the honest verb. */
+export const NONFUNCTIONAL_RUN_STATUS_LABELS: Record<NonfunctionalRunStatus, string> = {
+  pending: 'Queued',
+  running: 'Examining',
+  completed: 'Completed',
+  failed: 'Failed',
+}
+
+/** One examined URL, or one applied load profile. */
+export const NONFUNCTIONAL_CHILD_STATUS_LABELS: Record<NonfunctionalChildStatus, string> = {
+  pending: 'Queued',
+  running: 'In progress',
+  completed: 'Done',
+  error: 'Error',
+  skipped: 'Not reached',
+}
+
+/**
+ * What one domain found at one URL. Four labels because there are four
+ * answers: a check that could not run is not a clean one, and a domain
+ * that does not apply to an endpoint was never asked.
+ */
+export const DOMAIN_OUTCOME_LABELS: Record<DomainOutcome, string> = {
+  clean: 'No violations',
+  violations: 'Violations found',
+  not_applicable: 'Not applicable here',
+  failed_to_run: 'Could not run',
 }
 
 export const CASE_STATUS_LABELS: Record<TestCaseExecutionStatus, string> = {

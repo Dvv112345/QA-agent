@@ -1,0 +1,209 @@
+.nf-run-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+}
+
+.nf-run-header h1 {
+  margin: 0;
+}
+
+.nf-run-id {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.nf-run-counts,
+.nf-run-domains {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.nf-run-domains {
+  margin-bottom: 1rem;
+}
+
+.nf-run-summary {
+  margin: 1.25rem 0;
+}
+
+.nf-run-muted {
+  color: var(--text);
+}
+
+.nf-run-error {
+  color: var(--danger);
+  margin: 0.5rem 0;
+}
+
+/* ── Findings ─────────────────────────────────────────────────────── */
+
+.nf-finding-list,
+.nf-target-list,
+.nf-profile-panels {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.nf-finding-list > li {
+  margin-bottom: 1rem;
+}
+
+/* The rule and the URL are the whole address of a nonfunctional defect —
+   they sit above the shared card rather than inside it, because the card
+   is source-agnostic and has nothing to say about either. */
+.nf-finding-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.nf-finding-rule {
+  font-family: var(--font-mono, monospace);
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0.1rem 0.35rem;
+}
+
+.nf-finding-domain {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nf-finding-url {
+  overflow-wrap: anywhere;
+}
+
+/* ── Examined URLs ────────────────────────────────────────────────── */
+
+.nf-target,
+.nf-profile-panel {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.7rem 0.85rem;
+  margin-bottom: 0.7rem;
+}
+
+.nf-target-head,
+.nf-profile-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.nf-target-url,
+.nf-profile-url {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.nf-target-kind {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.nf-target-outcomes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  font-size: 0.8rem;
+}
+
+.nf-outcome-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.nf-outcome-label {
+  color: var(--text);
+}
+
+/* Four outcomes, four readings. `failed_to_run` deliberately does not look
+   like `clean`: a check that could not run found nothing because it never
+   ran, and the two must never be confused at a glance. */
+.nf-outcome {
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  background: var(--border);
+  color: var(--text);
+}
+
+.nf-outcome-clean {
+  background: var(--status-good-bg);
+  color: var(--status-good-fg);
+}
+
+.nf-outcome-violations {
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
+}
+
+.nf-outcome-failed_to_run {
+  background: var(--status-waiting-bg);
+  color: var(--status-waiting-fg);
+}
+
+.nf-outcome-not_applicable,
+.nf-outcome-unselected {
+  background: var(--surface-recessed);
+  color: var(--text);
+}
+
+/* ── Measurements ─────────────────────────────────────────────────── */
+
+/* Data, never a verdict: there is no threshold here that anything passed
+   or failed, so nothing in this block is coloured by value. */
+.nf-measurements {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  margin: 0.55rem 0 0;
+  font-size: 0.8rem;
+}
+
+.nf-measurements > div {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.nf-measurements dt {
+  color: var(--text);
+}
+
+.nf-measurements dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Load profiles ────────────────────────────────────────────────── */
+
+.nf-profile-method {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0.1rem 0.35rem;
+}
+
+.nf-profile-meta {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.nf-authenticated {
+  color: var(--status-waiting-fg);
+}

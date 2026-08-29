@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom'
 import CicdPage from './pages/CicdPage'
 import CreateSprintPage from './pages/CreateSprintPage'
 import ExploratoryRunDetailPage from './pages/ExploratoryRunDetailPage'
+import NonfunctionalRunDetailPage from './pages/NonfunctionalRunDetailPage'
 import ExploratorySessionPage from './pages/ExploratorySessionPage'
 import RepoListPage from './pages/RepoListPage'
 import SprintDetailPage from './pages/SprintDetailPage'
@@ -113,6 +114,14 @@ export const routes = [
         handle: crumbs(SPRINTS, SPRINT, TEST_ENV, TEST_PLANS, TEST_RUNS, {
           id: 'run',
           label: 'Exploratory Run',
+        }),
+      },
+      {
+        path: '/sprints/:id/nonfunctional-runs/:runId',
+        element: <NonfunctionalRunDetailPage />,
+        handle: crumbs(SPRINTS, SPRINT, TEST_ENV, TEST_PLANS, TEST_RUNS, {
+          id: 'run',
+          label: 'Nonfunctional Run',
         }),
       },
       {

@@ -42,6 +42,7 @@ const fakeSprint: SprintResponse = {
   test_plans_complete: false,
   has_test_runs: false,
   has_exploratory_runs: false,
+  has_nonfunctional_runs: false,
 }
 
 function renderPage() {
@@ -186,6 +187,7 @@ describe('SprintListPage', () => {
           has_test_plans: true,
           has_test_runs: true,
           has_exploratory_runs: false,
+          has_nonfunctional_runs: false,
         },
       ])
       renderPage()
@@ -208,6 +210,7 @@ describe('SprintListPage', () => {
           has_test_plans: true,
           has_test_runs: true,
           has_exploratory_runs: false,
+          has_nonfunctional_runs: false,
         },
       ])
       renderPage()

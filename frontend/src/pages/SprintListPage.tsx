@@ -80,9 +80,12 @@ export default function SprintListPage() {
             <div key={sprint.id} className="sprint-card">
               <Link
                 to={
-                  // Exploratory and scripted runs share the test-runs page,
-                  // so either one is enough to deep-link there.
-                  sprint.active && (sprint.has_test_runs || sprint.has_exploratory_runs)
+                  // All three run modes share the test-runs page, so any
+                  // one of them is enough to deep-link there.
+                  sprint.active &&
+                  (sprint.has_test_runs ||
+                    sprint.has_exploratory_runs ||
+                    sprint.has_nonfunctional_runs)
                     ? `/sprints/${sprint.id}/test-runs`
                     : sprint.active && sprint.has_test_plans
                       ? `/sprints/${sprint.id}/test-plans`

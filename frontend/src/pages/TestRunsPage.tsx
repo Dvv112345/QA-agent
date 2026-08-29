@@ -4,12 +4,14 @@ import { Link, useParams } from 'react-router-dom'
 import ExploratoryCharterModal from '../components/ExploratoryCharterModal'
 import FinishSprintControl from '../components/FinishSprintControl'
 import IssueTrackerModal from '../components/IssueTrackerModal'
+import NonfunctionalRunModal from '../components/NonfunctionalRunModal'
 import OutdatedBadge from '../components/OutdatedBadge'
 import RunTestModal from '../components/RunTestModal'
 import SprintMetricsPanel from '../components/SprintMetricsPanel'
 import {
   fetchExploratoryRuns,
   fetchIssueTracker,
+  fetchNonfunctionalRuns,
   fetchSprint,
   fetchSprintMetrics,
   fetchTestPlans,
@@ -18,6 +20,7 @@ import {
 import type {
   ExploratoryRunResponse,
   IssueTrackerConfig,
+  NonfunctionalRunResponse,
   SprintMetrics,
   SprintResponse,
   TestPlanResponse,
@@ -27,7 +30,11 @@ import { awaitingExport } from '../exportState'
 import { useCrumb } from '../BreadcrumbContext'
 import { formatDateTime, plural } from '../format'
 import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
-import { EXPLORATORY_RUN_STATUS_LABELS, RUN_STATUS_LABELS } from '../statusLabels'
+import {
+  EXPLORATORY_RUN_STATUS_LABELS,
+  NONFUNCTIONAL_RUN_STATUS_LABELS,
+  RUN_STATUS_LABELS,
+} from '../statusLabels'
 import './TestRunsPage.css'
 
 function resultSummary(run: TestRunResponse): string {
@@ -38,7 +45,7 @@ function resultSummary(run: TestRunResponse): string {
   return parts.join(' / ')
 }
 
-function findingSummary(run: ExploratoryRunResponse): string {
+function findingSummary(run: ExploratoryRunResponse | NonfunctionalRunResponse): string {
   const parts: string[] = []
   if (run.bug_count > 0) parts.push(plural(run.bug_count, 'bug'))
   if (run.issue_count > 0) parts.push(plural(run.issue_count, 'issue'))
@@ -53,11 +60,13 @@ export default function TestRunsPage() {
   const [sprint, setSprint] = useState<SprintResponse | null>(null)
   const [runs, setRuns] = useState<TestRunResponse[]>([])
   const [exploratoryRuns, setExploratoryRuns] = useState<ExploratoryRunResponse[]>([])
+  const [nonfunctionalRuns, setNonfunctionalRuns] = useState<NonfunctionalRunResponse[]>([])
   const [metrics, setMetrics] = useState<SprintMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showRunModal, setShowRunModal] = useState(false)
   const [showCharterModal, setShowCharterModal] = useState(false)
+  const [showNonfunctionalModal, setShowNonfunctionalModal] = useState(false)
   const [tracker, setTracker] = useState<IssueTrackerConfig | null>(null)
   const [approvedPlans, setApprovedPlans] = useState<TestPlanResponse[]>([])
   const [showTrackerModal, setShowTrackerModal] = useState(false)
@@ -68,6 +77,7 @@ export default function TestRunsPage() {
       fetchSprint(sprintId),
       fetchTestRuns(sprintId),
       fetchExploratoryRuns(sprintId),
+      fetchNonfunctionalRuns(sprintId),
       // Fetched once here and passed down as props, so neither run modal
       // needs a second round trip — for its export toggle, or for the
       // requirement list it offers to run.
@@ -82,17 +92,28 @@ export default function TestRunsPage() {
       // already nullable and the panel renders behind it.
       fetchSprintMetrics(sprintId).catch(() => null),
     ])
-      .then(([sprintData, runData, exploratoryData, trackerData, planData, metricsData]) => {
-        if (!cancelled) {
-          setSprint(sprintData)
-          setRuns(runData)
-          setExploratoryRuns(exploratoryData)
-          setTracker(trackerData)
-          setApprovedPlans(planData.filter((plan) => plan.status === 'approved'))
-          setMetrics(metricsData)
-          setLoading(false)
-        }
-      })
+      .then(
+        ([
+          sprintData,
+          runData,
+          exploratoryData,
+          nonfunctionalData,
+          trackerData,
+          planData,
+          metricsData,
+        ]) => {
+          if (!cancelled) {
+            setSprint(sprintData)
+            setRuns(runData)
+            setExploratoryRuns(exploratoryData)
+            setNonfunctionalRuns(nonfunctionalData)
+            setTracker(trackerData)
+            setApprovedPlans(planData.filter((plan) => plan.status === 'approved'))
+            setMetrics(metricsData)
+            setLoading(false)
+          }
+        },
+      )
       .catch((err: Error) => {
         if (!cancelled) {
           setLoadError(err.message)
@@ -106,12 +127,16 @@ export default function TestRunsPage() {
 
   const inProgress =
     runs.some((run) => run.status === 'running') ||
-    exploratoryRuns.some((run) => run.status === 'pending' || run.status === 'running')
+    exploratoryRuns.some((run) => run.status === 'pending' || run.status === 'running') ||
+    nonfunctionalRuns.some((run) => run.status === 'pending' || run.status === 'running')
   // Keyed on `completed` rather than on any terminal status, and on there
   // being no export error: every other way to reach "unfiled bugs" is a
   // standing state, not a pending one. A failed run never calls export at
   // all, and every known bad ending inside it writes a tracker error.
-  const exportPending = runs.some(awaitingExport) || exploratoryRuns.some(awaitingExport)
+  const exportPending =
+    runs.some(awaitingExport) ||
+    exploratoryRuns.some(awaitingExport) ||
+    nonfunctionalRuns.some(awaitingExport)
   const shouldPoll = inProgress || exportPending
 
   usePolling(
@@ -122,10 +147,12 @@ export default function TestRunsPage() {
       Promise.all([
         fetchTestRuns(sprintId),
         fetchExploratoryRuns(sprintId),
+        fetchNonfunctionalRuns(sprintId),
         fetchSprintMetrics(sprintId),
-      ]).then(([runData, exploratoryData, metricsData]) => {
+      ]).then(([runData, exploratoryData, nonfunctionalData, metricsData]) => {
         setRuns(runData)
         setExploratoryRuns(exploratoryData)
+        setNonfunctionalRuns(nonfunctionalData)
         setMetrics(metricsData)
       }),
     {
@@ -148,8 +175,14 @@ export default function TestRunsPage() {
   // Runs can outlive test_plans_complete becoming false again — guard on
   // absence of runs only, like the other stages' guard shape. Exploration
   // shares the scripted gate, so both lists sit behind it.
+  // Every list must be counted here, not just the first two: a run of any
+  // mode outliving `test_plans_complete` going false again would otherwise
+  // be hidden behind the gate notice the moment the gate closes.
   const guarded =
-    runs.length === 0 && exploratoryRuns.length === 0 && (!active || !sprint.test_plans_complete)
+    runs.length === 0 &&
+    exploratoryRuns.length === 0 &&
+    nonfunctionalRuns.length === 0 &&
+    (!active || !sprint.test_plans_complete)
 
   return (
     <div className="test-runs">
@@ -257,6 +290,46 @@ export default function TestRunsPage() {
 
           <section className="test-runs-section">
             <div className="test-runs-section-header">
+              <h2>Nonfunctional Checks</h2>
+              {active && sprint.test_plans_complete && (
+                <button className="btn btn-primary" onClick={() => setShowNonfunctionalModal(true)}>
+                  Start nonfunctional testing
+                </button>
+              )}
+            </div>
+
+            {nonfunctionalRuns.length === 0 ? (
+              <p className="test-runs-empty">No nonfunctional runs yet.</p>
+            ) : (
+              <ul className="test-runs-list">
+                {nonfunctionalRuns.map((run) => (
+                  <li key={run.id} className="test-run-row">
+                    <Link
+                      to={`/sprints/${sprintId}/nonfunctional-runs/${run.id}`}
+                      className="test-run-link"
+                    >
+                      <div className="test-run-row-main">
+                        <span className="test-run-requirements">{run.requirement_name}</span>
+                        <span className={`run-badge run-badge-${run.status}`}>
+                          {NONFUNCTIONAL_RUN_STATUS_LABELS[run.status]}
+                        </span>
+                        <OutdatedBadge run={run} />
+                      </div>
+                      <div className="test-run-row-meta">
+                        <span className="test-run-id">Run #{run.id}</span>
+                        <time>{formatDateTime(run.created_at)}</time>
+                        <span>{run.domains.join(', ')}</span>
+                        {findingSummary(run) && <span>{findingSummary(run)}</span>}
+                      </div>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="test-runs-section">
+            <div className="test-runs-section-header">
               <h2>Scripted Test Runs</h2>
               {active && sprint.test_plans_complete && (
                 <button className="btn btn-primary" onClick={() => setShowRunModal(true)}>
@@ -309,6 +382,14 @@ export default function TestRunsPage() {
           plans={approvedPlans}
           tracker={tracker}
           onClose={() => setShowCharterModal(false)}
+        />
+      )}
+      {showNonfunctionalModal && (
+        <NonfunctionalRunModal
+          sprintId={sprintId}
+          plans={approvedPlans}
+          tracker={tracker}
+          onClose={() => setShowNonfunctionalModal(false)}
         />
       )}
       {showTrackerModal && (

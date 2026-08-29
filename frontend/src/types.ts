@@ -34,6 +34,7 @@ export interface SprintResponse {
   test_plans_complete: boolean
   has_test_runs: boolean
   has_exploratory_runs: boolean
+  has_nonfunctional_runs: boolean
 }
 
 export interface ReadmeStatusResponse {
@@ -415,6 +416,151 @@ export interface ExploratoryCharterDraftResponse {
   projected_minutes: number
 }
 
+// ── Nonfunctional testing ────────────────────────────────────────────
+
+export type NonfunctionalRunStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+/** `skipped` = the run ended before this target or profile was reached. */
+export type NonfunctionalChildStatus = 'pending' | 'running' | 'completed' | 'error' | 'skipped'
+
+export type NonfunctionalDomain = 'accessibility' | 'performance' | 'security'
+
+export const NONFUNCTIONAL_DOMAINS: NonfunctionalDomain[] = [
+  'accessibility',
+  'performance',
+  'security',
+]
+
+/**
+ * Four-valued, not two. `not_applicable` and `failed_to_run` exist because
+ * collapsing either into `clean` states something false — a check that
+ * never ran found nothing *because it never ran*.
+ */
+export type DomainOutcome = 'clean' | 'violations' | 'not_applicable' | 'failed_to_run'
+
+export type TargetKind = 'page' | 'endpoint'
+
+export type LoadMethod = 'GET' | 'HEAD' | 'OPTIONS' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+
+export const LOAD_METHODS: LoadMethod[] = [
+  'GET',
+  'HEAD',
+  'OPTIONS',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+]
+
+export interface NonfunctionalFindingResponse extends Finding {
+  id: number
+  position: number
+  domain: NonfunctionalDomain
+  /** axe rule id, or the passive-security rule name. */
+  rule: string
+  url: string
+  has_screenshot: boolean
+  created_at: string
+}
+
+export interface NonfunctionalTargetResponse {
+  id: number
+  position: number
+  url: string
+  kind: TargetKind
+  status: NonfunctionalChildStatus
+  error: string | null
+  /** Null means the domain was not selected — never "clean". */
+  a11y_outcome: DomainOutcome | null
+  security_outcome: DomainOutcome | null
+  performance_outcome: DomainOutcome | null
+  /** Free-form measurements. Data only — never a finding, never a defect. */
+  metrics: Record<string, number | string | null>
+  finding_count: number
+  updated_at: string
+}
+
+export interface NonfunctionalLoadProfileResponse {
+  id: number
+  position: number
+  url: string
+  method: LoadMethod
+  /** Echoed with its `$NAME` placeholders unresolved, exactly as stored. */
+  body: string | null
+  concurrency: number
+  duration_seconds: number
+  total_request_cap: number
+  status: NonfunctionalChildStatus
+  requests_sent: number
+  results: Record<string, number | string | null>
+  error: string | null
+  updated_at: string
+}
+
+export interface NonfunctionalRunResponse extends ExportRollup {
+  id: number
+  sprint_id: number
+  requirement_id: number
+  requirement_name: string
+  status: NonfunctionalRunStatus
+  domains: NonfunctionalDomain[]
+  environment_disposable: boolean
+  summary: string | null
+  error: string | null
+  outdated_reasons: OutdatedReason[]
+  requirement_deleted: boolean
+  target_count: number
+  load_profile_count: number
+  bug_count: number
+  issue_count: number
+  high_severity_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface NonfunctionalRunDetailResponse extends NonfunctionalRunResponse {
+  base_url_env_vars: string[]
+  targets: NonfunctionalTargetResponse[]
+  load_profiles: NonfunctionalLoadProfileResponse[]
+  findings: NonfunctionalFindingResponse[]
+}
+
+export interface LoadProfileDraft {
+  url: string
+  method: LoadMethod
+  body: string | null
+  concurrency: number
+  duration_seconds: number
+  total_request_cap: number
+  /** The model's reasoning. Shown to the user, never read back as consent. */
+  rationale: string
+}
+
+export interface DomainProposal {
+  domain: NonfunctionalDomain
+  applicable: boolean
+  rationale: string
+}
+
+/**
+ * The setup screen's input. Every ceiling here comes from the server
+ * (Convention #10) — the modal must not restate a config literal, and the
+ * unsafe pair is what the disposable declaration unlocks.
+ */
+export interface NonfunctionalPlanDraftResponse {
+  requirement_id: number
+  requirement_name: string
+  domains: DomainProposal[]
+  base_url_env_vars: string[]
+  load_profiles: LoadProfileDraft[]
+  max_concurrency: number
+  max_duration_seconds: number
+  max_total_requests: number
+  unsafe_max_concurrency: number
+  unsafe_max_total_requests: number
+  safe_methods: LoadMethod[]
+}
+
 // ── QA metrics ────────────────────────────────────────────────────────
 
 export interface RequirementMetrics {
@@ -443,7 +589,16 @@ export interface SprintMetrics {
   executions_errored: number
   exploratory_sessions: number
   requirements_explored: number
+  /** URLs examined, never summed with cases or sessions. */
+  urls_examined: number
+  requirements_examined: number
+  /** The total, both pools. */
   bug_count: number
+  /** The half both densities divide — see `bugs_per_test_case`. */
+  functional_bug_count: number
+  nonfunctional_bug_count: number
+  /** Distinct nonfunctional defects per domain. Performance never appears. */
+  bugs_by_domain: Record<string, number>
   issue_count: number
   high_severity_bug_count: number
   requirements_covered: number
