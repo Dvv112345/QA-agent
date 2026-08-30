@@ -130,6 +130,45 @@ describe('NonfunctionalRunModal', () => {
     expect(method).toBeInTheDocument()
   })
 
+  it('says why Start is disabled rather than only disabling it', async () => {
+    // The only other signal is a suffix inside a <select> the user has
+    // already closed, so a disabled button looks broken instead of gated.
+    await reachTheReviewStep()
+
+    fireEvent.click(screen.getByLabelText('Accessibility'))
+    fireEvent.click(screen.getByLabelText('Security'))
+
+    expect(screen.getByRole('button', { name: /^Start run/ })).toBeDisabled()
+    expect(screen.getByText(/Select at least one check to run/)).toBeInTheDocument()
+  })
+
+  it('names the declaration when a non-safe method is what is blocking', async () => {
+    await reachTheReviewStep(
+      makeDraft({
+        load_profiles: [
+          {
+            url: 'https://app.test/api',
+            method: 'GET',
+            body: null,
+            concurrency: 1,
+            duration_seconds: 10,
+            total_request_cap: 50,
+            rationale: 'hot path',
+          },
+        ],
+      }),
+    )
+
+    fireEvent.click(screen.getByLabelText(/This environment is disposable/))
+    fireEvent.change(screen.getByLabelText('Method for profile 1'), {
+      target: { value: 'POST' },
+    })
+    fireEvent.click(screen.getByLabelText(/This environment is disposable/))
+
+    expect(screen.getByRole('button', { name: /^Start run/ })).toBeDisabled()
+    expect(screen.getByText(/declare the environment disposable/)).toBeInTheDocument()
+  })
+
   it('shows the ceiling for the tier a profile is in, from the server', async () => {
     await reachTheReviewStep(
       makeDraft({

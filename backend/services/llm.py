@@ -758,6 +758,7 @@ def generate_nonfunctional_plan(
 def triage_nonfunctional_findings(
     violations: list[ViolationLike],
     max_chars: int = NONFUNCTIONAL_TRIAGE_MAX_CHARS,
+    on_attempt: Callable[[], None] | None = None,
 ) -> dict[str, TriagedFinding]:
     """Write readable prose for violations the tools already found and graded.
 
@@ -776,9 +777,20 @@ def triage_nonfunctional_findings(
 
     Never raises: this call is optional by construction.  A chunk that fails
     costs its violations their prose, not the run.
+
+    ``on_attempt`` fires once per chunk so a caller being watched for
+    liveness can heartbeat.  It is not optional in practice: each chunk is
+    an independent completion bounded by ``OPENAI_TIMEOUT``, so a run with
+    several of them can out-wait ``HEARTBEAT_STALE_SECONDS`` and have the
+    reconciler re-enqueue the whole browser walk as a crashed worker.  Same
+    contract as ``summarize_exploration`` — heartbeating per unit of work
+    makes the safety condition "one call shorter than the stale threshold"
+    rather than arithmetic over how many there turned out to be.
     """
     written: dict[str, TriagedFinding] = {}
     for chunk in _chunk_violations(violations, max_chars):
+        if on_attempt is not None:
+            on_attempt()
         parts = nonfunctional_triage_context(chunk)
         try:
             result = _complete(NONFUNCTIONAL_TRIAGE_SYSTEM_PROMPT, "\n\n".join(parts), TriageResult)
@@ -1516,7 +1528,7 @@ def _run_browser_loop(
                 result = (
                     "You have repeated this exact action several times with the "
                     "same result. Try something different, or call "
-                    "finish_session if the charter is explored."
+                    f"{profile.terminal_tool} if there is nothing left to do."
                 )
             else:
                 executor = tools.get(tool_name)

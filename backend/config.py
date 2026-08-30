@@ -218,7 +218,6 @@ NONFUNCTIONAL_MAX_TARGETS: int = _get_int("NONFUNCTIONAL_MAX_TARGETS", 10)
 # is no free "record" round to budget for as there is in exploratory.
 NONFUNCTIONAL_MAX_ACTIONS: int = _get_int("NONFUNCTIONAL_MAX_ACTIONS", 30)
 # Findings persisted per run, across every target and domain.
-NONFUNCTIONAL_MAX_FINDINGS: int = _get_int("NONFUNCTIONAL_MAX_FINDINGS", 50)
 # Per-target cap on the axe payload before anything reaches a prompt.
 NONFUNCTIONAL_AXE_MAX_CHARS: int = _get_int("NONFUNCTIONAL_AXE_MAX_CHARS", 20000)
 # Cap on one *batched* triage call. The per-target cap alone allows

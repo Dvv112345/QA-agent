@@ -334,16 +334,91 @@ class TestRunViolations:
 
         assert len(accumulator) == 2
 
-    def test_the_cap_drops_rather_than_raising(self):
-        accumulator = RunViolations(max_violations=1)
-
-        accumulator.extend([_raw(rule="a"), _raw(rule="b"), _raw(rule="c")])
-
-        assert len(accumulator) == 1
-        assert accumulator.dropped == 2
-
     def test_order_is_first_seen(self):
         accumulator = RunViolations()
         accumulator.extend([_raw(rule="b"), _raw(rule="a"), _raw(rule="b")])
 
         assert [v.rule for v in accumulator.all()] == ["b", "a"]
+
+
+class TestCookieAggregation:
+    """One violation per rule per URL, naming every cookie that breaks it.
+
+    The regression: `RunViolations` keys on `(domain, rule, url)`, which
+    every cookie breaking one rule on one URL shares. A violation per
+    cookie therefore lost all but the first — in memory, before any row
+    existed, so no downstream de-duplication could ever have recovered it.
+    """
+
+    @staticmethod
+    def _cookies(*names, **flags):
+        flags.setdefault("secure", True)
+        flags.setdefault("httpOnly", False)
+        flags.setdefault("sameSite", "Lax")
+        return [{"name": name, **flags} for name in names]
+
+    def test_one_violation_names_every_offending_cookie(self):
+        found = passive_security_violations(
+            "https://app.test/p", 200, {}, self._cookies("sid", "csrf", "prefs"), None
+        )
+        httponly = [v for v in found if v.rule == "cookie-missing-httponly"]
+
+        assert len(httponly) == 1
+        assert httponly[0].nodes == ("cookie sid", "cookie csrf", "cookie prefs")
+
+    def test_the_names_survive_into_the_stored_text(self):
+        """`nodes` reaches the triage prompt but nothing persisted."""
+        found = passive_security_violations(
+            "https://app.test/p", 200, {}, self._cookies("sid", "csrf"), None
+        )
+        steps = next(v for v in found if v.rule == "cookie-missing-httponly").steps_to_reproduce
+
+        assert "cookie sid" in steps
+        assert "cookie csrf" in steps
+
+    def test_every_offending_cookie_survives_the_run_accumulator(self):
+        accumulator = RunViolations()
+
+        accumulator.extend(
+            passive_security_violations(
+                "https://app.test/p", 200, {}, self._cookies("sid", "csrf", "prefs"), None
+            )
+        )
+
+        kept = [v for v in accumulator.all() if v.rule == "cookie-missing-httponly"]
+        assert len(kept) == 1
+        assert len(kept[0].nodes) == 3, "all three cookies, not just whichever came first"
+
+    def test_actual_carries_a_count_so_the_dedup_key_is_stable(self):
+        """Names would split one defect across URLs; digits are stripped."""
+        from backend.services.finding_dedup import dedup_key
+
+        one = next(
+            v
+            for v in passive_security_violations(
+                "https://app.test/one", 200, {}, self._cookies("sid", "csrf"), None
+            )
+            if v.rule == "cookie-missing-httponly"
+        )
+        two = next(
+            v
+            for v in passive_security_violations(
+                "https://app.test/two", 200, {}, self._cookies("entirely_different"), None
+            )
+            if v.rule == "cookie-missing-httponly"
+        )
+
+        assert dedup_key(one.title, one.expected, one.actual) == dedup_key(
+            two.title, two.expected, two.actual
+        )
+
+    def test_a_rule_no_cookie_breaks_stays_silent(self):
+        found = passive_security_violations(
+            "https://app.test/p",
+            200,
+            {},
+            self._cookies("sid", httpOnly=True, sameSite="Strict"),
+            None,
+        )
+
+        assert not [v for v in found if v.rule.startswith("cookie-")]

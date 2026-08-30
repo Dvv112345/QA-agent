@@ -539,12 +539,19 @@ async def restart_nonfunctional_run(
 ) -> NonfunctionalRunDetailResponse:
     """Restart a failed run (uncapped, user-initiated).
 
-    Target- and profile-level resumability is derived entirely from each
-    child's own status by the task — this route never touches the child
-    rows.  That matters more here than on the other run modes: a load
-    profile that already sent traffic must never be re-sent, and the task
-    decides that from ``requests_sent``, which a status reset would not
-    change but a row rewrite could.
+    This route never touches the child rows, and the two kinds resume
+    differently — deliberately, because re-doing them costs different
+    things:
+
+    * **Load profiles** are skipped when ``requests_sent > 0``.  The check
+      is that column and never ``status``: a restart could legitimately
+      reset a status, and re-issuing requests against somebody's
+      environment — duplicated *writes*, for a non-safe method — is not
+      something a retry may decide on its own.
+    * **Targets** are re-examined from scratch.  Re-reading a page costs a
+      page load, so the task keeps no per-target resume state and a
+      restarted run writes a *second* row per URL.  That is expected;
+      findings still de-duplicate on ``(domain, rule, url)``.
     """
     run = _get_run_or_404(session, run_id)
     ensure_sprint_active(run.sprint, _GATE_SUBJECT)

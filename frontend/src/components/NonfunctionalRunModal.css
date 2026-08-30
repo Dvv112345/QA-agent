@@ -144,3 +144,9 @@
   color: var(--danger);
   margin-top: 0.75rem;
 }
+
+.nf-blocked {
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}

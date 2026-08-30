@@ -215,11 +215,16 @@ def _collect(sprint) -> _Counted:
         # examined, and a run that re-walked the same feature has not
         # covered more of it.
         urls = counted.urls_by_requirement.setdefault(run.requirement_id, set())
-        for target in run.targets:
-            if target.status != NonfunctionalChildStatus.COMPLETED:
-                continue
-            urls.add(target.url)
-        if urls:
+        examined = {
+            target.url
+            for target in run.targets
+            if target.status == NonfunctionalChildStatus.COMPLETED
+        }
+        urls.update(examined)
+        # Tested against *this* run's URLs, not the accumulated set: a
+        # second completed run that examined nothing would otherwise be
+        # credited with what an earlier one covered.
+        if examined:
             counted.examined_requirements.add(run.requirement_id)
         counted.findings.extend(iter_findings(run))
 

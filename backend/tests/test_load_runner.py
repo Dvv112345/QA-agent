@@ -301,3 +301,58 @@ class TestAggregation:
     def test_the_result_serializes(self, stub, local_allowed):
         result = run_profile(url=stub.url, total_request_cap=1)
         assert '"requests_sent": 1' in result.to_json()
+
+
+class TestWorkersThatDieBeforeSending:
+    """A profile that sent nothing because its threads died is not "sent nothing".
+
+    `httpx.Client(verify=SSL_CONTEXT, ...)` raising is the documented
+    Windows SSL_CERT_FILE footgun, and it happens *before* any slot is
+    claimed — so the budget stays untouched and the result used to come
+    back `requests_sent=0, refused=None`, which the task stamps COMPLETED
+    with no error. Indistinguishable from a profile with nothing to do.
+    """
+
+    def test_every_worker_failing_is_a_refusal_not_a_silent_zero(
+        self, stub, local_allowed, monkeypatch
+    ):
+        def _explode(*args, **kwargs):
+            raise OSError("Could not find a suitable TLS CA certificate bundle")
+
+        monkeypatch.setattr(load_runner.httpx, "Client", _explode)
+
+        result = run_profile(url=stub.url, concurrency=2, total_request_cap=5)
+
+        assert result.requests_sent == 0
+        assert result.refused is not None
+        assert "No request could be sent" in result.refused
+        assert stub.recorder.count == 0
+
+    def test_it_still_does_not_raise(self, stub, local_allowed, monkeypatch):
+        def _explode(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(load_runner.httpx, "Client", _explode)
+
+        assert isinstance(run_profile(url=stub.url, total_request_cap=1), LoadResult)
+
+
+class TestPercentileRank:
+    """Nearest rank, which is `ceil` — `round(x + 0.5)` is not.
+
+    On an exact half Python rounds to even and goes *down*, so twenty
+    samples put p95 on the maximum instead of the nineteenth value.
+    """
+
+    def test_p95_of_twenty_samples_is_the_nineteenth_not_the_maximum(self):
+        values = [float(n) for n in range(1, 21)]
+
+        assert load_runner._percentile(values, 0.95) == 19.0
+
+    def test_p50_of_twenty_samples_is_the_tenth(self):
+        values = [float(n) for n in range(1, 21)]
+
+        assert load_runner._percentile(values, 0.50) == 10.0
+
+    def test_an_empty_sample_is_zero(self):
+        assert load_runner._percentile([], 0.95) == 0.0

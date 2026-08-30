@@ -124,6 +124,14 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
     domains.length > 0 &&
     profiles.every((profile) => profile.url.trim().length > 0) &&
     (!unsafeSelected || disposable)
+  // Every clause of `canStart`, in the same order, so a disabled Start
+  // button always says which one is holding it.
+  const blockedReason =
+    domains.length === 0
+      ? 'Select at least one check to run.'
+      : profiles.some((profile) => profile.url.trim().length === 0)
+        ? 'Every load profile needs a URL, or remove it.'
+        : 'A load profile uses a method that changes data — declare the environment disposable, or switch it to GET, HEAD or OPTIONS.'
 
   const methodAllowed = (method: LoadMethod) =>
     draft !== null && (draft.safe_methods.includes(method) || disposable)
@@ -335,6 +343,7 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
         </label>
       )}
 
+      {draft !== null && !canStart && !busy && <p className="nf-blocked">{blockedReason}</p>}
       {error && <p className="nf-error">{error}</p>}
 
       <div className="nf-actions">

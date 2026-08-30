@@ -39,6 +39,8 @@ from backend.tests.test_sprints import _seed_test_case, _seed_test_env, _seed_te
 
 BASE_URL = "https://staging.example.com"
 ENV_VARS_JSON = json.dumps({"BASE_URL": BASE_URL})
+ADMIN_URL = "https://admin.example.com"
+TWO_URL_ENV_VARS_JSON = json.dumps({"BASE_URL": BASE_URL, "ADMIN_URL": ADMIN_URL})
 
 AXE_CLEAN = {"violations": [], "testEngine": {"version": "4.12.1"}}
 AXE_DIRTY = {
@@ -94,6 +96,15 @@ class _FakeBrowser:
         self.cookies = {"session": "abc"}
         self.screenshot_bytes = b"PNG"
         self.visits: list[str] = ["https://staging.example.com/reports"]
+        # Where the fake believes it is, and what each URL answers with.
+        # A URL-blind fake is what let a whole class of bug pass 1725
+        # tests: the task can examine the wrong page and nothing notices.
+        base_urls = kwargs.get("base_urls") or [BASE_URL]
+        self.current_url: str = base_urls[0]
+        self.axe_by_url: dict[str, dict] = {}
+        self.performance_by_url: dict[str, dict] = {}
+        self.unreachable: set[str] = set()
+        self.navigations: list[str] = []
 
     def __enter__(self):
         return self
@@ -102,17 +113,30 @@ class _FakeBrowser:
         return None
 
     # ── what the task calls ──
+    def navigate(self, url):
+        """A real executor: it moves, and only then fires the hook."""
+        self.navigations.append(url)
+        if url in self.unreachable:
+            return f"ERROR: could not navigate to {url!r}."
+        previous = self.current_url
+        self.current_url = url
+        if self.on_navigated is not None and url != previous:
+            self.on_navigated(url, task_module.time.monotonic() + self.catalogue_timeout)
+        return f"Navigated to {url}. Call snapshot to see the page."
+
     def scan_accessibility(self):
         if self.axe_error:
             return browser_module.CheckOutcome(error=self.axe_error)
-        return browser_module.CheckOutcome(data=self.axe_result)
+        return browser_module.CheckOutcome(
+            data=self.axe_by_url.get(self.current_url, self.axe_result)
+        )
 
     def check_headers(self):
         if self.headers_error:
             return browser_module.CheckOutcome(error=self.headers_error)
         return browser_module.CheckOutcome(
             data={
-                "url": "u",
+                "url": self.current_url,
                 "status": 200,
                 "headers": self.headers,
                 "cookies": [],
@@ -121,7 +145,9 @@ class _FakeBrowser:
         )
 
     def measure_performance(self):
-        return browser_module.CheckOutcome(data=self.performance)
+        return browser_module.CheckOutcome(
+            data=self.performance_by_url.get(self.current_url, self.performance)
+        )
 
     def cookies_for_load(self):
         return dict(self.cookies)
@@ -204,13 +230,13 @@ def patched(monkeypatch):
     return state
 
 
-def _seed_run(db_session, **run_kwargs):
+def _seed_run(db_session, env_vars_json=ENV_VARS_JSON, **run_kwargs):
     sprint = _seed_sprint(db_session)
     requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
     plan = _seed_test_plan(db_session, requirement, status=TestPlanStatus.APPROVED)
     _seed_test_case(db_session, plan)
     _seed_test_env(
-        db_session, sprint, status=TestEnvironmentStatus.CONFIRMED, env_vars_json=ENV_VARS_JSON
+        db_session, sprint, status=TestEnvironmentStatus.CONFIRMED, env_vars_json=env_vars_json
     )
     db_session.refresh(sprint)
     run = _seed_nonfunctional_run(db_session, sprint, requirement, **run_kwargs)
@@ -758,3 +784,122 @@ class TestRestart:
         # The seeded target's URL is walked again: a second row for it is
         # expected, and its findings de-duplicate by (rule, url) anyway.
         assert any(t.url == BASE_URL for t in _targets(db_session, run.id))
+
+
+# ── the coverage floor ────────────────────────────────────────────────
+
+
+class TestBaseUrlSeeding:
+    """Every confirmed base URL is examined, and against its own page.
+
+    The regression these pin: the seed loop used to fire the arrival hook
+    for *every* base URL without navigating to any but the first, so a
+    second URL's target row carried the first page's axe result, headers,
+    metrics and screenshot — and, because `seen_urls` then held it, it was
+    never examined for real. Invisible to a fixture that seeds one base URL
+    and answers the same payload whatever page it is on.
+    """
+
+    def _two_url_run(self, db_session):
+        return _seed_run(
+            db_session,
+            env_vars_json=TWO_URL_ENV_VARS_JSON,
+            base_url_env_vars_csv="BASE_URL,ADMIN_URL",
+        )
+
+    def test_each_base_url_is_examined_against_its_own_page(self, db_session, patched):
+        _sprint, _requirement, run = self._two_url_run(db_session)
+
+        # The payloads have to be attached before seeding runs, which
+        # happens inside the browser context — so steer the factory.
+        original = task_module.browser_session.BrowserSession
+
+        def _factory(**kwargs):
+            browser = original(**kwargs)
+            browser.axe_by_url = {BASE_URL: AXE_CLEAN, ADMIN_URL: AXE_DIRTY}
+            browser.visits = []  # the seeded URLs are the whole run here
+            return browser
+
+        task_module.browser_session.BrowserSession = _factory
+        try:
+            run_nonfunctional_task(run.id)
+        finally:
+            task_module.browser_session.BrowserSession = original
+
+        by_url = {t.url: t for t in _targets(db_session, run.id)}
+        assert set(by_url) == {BASE_URL, ADMIN_URL}
+        # The dirty payload belongs to ADMIN_URL and must not have leaked
+        # onto the URL the browser merely opened on.
+        assert by_url[BASE_URL].a11y_outcome == DomainOutcome.CLEAN
+        assert by_url[ADMIN_URL].a11y_outcome == DomainOutcome.VIOLATIONS
+
+    def test_a_later_base_url_is_navigated_to_not_just_recorded(self, db_session, patched):
+        _sprint, _requirement, run = self._two_url_run(db_session)
+
+        run_nonfunctional_task(run.id)
+
+        # First base URL: already open, examined where it is. Second: reached.
+        # Then back to the first, so the walk starts where the prompt says.
+        assert patched["browser"].navigations == [ADMIN_URL, BASE_URL]
+
+    def test_an_unreachable_base_url_is_recorded_not_skipped(self, db_session, patched):
+        _sprint, _requirement, run = self._two_url_run(db_session)
+        original = task_module.browser_session.BrowserSession
+
+        def _factory(**kwargs):
+            browser = original(**kwargs)
+            browser.unreachable = {ADMIN_URL}
+            return browser
+
+        task_module.browser_session.BrowserSession = _factory
+        try:
+            run_nonfunctional_task(run.id)
+        finally:
+            task_module.browser_session.BrowserSession = original
+
+        by_url = {t.url: t for t in _targets(db_session, run.id)}
+        assert ADMIN_URL in by_url, "a base URL we could not reach must not vanish"
+        assert by_url[ADMIN_URL].status == NonfunctionalChildStatus.ERROR
+        assert by_url[ADMIN_URL].a11y_outcome == DomainOutcome.FAILED_TO_RUN
+        assert "ERROR" in (by_url[ADMIN_URL].error or "")
+
+
+class TestTriageHeartbeat:
+    def test_the_task_heartbeats_through_the_triage_chunks(self, db_session, patched):
+        """Triage runs while the run is still `running`.
+
+        Each chunk is an independent completion bounded by OPENAI_TIMEOUT,
+        so a run with several of them can out-wait
+        HEARTBEAT_STALE_SECONDS — and the reconciler would sweep a live
+        run as a crashed worker and re-drive the whole browser walk.
+        """
+        _sprint, _requirement, run = _seed_run(db_session)
+        beats = []
+
+        def _triage(violations, **kwargs):
+            on_attempt = kwargs.get("on_attempt")
+            assert on_attempt is not None, "the task must pass a heartbeat"
+            for _ in range(3):  # stand in for three chunks
+                on_attempt()
+                beats.append(_reload(db_session, run.id).last_heartbeat)
+            return {}
+
+        # Triage only runs when there is something to triage.
+        original_browser = task_module.browser_session.BrowserSession
+
+        def _factory(**kwargs):
+            browser = original_browser(**kwargs)
+            browser.axe_result = AXE_DIRTY
+            return browser
+
+        original_triage = task_module.llm.triage_nonfunctional_findings
+        task_module.browser_session.BrowserSession = _factory
+        task_module.llm.triage_nonfunctional_findings = _triage
+        try:
+            run_nonfunctional_task(run.id)
+        finally:
+            task_module.browser_session.BrowserSession = original_browser
+            task_module.llm.triage_nonfunctional_findings = original_triage
+
+        assert len(beats) == 3
+        assert all(beat is not None for beat in beats)

@@ -320,15 +320,15 @@ _SECURITY_TEXT = {
         "The response carries a Referrer-Policy header.",
     ),
     "cookie-missing-secure": (
-        "A cookie may be sent over plain HTTP",
+        "Cookies may be sent over plain HTTP",
         "Every cookie set over HTTPS carries the Secure attribute.",
     ),
     "cookie-missing-httponly": (
-        "A cookie is readable by page scripts",
+        "Cookies are readable by page scripts",
         "Session cookies carry the HttpOnly attribute.",
     ),
     "cookie-missing-samesite": (
-        "A cookie has no SameSite attribute",
+        "Cookies have no SameSite attribute",
         "Cookies declare a SameSite attribute rather than relying on the browser default.",
     ),
     "server-header-disclosure": (
@@ -347,7 +347,12 @@ _SECURITY_TEXT = {
 
 
 def _security_violation(
-    rule: str, url: str, severity: str, actual: str, evidence: tuple[str, ...] = ()
+    rule: str,
+    url: str,
+    severity: str,
+    actual: str,
+    evidence: tuple[str, ...] = (),
+    steps: str | None = None,
 ) -> RawViolation:
     title, expected = _SECURITY_TEXT[rule]
     return RawViolation(
@@ -358,7 +363,11 @@ def _security_violation(
         summary=title,
         nodes=evidence,
         title=f"{title} ({rule})",
-        steps_to_reproduce=f"Request {url}\nRead the response headers",
+        # A header rule is fully described by the response; a cookie rule
+        # has to name the cookies. `nodes` alone would not do it: it reaches
+        # the triage prompt but no *stored* text, so an untriaged finding
+        # would have no way to say which cookie it meant.
+        steps_to_reproduce=steps or f"Request {url}\nRead the response headers",
         expected=expected,
         actual=actual,
     )
@@ -389,50 +398,71 @@ def _hsts_violations(url: str, value: str | None) -> list[RawViolation]:
     return []
 
 
+# The three cookie rules, in reporting order: the severity, and how one
+# aggregated violation phrases its `actual`. Read by `_cookie_violations`.
+_COOKIE_RULES = (
+    ("cookie-missing-secure", FindingSeverity.HIGH, "set without Secure over HTTPS"),
+    ("cookie-missing-httponly", FindingSeverity.MEDIUM, "readable from JavaScript"),
+    ("cookie-missing-samesite", FindingSeverity.LOW, "sent without a usable SameSite attribute"),
+)
+
+
 def _cookie_violations(url: str, cookies: list[dict] | None) -> list[RawViolation]:
     """Cookie attribute rules, over cookies as Playwright reports them.
 
-    Only attribute *names* and flags are read.  A cookie value never
-    reaches this module, is never stored on a finding, and is never
-    rendered into one — credentials keep their two exits.
+    **One violation per rule per URL, listing every cookie that breaks it**
+    — the shape ``axe_violations`` already uses, and for the same reason: a
+    response setting five cookies without ``HttpOnly`` is one defect with
+    five occurrences, not five defects.
+
+    It is also the only shape that survives de-duplication.
+    :class:`RunViolations` keys on ``(domain, rule, url)``, and every cookie
+    breaking one rule on one URL shares that key — so a per-cookie violation
+    meant the second and third were discarded in memory and never became
+    findings at all.  Silently, and *before* anything downstream could see
+    them: de-duplication merges what exists, it cannot restore what was
+    never recorded.
+
+    ``actual`` deliberately carries a **count** rather than the names.  The
+    names live in ``nodes`` and in the steps, while ``finding_dedup``
+    normalizes ``actual`` with digits stripped — so the same rule on two
+    URLs with different cookie names still reads as one defect instead of
+    splitting on a name.
+
+    Only attribute *names* and flags are read.  A cookie value never reaches
+    this module, is never stored on a finding, and is never rendered into
+    one — credentials keep their two exits.
     """
-    found: list[RawViolation] = []
     https = url.lower().startswith("https://")
+    offenders: dict[str, list[str]] = {rule: [] for rule, _, _ in _COOKIE_RULES}
     for cookie in cookies or []:
         if not isinstance(cookie, dict):
             continue
         name = str(cookie.get("name", "(unnamed)"))
-        evidence = (f"cookie {name}",)
         if https and not cookie.get("secure"):
-            found.append(
-                _security_violation(
-                    "cookie-missing-secure",
-                    url,
-                    FindingSeverity.HIGH,
-                    f"Cookie {name} is set without Secure over HTTPS.",
-                    evidence,
-                )
-            )
+            offenders["cookie-missing-secure"].append(name)
         if not cookie.get("httpOnly"):
-            found.append(
-                _security_violation(
-                    "cookie-missing-httponly",
-                    url,
-                    FindingSeverity.MEDIUM,
-                    f"Cookie {name} is readable from JavaScript.",
-                    evidence,
-                )
-            )
+            offenders["cookie-missing-httponly"].append(name)
         if not cookie.get("sameSite") or str(cookie.get("sameSite")).lower() == "none":
-            found.append(
-                _security_violation(
-                    "cookie-missing-samesite",
-                    url,
-                    FindingSeverity.LOW,
-                    f"Cookie {name} declares SameSite={cookie.get('sameSite') or 'unset'}.",
-                    evidence,
-                )
+            offenders["cookie-missing-samesite"].append(name)
+
+    found: list[RawViolation] = []
+    for rule, severity, phrasing in _COOKIE_RULES:
+        names = offenders[rule]
+        if not names:
+            continue
+        evidence = tuple(f"cookie {name}" for name in names)
+        listed = "\n".join(f"- {item}" for item in evidence)
+        found.append(
+            _security_violation(
+                rule,
+                url,
+                severity,
+                f"{len(names)} cookie(s) on this response are {phrasing}.",
+                evidence,
+                steps=f"Request {url}\nRead the Set-Cookie headers\nAffected cookies:\n{listed}",
             )
+        )
     return found
 
 
@@ -529,13 +559,24 @@ class RunViolations:
     A rule met again at the same URL in a different page state is not a
     second finding — it is the same defect seen twice, and the state labels
     are kept on the one violation so the report can say where.
+
+    **There is deliberately no cap on how many violations a run may hold.**
+    The key already bounds it: a run examines at most
+    ``NONFUNCTIONAL_MAX_TARGETS`` URLs, and the rules are two fixed sets —
+    axe's WCAG-tagged subset and the table above — so the ceiling is
+    ``rules x targets`` and both factors are bounded.  Element explosion,
+    the thing that actually runs away, is handled a level down by
+    ``MAX_NODES_PER_VIOLATION``.  A count cap on top of that would only be
+    able to discard real violations, and a nonfunctional run that silently
+    drops findings contradicts the whole reason ``failed_to_run`` and
+    ``not_applicable`` exist.  (Contrast ``EXPLORATORY_MAX_FINDINGS``, which
+    bounds a *tool the model can call in a loop* — genuinely unbounded, and
+    a termination guarantee besides.)
     """
 
-    def __init__(self, max_violations: int | None = None):
+    def __init__(self) -> None:
         self._by_key: dict[tuple[str, str, str], RawViolation] = {}
         self._states: dict[tuple[str, str, str], list[str]] = {}
-        self._max = max_violations
-        self.dropped: int = 0
 
     def add(self, violation: RawViolation, state: str = "") -> bool:
         """Record a violation. Returns whether it opened a new entry."""
@@ -543,9 +584,6 @@ class RunViolations:
         if key in self._by_key:
             if state and state not in self._states[key]:
                 self._states[key].append(state)
-            return False
-        if self._max is not None and len(self._by_key) >= self._max:
-            self.dropped += 1
             return False
         self._by_key[key] = violation
         self._states[key] = [state] if state else []

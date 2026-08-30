@@ -29,6 +29,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import math
 import re
 import socket
 import threading
@@ -303,11 +304,17 @@ class _Budget:
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
-    """Nearest-rank percentile — no interpolation, no numpy."""
+    """Nearest-rank percentile — no interpolation, no numpy.
+
+    ``ceil``, not ``round(x + 0.5)``: the latter meets Python's
+    banker's rounding on an exact half and rounds *down* to even, so at
+    twenty samples p95 answered the maximum where nearest rank wants the
+    nineteenth. One sample out, always pessimistic, and only at some sizes.
+    """
     if not sorted_values:
         return 0.0
-    index = max(0, min(len(sorted_values) - 1, round(fraction * len(sorted_values) + 0.5) - 1))
-    return sorted_values[index]
+    rank = math.ceil(fraction * len(sorted_values))
+    return sorted_values[max(0, min(len(sorted_values) - 1, rank - 1))]
 
 
 def _worker(
@@ -384,7 +391,7 @@ def run_profile(
     started = time.monotonic()
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for _ in range(workers):
+            futures = [
                 pool.submit(
                     _worker,
                     budget=budget,
@@ -396,9 +403,30 @@ def run_profile(
                     timeout=request_timeout,
                     error_rate_stop=error_rate_stop,
                 )
+                for _ in range(workers)
+            ]
     except Exception as exc:  # pragma: no cover - defensive; the pool itself failing
         logger.exception("Load profile against %s could not run", url)
         return LoadResult(refused=f"Load profile could not run: {exc}")
+
+    # A worker that raised before claiming a slot never touches the budget,
+    # so without this a profile whose threads all died at `httpx.Client`
+    # construction — the documented Windows SSL_CERT_FILE footgun is exactly
+    # that call — comes back `requests_sent=0, refused=None` and the task
+    # stamps it completed. Indistinguishable from a profile that genuinely
+    # had nothing to do, which is the one thing this must not be.
+    worker_errors = [error for error in (f.exception() for f in futures) if error is not None]
+    if worker_errors and budget.completed == 0:
+        logger.error("Every load worker for %s failed: %s", url, worker_errors[0])
+        return LoadResult(refused=f"No request could be sent: {worker_errors[0]}")
+    if worker_errors:
+        logger.warning(
+            "%d of %d load workers for %s failed: %s",
+            len(worker_errors),
+            workers,
+            url,
+            worker_errors[0],
+        )
 
     elapsed = time.monotonic() - started
     latencies = sorted(budget.latencies)

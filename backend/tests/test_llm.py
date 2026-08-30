@@ -2337,6 +2337,25 @@ class TestToolSchemaSplit:
         wrapup = {tool["function"]["name"] for tool in nonfunctional.requests[-1]["tools"]}
         assert "record_finding" not in wrapup
 
+    def test_the_repeat_nudge_names_each_loop_own_terminal_tool(self, monkeypatch):
+        """A nudge naming a tool the schema does not carry burns an action.
+
+        The nonfunctional loop is not offered `finish_session`; telling it
+        to call one teaches it the wrong loop and costs a round.
+        """
+        _scripted(
+            monkeypatch,
+            [_acting(_tool_call(f"c{i}", "snapshot")) for i in range(5)]
+            + [_answering(json.dumps({"notes": "done"}))],
+        )
+
+        result = _run_nonfunctional({"snapshot": lambda: "page"}, max_actions=5)
+
+        nudges = [entry for entry in result.action_log if "repeated this exact action" in entry]
+        assert nudges, "the repeat nudge should have fired"
+        assert any("finish_itinerary" in entry for entry in nudges)
+        assert not any("finish_session" in entry for entry in nudges)
+
     def test_the_two_loops_share_the_navigation_tool_descriptions(self):
         exploratory = {tool["function"]["name"]: tool for tool in llm_prompts.BROWSER_TOOLS}
         nonfunctional = {tool["function"]["name"]: tool for tool in llm_prompts.NONFUNCTIONAL_TOOLS}
@@ -2598,6 +2617,38 @@ class TestTriageNonfunctionalFindings:
     def test_nothing_to_triage_makes_no_call(self, stub_client):
         assert llm.triage_nonfunctional_findings([]) == {}
         assert stub_client.requests == []
+
+    def test_it_heartbeats_once_per_chunk(self, stub_client):
+        """Each chunk is its own completion under OPENAI_TIMEOUT.
+
+        Several of them in series can out-wait HEARTBEAT_STALE_SECONDS, and
+        the reconciler would then re-enqueue the whole browser walk as a
+        crashed worker. The caller has to be able to say "still alive"
+        between chunks, not only before the first.
+        """
+        stub_client.content = json.dumps({"findings": []})
+        violations = [_violation(n, nodes=["x" * 500]) for n in range(6)]
+        beats = []
+
+        llm.triage_nonfunctional_findings(
+            violations, max_chars=1000, on_attempt=lambda: beats.append(1)
+        )
+
+        assert len(stub_client.requests) > 1
+        assert len(beats) == len(stub_client.requests)
+
+    def test_it_heartbeats_even_when_a_chunk_fails(self, stub_client):
+        stub_client.content = "not json"
+        beats = []
+
+        llm.triage_nonfunctional_findings([_violation(1)], on_attempt=lambda: beats.append(1))
+
+        assert beats == [1]
+
+    def test_the_heartbeat_is_optional(self, stub_client):
+        stub_client.content = json.dumps({"findings": []})
+
+        assert llm.triage_nonfunctional_findings([_violation(1)]) == {}
 
 
 class TestSummarizeNonfunctional:

@@ -47,7 +47,6 @@ from backend.config import (
     NONFUNCTIONAL_CATALOGUE_TIMEOUT,
     NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT,
     NONFUNCTIONAL_MAX_ACTIONS,
-    NONFUNCTIONAL_MAX_FINDINGS,
     NONFUNCTIONAL_MAX_TARGETS,
 )
 from backend.database import new_session
@@ -56,6 +55,7 @@ from backend.models.database import (
     SPRINT_FINISHED_ERROR,
     SUPERSEDED_ERROR,
     DomainOutcome,
+    LoadMethod,
     NonfunctionalChildStatus,
     NonfunctionalDomain,
     NonfunctionalFinding,
@@ -115,9 +115,7 @@ class _Catalogue:
     run: NonfunctionalRun
     browser: browser_session.BrowserSession | None = None
     violations: nonfunctional_checks.RunViolations = field(
-        default_factory=lambda: nonfunctional_checks.RunViolations(
-            max_violations=NONFUNCTIONAL_MAX_FINDINGS
-        )
+        default_factory=nonfunctional_checks.RunViolations
     )
     seen_urls: set[str] = field(default_factory=set)
     position: int = 0
@@ -157,6 +155,30 @@ class _Catalogue:
         return f"[examined {clean}]"
 
     # ── target rows ───────────────────────────────────────────────────
+
+    def record_unreachable(self, url: str, error: str) -> None:
+        """Record a base URL the browser could not open.
+
+        Part of the coverage floor rather than an aside: the run promises
+        to examine every confirmed base URL, so one it could not reach has
+        to say so.  Silence here would read exactly like a URL that was
+        never nominated.
+        """
+        clean = url.split("#", 1)[0]
+        if clean in self.seen_urls:
+            return
+        self.seen_urls.add(clean)
+        target = self._new_target(clean, TargetKind.PAGE)
+        target.status = NonfunctionalChildStatus.ERROR
+        target.error = error[: finalization.ERROR_SUMMARY_MAX_CHARS]
+        for domain, attribute in (
+            (NonfunctionalDomain.ACCESSIBILITY, "a11y_outcome"),
+            (NonfunctionalDomain.SECURITY, "security_outcome"),
+            (NonfunctionalDomain.PERFORMANCE, "performance_outcome"),
+        ):
+            if domain in self.domains:
+                setattr(target, attribute, DomainOutcome.FAILED_TO_RUN)
+        self._save(target)
 
     def _new_target(self, url: str, kind: str) -> NonfunctionalTarget:
         target = NonfunctionalTarget(
@@ -561,12 +583,30 @@ def _walk_the_feature(
         catalogue_timeout=NONFUNCTIONAL_CATALOGUE_TIMEOUT,
     ) as browser:
         catalogue.browser = browser
-        # The opening navigation happens inside __enter__, before the
-        # callback could be attached to anything — seed the base URLs
-        # explicitly so the coverage floor is the confirmed environment
-        # rather than wherever the model happened to go first.
-        for url in base_urls:
-            catalogue.on_navigated(url, time.monotonic() + NONFUNCTIONAL_CATALOGUE_TIMEOUT)
+        # Seed the coverage floor: every confirmed base URL is examined
+        # whether or not the model goes there.
+        #
+        # Ordering is load-bearing, and it is the whole of a bug this once
+        # had. `__enter__` opens on base_urls[0] and nothing else, so the
+        # first URL is examined where it already is — but every *later* one
+        # has to be navigated to first. Calling the hook directly for a URL
+        # the browser is not on runs the catalogue against whatever page is
+        # loaded and files the result under the URL that was named: wrong
+        # evidence on a bug report, and the named URL silently never
+        # examined, because `seen_urls` now holds it. `navigate` fires the
+        # hook itself, after its own post-settle origin re-check.
+        catalogue.on_navigated(base_urls[0], time.monotonic() + NONFUNCTIONAL_CATALOGUE_TIMEOUT)
+        for url in base_urls[1:]:
+            outcome = browser.navigate(url)
+            if outcome.startswith("ERROR:"):
+                # A base URL we cannot reach is recorded, not skipped: the
+                # coverage floor says what was examined, and a silent
+                # absence is the same failure this block exists to fix.
+                catalogue.record_unreachable(url, outcome)
+        if len(base_urls) > 1:
+            # Back to where the prompt says the walk starts. The hook
+            # no-ops — this URL is already in `seen_urls`.
+            browser.navigate(base_urls[0])
 
         result = llm.run_nonfunctional_loop(
             name=requirement.name,
@@ -626,7 +666,7 @@ def _run_load_profiles(
         .where(NonfunctionalLoadProfile.nonfunctional_run_id == run.id)
         .order_by(NonfunctionalLoadProfile.position)
     ).all()
-    ordered = sorted(profiles, key=lambda p: (0 if p.method in ("GET", "HEAD", "OPTIONS") else 1))
+    ordered = sorted(profiles, key=lambda p: 0 if LoadMethod.is_safe(p.method) else 1)
     allowed = load_runner.allowed_origins_for(base_urls)
 
     for profile in ordered:
@@ -700,7 +740,11 @@ def _persist_findings(session: Session, run: NonfunctionalRun, catalogue: _Catal
                 nodes=list(violation.nodes),
             )
             for index, violation in enumerate(violations)
-        ]
+        ],
+        # Each chunk is its own completion; without this a multi-chunk
+        # triage can out-wait HEARTBEAT_STALE_SECONDS and have the whole
+        # run re-enqueued as a crashed worker.
+        on_attempt=lambda: _heartbeat(session, run),
     )
 
     position = 0
