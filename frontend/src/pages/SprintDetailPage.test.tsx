@@ -67,6 +67,7 @@ const fakeSprint: SprintResponse = {
   test_plans_complete: false,
   has_test_runs: false,
   has_exploratory_runs: false,
+  has_nonfunctional_runs: false,
 }
 
 /**

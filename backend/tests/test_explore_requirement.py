@@ -240,7 +240,7 @@ class TestFindings:
         monkeypatch.setattr(
             task_module.StorageService,
             "store_screenshot",
-            lambda self, png, directory, session_id, position: None,
+            lambda self, png, directory, kind, owner_id, position: None,
         )
         patched["findings"] = [self._finding(environment="Chromium 131 · https://app.test/x")]
         _, _, run = _seed_run_with_sessions(db_session)
@@ -260,7 +260,7 @@ class TestFindings:
         monkeypatch.setattr(
             task_module.StorageService,
             "store_screenshot",
-            lambda self, png, directory, session_id, position: None,
+            lambda self, png, directory, kind, owner_id, position: None,
         )
         record = self._finding()
         record.severity = "critical"
@@ -282,7 +282,7 @@ class TestFindings:
         monkeypatch.setattr(
             task_module.StorageService,
             "store_screenshot",
-            lambda self, png, directory, session_id, position: None,
+            lambda self, png, directory, kind, owner_id, position: None,
         )
         record = self._finding()
         record.finding_type = "issue"
@@ -303,7 +303,7 @@ class TestFindings:
         monkeypatch.setattr(
             task_module.StorageService,
             "store_screenshot",
-            lambda self, png, directory, session_id, position: None,
+            lambda self, png, directory, kind, owner_id, position: None,
         )
         patched["findings"] = [self._finding(environment=None)]
         _, _, run = _seed_run_with_sessions(db_session)
@@ -321,7 +321,12 @@ class TestFindings:
         monkeypatch.setattr(
             task_module.StorageService,
             "store_screenshot",
-            lambda self, png, directory, session_id, position: f"/tmp/s{session_id}_{position}.png",
+            lambda self,
+            png,
+            directory,
+            kind,
+            owner_id,
+            position: f"/tmp/{kind}_{owner_id}_{position}.png",
         )
         patched["findings"] = [self._finding()]
         _, _, run = _seed_run_with_sessions(db_session)
@@ -333,7 +338,7 @@ class TestFindings:
         assert len(findings) == 1
         assert findings[0].title == "Empty export"
         assert findings[0].finding_type == "bug"
-        expected = f"/tmp/s{findings[0].exploratory_session_id}_0.png"
+        expected = f"/tmp/exploratory_{findings[0].exploratory_session_id}_0.png"
         assert findings[0].screenshot_path == expected
 
     def test_findings_persist_without_screenshot_when_offline_disabled(
@@ -345,7 +350,7 @@ class TestFindings:
         monkeypatch.setattr(
             task_module.StorageService,
             "store_screenshot",
-            lambda self, png, directory, session_id, position: None,
+            lambda self, png, directory, kind, owner_id, position: None,
         )
         patched["findings"] = [self._finding()]
         _, _, run = _seed_run_with_sessions(db_session)
@@ -363,7 +368,7 @@ class TestFindings:
         monkeypatch.setattr(
             task_module.StorageService,
             "store_screenshot",
-            lambda self, png, directory, session_id, position: None,
+            lambda self, png, directory, kind, owner_id, position: None,
         )
         patched["findings"] = [self._finding("one"), self._finding("two")]
         _, _, run = _seed_run_with_sessions(db_session)
@@ -380,7 +385,7 @@ class TestFindings:
     ):
         from backend.tasks import explore_requirement as task_module
 
-        def boom(self, png, directory, session_id, position):
+        def boom(self, png, directory, kind, owner_id, position):
             raise OSError("disk full")
 
         monkeypatch.setattr(task_module.StorageService, "store_screenshot", boom)

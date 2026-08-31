@@ -9,12 +9,19 @@ pinned against the same definitions production reads instead of against a
 fake's restatement of them.
 """
 
+import pytest
+
 from backend.models.database import (
     ExploratoryFinding,
     ExploratoryRun,
     ExploratoryRunStatus,
     ExploratorySession,
     ExploratorySessionStatus,
+    NonfunctionalChildStatus,
+    NonfunctionalFinding,
+    NonfunctionalRun,
+    NonfunctionalRunStatus,
+    NonfunctionalTarget,
     Requirement,
     RequirementStatus,
     Sprint,
@@ -147,11 +154,13 @@ def _sprint(
     requirements: list[Requirement] | None = None,
     test_runs: list[TestRun] | None = None,
     exploratory_runs: list[ExploratoryRun] | None = None,
+    nonfunctional_runs: list["NonfunctionalRun"] | None = None,
 ) -> Sprint:
     sprint = Sprint(id=1, name="Sprint 1", repo_id=1, directory="sprint-1")
     sprint.all_requirements = requirements or []
     sprint.test_runs = test_runs or []
     sprint.exploratory_runs = exploratory_runs or []
+    sprint.nonfunctional_runs = nonfunctional_runs or []
     return sprint
 
 
@@ -1073,3 +1082,343 @@ def test_a_broken_sprint_yields_zeros_rather_than_raising():
     assert metrics["sprint_id"] == 7
     assert metrics["bug_count"] == 0
     assert metrics["bugs_per_requirement"] is None
+
+
+# ── Nonfunctional runs ════════════════════════════════════════════════
+
+
+def _nf_finding(
+    title: str,
+    *,
+    rule: str = "image-alt",
+    domain: str = "accessibility",
+    finding_type: str = "bug",
+    severity: str = "medium",
+    group: int | None = None,
+) -> NonfunctionalFinding:
+    return NonfunctionalFinding(
+        position=0,
+        domain=domain,
+        rule=rule,
+        finding_type=finding_type,
+        severity=severity,
+        title=title,
+        steps_to_reproduce="open the page",
+        expected="e",
+        actual="a",
+        defect_group_id=group,
+    )
+
+
+def _target(
+    findings: list[NonfunctionalFinding] | None = None,
+    *,
+    url: str = "https://app.test/login",
+    status: str = NonfunctionalChildStatus.COMPLETED,
+) -> NonfunctionalTarget:
+    target = NonfunctionalTarget(position=0, url=url, status=status)
+    target.findings = findings or []
+    return target
+
+
+def _nonfunctional_run(
+    requirement_id: int,
+    targets: list[NonfunctionalTarget],
+    status: str = NonfunctionalRunStatus.COMPLETED,
+) -> NonfunctionalRun:
+    run = NonfunctionalRun(
+        sprint_id=1,
+        requirement_id=requirement_id,
+        base_url_env_vars_csv="APP_URL",
+        domains_csv="accessibility,security,performance",
+        status=status,
+    )
+    run.targets = targets
+    return run
+
+
+class TestNonfunctionalMetrics:
+    """The third run mode: in the headline, out of both densities."""
+
+    def _mixed_sprint(self, nonfunctional_findings):
+        return _sprint(
+            requirements=[_requirement(1, "Login")],
+            test_runs=[
+                _run(
+                    [
+                        _execution(
+                            1,
+                            [
+                                _case(
+                                    10,
+                                    TestCaseExecutionStatus.FAILED,
+                                    title="Login rejects a valid password",
+                                )
+                            ],
+                        )
+                    ]
+                )
+            ],
+            nonfunctional_runs=[_nonfunctional_run(1, [_target(nonfunctional_findings)])],
+        )
+
+    def test_the_headline_holds_both_and_the_halves_add_up(self):
+        sprint = self._mixed_sprint(
+            [
+                _nf_finding("Images lack alt text", rule="image-alt"),
+                _nf_finding("No CSP", rule="missing-csp", domain="security"),
+            ]
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["bug_count"] == 3
+        assert metrics["functional_bug_count"] == 1
+        assert metrics["nonfunctional_bug_count"] == 2
+        assert (
+            metrics["functional_bug_count"] + metrics["nonfunctional_bug_count"]
+            == metrics["bug_count"]
+        )
+
+    def test_the_breakdown_row_splits_by_pool_too(self):
+        """The table asks which feature carries which kind of defect, and
+        one merged column cannot answer it: three accessibility violations
+        and one broken login are not four broken behaviours."""
+        sprint = self._mixed_sprint(
+            [
+                _nf_finding("Images lack alt text", rule="image-alt"),
+                _nf_finding("No CSP", rule="missing-csp", domain="security"),
+            ]
+        )
+
+        row = compute_sprint_metrics(sprint)["per_requirement"][0]
+
+        assert row["requirement_name"] == "Login"
+        assert row["functional_bug_count"] == 1
+        assert row["nonfunctional_bug_count"] == 2
+        assert row["bug_count"] == 3
+
+    def test_every_row_halves_sum_to_its_total(self):
+        """The pools partition the sprint's defects, so this holds by
+        construction — asserted because a third pool would break it
+        silently, leaving a table whose columns quietly stop adding up."""
+        # Titles must differ by more than a digit: `finding_dedup._normalize`
+        # strips digits, so "Violation 1"/"Violation 2" would be one defect.
+        sprint = self._mixed_sprint(
+            [
+                _nf_finding("Images lack alt text", rule="image-alt"),
+                _nf_finding("Buttons have no accessible name", rule="button-name"),
+                _nf_finding("No CSP header", rule="missing-csp", domain="security"),
+            ]
+        )
+
+        rows = compute_sprint_metrics(sprint)["per_requirement"]
+
+        assert rows
+        for row in rows:
+            assert row["functional_bug_count"] + row["nonfunctional_bug_count"] == row["bug_count"]
+
+    def test_a_functional_only_sprint_reports_a_zero_nonfunctional_column(self):
+        """The column shows on every sprint, so the field is always present
+        rather than absent — an omitted key would render as blank, which
+        reads as "unknown" where the truth is "none"."""
+        sprint = _sprint(
+            requirements=[_requirement(1, "Login")],
+            test_runs=[
+                _run([_execution(1, [_case(10, TestCaseExecutionStatus.FAILED, title="Boom")])])
+            ],
+        )
+
+        row = compute_sprint_metrics(sprint)["per_requirement"][0]
+
+        assert row["functional_bug_count"] == 1
+        assert row["nonfunctional_bug_count"] == 0
+        assert row["bug_count"] == 1
+
+    def test_the_worst_first_sort_still_keys_on_the_total(self):
+        """Checkout carries more defects overall; Login carries more
+        *functional* ones. Sorting by either half would swap them."""
+        sprint = _sprint(
+            requirements=[_requirement(1, "Checkout"), _requirement(2, "Login")],
+            test_runs=[
+                _run(
+                    [
+                        _execution(
+                            1, [_case(10, TestCaseExecutionStatus.FAILED, title="Checkout 500")]
+                        ),
+                        _execution(
+                            2,
+                            [
+                                _case(20, TestCaseExecutionStatus.FAILED, title="Login A"),
+                                _case(21, TestCaseExecutionStatus.FAILED, title="Login B"),
+                            ],
+                        ),
+                    ]
+                )
+            ],
+            nonfunctional_runs=[
+                _nonfunctional_run(
+                    1,
+                    [
+                        _target(
+                            [
+                                _nf_finding("Images lack alt text", rule="image-alt"),
+                                _nf_finding("Buttons have no accessible name", rule="button-name"),
+                                _nf_finding("No CSP header", rule="missing-csp", domain="security"),
+                            ]
+                        )
+                    ],
+                )
+            ],
+        )
+
+        rows = compute_sprint_metrics(sprint)["per_requirement"]
+
+        assert [(r["requirement_name"], r["bug_count"]) for r in rows] == [
+            ("Checkout", 4),
+            ("Login", 2),
+        ]
+        # The half that would have reversed the order.
+        assert [r["functional_bug_count"] for r in rows] == [1, 2]
+
+    def test_both_densities_exclude_nonfunctional_bugs(self):
+        sprint = self._mixed_sprint(
+            [_nf_finding(f"Violation {n}", rule=f"rule-{n}") for n in range(5)]
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        # One functional bug over one distinct case and one covered
+        # requirement — the five nonfunctional ones move neither.
+        assert metrics["bugs_per_test_case"] == 1.0
+        assert metrics["bugs_per_requirement"] == 1.0
+
+    def test_urls_examined_is_counted_and_never_summed_with_cases(self):
+        sprint = self._mixed_sprint([_nf_finding("Images lack alt text")])
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["urls_examined"] == 1
+        assert metrics["requirements_examined"] == 1
+        assert metrics["distinct_test_cases_run"] == 1
+
+    def test_the_domain_breakdown_names_what_was_found(self):
+        sprint = self._mixed_sprint(
+            [
+                _nf_finding("A", rule="image-alt"),
+                _nf_finding("B", rule="label"),
+                _nf_finding("C", rule="missing-csp", domain="security"),
+            ]
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["bugs_by_domain"] == {"accessibility": 2, "security": 1}
+
+    def test_a_nonfunctional_issue_is_never_collapsed_into_the_bug_count(self):
+        sprint = _sprint(
+            requirements=[_requirement(1, "Login")],
+            nonfunctional_runs=[
+                _nonfunctional_run(1, [_target([_nf_finding("Blocked", finding_type="issue")])])
+            ],
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["bug_count"] == 0
+        assert metrics["issue_count"] == 1
+
+    def test_a_shared_defect_group_collapses_across_run_modes(self):
+        """Group precedence is what stops a re-run inflating the count."""
+        sprint = self._mixed_sprint(
+            [_nf_finding("A", group=7), _nf_finding("B", rule="label", group=7)]
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["nonfunctional_bug_count"] == 1
+        assert metrics["bug_count"] == 2
+
+    @pytest.mark.parametrize(
+        ("status", "field"),
+        [
+            (NonfunctionalRunStatus.RUNNING, "excluded_runs_running"),
+            (NonfunctionalRunStatus.FAILED, "excluded_runs_failed"),
+            (NonfunctionalRunStatus.PENDING, "excluded_runs_running"),
+        ],
+    )
+    def test_a_non_completed_run_is_excluded_and_named(self, status, field):
+        sprint = _sprint(
+            requirements=[_requirement(1, "Login")],
+            nonfunctional_runs=[
+                _nonfunctional_run(1, [_target([_nf_finding("A")])], status=status)
+            ],
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["bug_count"] == 0
+        assert metrics[field] == 1
+
+    def test_only_completed_targets_count_toward_coverage(self):
+        sprint = _sprint(
+            requirements=[_requirement(1, "Login")],
+            nonfunctional_runs=[
+                _nonfunctional_run(
+                    1,
+                    [
+                        _target([], url="https://app.test/a"),
+                        _target(
+                            [],
+                            url="https://app.test/b",
+                            status=NonfunctionalChildStatus.SKIPPED,
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        assert compute_sprint_metrics(sprint)["urls_examined"] == 1
+
+    def test_a_url_examined_by_two_runs_is_one_url(self):
+        sprint = _sprint(
+            requirements=[_requirement(1, "Login")],
+            nonfunctional_runs=[
+                _nonfunctional_run(1, [_target([])]),
+                _nonfunctional_run(1, [_target([])]),
+            ],
+        )
+
+        assert compute_sprint_metrics(sprint)["urls_examined"] == 1
+
+    def test_a_nonfunctional_only_sprint_reports_a_null_case_density(self):
+        sprint = _sprint(
+            requirements=[_requirement(1, "Login")],
+            nonfunctional_runs=[_nonfunctional_run(1, [_target([_nf_finding("A")])])],
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["bug_count"] == 1
+        assert metrics["requirements_covered"] == 1
+        # Nothing functional was found, and the nonfunctional bug is not a
+        # numerator here — both densities read zero rather than one.
+        assert metrics["bugs_per_requirement"] == 0.0
+        assert metrics["bugs_per_test_case"] is None
+
+    def test_a_thrown_exception_still_returns_the_empty_shape(self, monkeypatch):
+        import backend.services.qa_metrics as metrics_module
+
+        sprint = self._mixed_sprint([_nf_finding("A")])
+        monkeypatch.setattr(
+            metrics_module,
+            "_collect",
+            lambda _sprint: (_ for _ in ()).throw(RuntimeError("row is nonsense")),
+        )
+
+        metrics = compute_sprint_metrics(sprint)
+
+        assert metrics["bug_count"] == 0
+        assert metrics["functional_bug_count"] == 0
+        assert metrics["bugs_by_domain"] == {}
+        assert metrics["sprint_id"] == 1

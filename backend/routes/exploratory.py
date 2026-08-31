@@ -13,7 +13,6 @@ import logging
 import os
 from datetime import datetime, timezone
 from functools import partial
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -34,11 +33,8 @@ from backend.models.database import (
     FindingSeverity,
     FindingType,
     Requirement,
-    RequirementStatus,
     SfdipotArea,
     Sprint,
-    TestEnvironmentStatus,
-    TestPlanStatus,
     export_rollup,
     outdated_restart_error,
 )
@@ -51,7 +47,13 @@ from backend.models.types import (
     ExploratoryRunResponse,
     ExploratorySessionResponse,
 )
-from backend.routes._common import ensure_sprint_active, get_sprint_or_404
+from backend.routes._common import (
+    ensure_sprint_active,
+    get_sprint_or_404,
+    resolve_confirmed_env_vars,
+    resolve_requirement_for_run,
+    validate_url_vars,
+)
 from backend.services import finding_export, llm
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.llm_prompts import TestCaseLike
@@ -87,63 +89,6 @@ def _get_run_or_404(session: Session, run_id: int) -> ExploratoryRun:
     if run is None:
         raise HTTPException(status_code=404, detail="Exploratory run not found.")
     return run
-
-
-def _resolve_requirement(sprint: Sprint, requirement_id: int) -> Requirement:
-    """The shared precondition set for drafting charters and starting a run."""
-    requirement = next((r for r in sprint.requirements if r.id == requirement_id), None)
-    if requirement is None or requirement.status != RequirementStatus.CONFIRMED:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Requirement id {requirement_id} was not found or is not confirmed.",
-        )
-    if requirement.test_plan is None or requirement.test_plan.status != TestPlanStatus.APPROVED:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Requirement '{requirement.name}' does not have an approved test plan.",
-        )
-    return requirement
-
-
-def _resolve_env_vars(sprint: Sprint) -> dict[str, str]:
-    test_env = sprint.test_environment
-    if test_env is None or test_env.status != TestEnvironmentStatus.CONFIRMED:
-        raise HTTPException(
-            status_code=422,
-            detail="The test environment must be confirmed before exploratory testing.",
-        )
-    env_vars = test_env.env_vars
-    if not env_vars:
-        raise HTTPException(
-            status_code=422,
-            detail="No test environment variables are available for this sprint.",
-        )
-    return env_vars
-
-
-def _validate_url_vars(names: list[str], env_vars: dict[str, str], status_code: int) -> None:
-    """Every nominated name must exist and hold an http(s) URL.
-
-    Used twice with different status codes: 502 when the model nominated them
-    (malformed LLM output) and 422 when the client sent them back (bad input).
-    """
-    if not names:
-        raise HTTPException(
-            status_code=status_code,
-            detail="No environment variable was nominated for the application URL.",
-        )
-    for name in names:
-        if name not in env_vars:
-            raise HTTPException(
-                status_code=status_code,
-                detail=f"Environment variable '{name}' does not exist in this sprint.",
-            )
-        parsed = urlparse(env_vars[name])
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise HTTPException(
-                status_code=status_code,
-                detail=f"Environment variable '{name}' does not hold an http(s) URL.",
-            )
 
 
 def _validate_charters(charters: list[CharterDraft]) -> None:
@@ -241,8 +186,8 @@ async def generate_charters(
     """Draft SBTM charters for one requirement. Persists nothing."""
     sprint = get_sprint_or_404(session, sprint_id)
     ensure_sprint_active(sprint, _GATE_SUBJECT)
-    requirement = _resolve_requirement(sprint, body.requirement_id)
-    env_vars = _resolve_env_vars(sprint)
+    requirement = resolve_requirement_for_run(sprint, body.requirement_id)
+    env_vars = resolve_confirmed_env_vars(sprint)
 
     covered = [
         TestCaseLike(
@@ -274,7 +219,7 @@ async def generate_charters(
 
     # The model only ever saw variable *names*; confirm its nominations
     # resolve to real http(s) URLs before the user is asked to approve them.
-    _validate_url_vars(result.base_url_env_vars, env_vars, status_code=502)
+    validate_url_vars(result.base_url_env_vars, env_vars, status_code=502)
 
     charters = [
         CharterDraft(charter=item.charter.strip(), sfdipot_areas=item.sfdipot_areas)
@@ -324,13 +269,13 @@ async def create_exploratory_run(
     """Start an exploratory run over the approved charters for one requirement."""
     sprint = get_sprint_or_404(session, sprint_id)
     ensure_sprint_active(sprint, _GATE_SUBJECT)
-    requirement = _resolve_requirement(sprint, body.requirement_id)
-    env_vars = _resolve_env_vars(sprint)
+    requirement = resolve_requirement_for_run(sprint, body.requirement_id)
+    env_vars = resolve_confirmed_env_vars(sprint)
 
     # The charters and URL variables come back edited, so nothing the generate
     # call returned is trusted here — both are re-validated from scratch.
     _validate_charters(body.charters)
-    _validate_url_vars(body.base_url_env_vars, env_vars, status_code=422)
+    validate_url_vars(body.base_url_env_vars, env_vars, status_code=422)
 
     if body.export_findings and sprint.issue_tracker is None:
         raise HTTPException(status_code=422, detail=TRACKER_REQUIRED_ERROR)

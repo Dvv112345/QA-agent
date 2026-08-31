@@ -25,7 +25,6 @@ from sqlmodel import select
 from backend.config import (
     MAX_SCRIPT_FIX_ROUNDS,
     SCRIPT_EXECUTION_TIMEOUT,
-    TEST_EXECUTION_FILE_MAX_CHARS,
 )
 from backend.database import new_session
 from backend.models.database import (
@@ -44,6 +43,7 @@ from backend.services import (
     finding_export,
     finding_grouping,
     llm,
+    repo_reader,
     script_runner,
 )
 from backend.services.llm_prompts import TestCaseLike
@@ -65,36 +65,6 @@ _FILE_TRUNCATION_MARKER = "\n… (truncated)"
 # comment here used to say so.
 _PLAN_NOT_APPROVED_ERROR = "Test plan is no longer approved."
 _ENV_VARS_MISSING_ERROR = "Test environment access variables have not been established."
-
-
-def _build_read_file(
-    file_tree: str, owner: str, repo: str, token: str | None
-) -> Callable[[str], str]:
-    """Executor for the LLM's read_file tool: path-validated, truncating,
-    never raising — errors go back to the model as strings it can react to.
-
-    The only repo access in the pipeline. Test planning deliberately has
-    none, so the interface details a script needs — real endpoint paths,
-    parameters, response shapes — are resolved here, at the point of use and
-    against a snapshot refreshed when the run was created.
-    """
-    allowed_paths = set(file_tree.splitlines())
-
-    def read_file(path: str) -> str:
-        requested = (path or "").strip().lstrip("/")
-        if requested not in allowed_paths:
-            return f"ERROR: could not read '{requested}': path is not in the repository file tree."
-        try:
-            content = asyncio.run(github_utils.fetch_file(owner, repo, requested, token))
-        except github_utils.GitHubError as exc:
-            return f"ERROR: could not read '{requested}': {exc}"
-        if content is None:
-            return f"ERROR: could not read '{requested}': file not found."
-        if len(content) > TEST_EXECUTION_FILE_MAX_CHARS:
-            content = content[:TEST_EXECUTION_FILE_MAX_CHARS] + _FILE_TRUNCATION_MARKER
-        return content
-
-    return read_file
 
 
 # Cap for the finding title — a one-liner, held to the same bound as the
@@ -249,7 +219,7 @@ def execute_test_task(test_execution_id: int) -> None:
                 token = (
                     decrypt_token(sprint.repo.github_token) if sprint.repo.github_token else None
                 )
-                read_file = _build_read_file(file_tree, owner, repo_name, token)
+                read_file = repo_reader.build_read_file(file_tree, owner, repo_name, token)
 
             def on_round() -> None:
                 # Heartbeat between LLM rounds and subprocess runs so a live

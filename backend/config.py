@@ -42,6 +42,18 @@ def _get_int(key: str, default: int) -> int:
         return default
 
 
+def _get_float(key: str, default: float) -> float:
+    """Read an env var as a float, returning *default* when unset or invalid."""
+    value = os.environ.get(key, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning(f"Environment variable {key} cannot be loaded, using default of {default}")
+        return default
+
+
 def _get_list(key: str, default: list[str]) -> list[str]:
     """Read an env var as a comma-separated list of strings."""
     value = os.environ.get(key, "").strip()
@@ -193,6 +205,65 @@ CICD_EXPORT_JOB_TIMEOUT: int = _get_int("CICD_EXPORT_JOB_TIMEOUT", 1800)
 # How many workflow files an export fetches and parses before it stops
 # looking. Bounds both the request count and the prompt size.
 CICD_MAX_WORKFLOWS: int = _get_int("CICD_MAX_WORKFLOWS", 20)
+
+# ── Nonfunctional testing (accessibility, performance + load, security) ──
+# How many URLs one run examines. The catalogue runs at every target, so
+# this bounds both the wall clock and the triage payload. Reaching it stops
+# *new targets* being created, not the navigation loop: the itinerary may
+# still need to walk through pages to reach something, and a hard stop
+# would strand it mid-flow.
+NONFUNCTIONAL_MAX_TARGETS: int = _get_int("NONFUNCTIONAL_MAX_TARGETS", 10)
+# Navigation tool rounds per run — the loop's termination bound. The model
+# navigates and nothing else here: findings come from the tools, so there
+# is no free "record" round to budget for as there is in exploratory.
+NONFUNCTIONAL_MAX_ACTIONS: int = _get_int("NONFUNCTIONAL_MAX_ACTIONS", 30)
+# read_file rounds when proposing a run plan. The model needs the repo to
+# know which endpoints exist before it can pair one with a base-URL
+# variable; without it, load profiles are guesses. Deliberately lower
+# than the other two tool loops (5): this one runs *synchronously inside
+# a request*, so every round is latency a user watches a spinner for.
+NONFUNCTIONAL_PLAN_TOOL_ROUNDS: int = _get_int("NONFUNCTIONAL_PLAN_TOOL_ROUNDS", 3)
+# Per-target cap on the axe payload before anything reaches a prompt.
+NONFUNCTIONAL_AXE_MAX_CHARS: int = _get_int("NONFUNCTIONAL_AXE_MAX_CHARS", 20000)
+# Cap on one *batched* triage call. The per-target cap alone allows
+# MAX_TARGETS × AXE_MAX_CHARS in a single request, which would truncate or
+# time out — and because every violation carries deterministic fallback
+# text, that failure is silent: the LLM half of the feature would simply
+# stop running. Above this the batch is chunked.
+NONFUNCTIONAL_TRIAGE_MAX_CHARS: int = _get_int("NONFUNCTIONAL_TRIAGE_MAX_CHARS", 60000)
+# Wall clock for one target's whole catalogue (axe + headers + metrics).
+# Without it the itinerary half of NONFUNCTIONAL_JOB_TIMEOUT is unbounded:
+# the profile term is capped by config, but axe on an arbitrary page is
+# not. A domain this cuts off records `failed_to_run` — never silence.
+NONFUNCTIONAL_CATALOGUE_TIMEOUT: int = _get_int("NONFUNCTIONAL_CATALOGUE_TIMEOUT", 30)
+# RQ job_timeout for one nonfunctional run: the itinerary
+# (MAX_TARGETS × CATALOGUE_TIMEOUT = 5 min) plus every load profile
+# serially (MAX_LOAD_PROFILES × LOAD_MAX_DURATION_SECONDS) plus triage.
+NONFUNCTIONAL_JOB_TIMEOUT: int = _get_int("NONFUNCTIONAL_JOB_TIMEOUT", 5400)
+# Load profiles per run.
+NONFUNCTIONAL_MAX_LOAD_PROFILES: int = _get_int("NONFUNCTIONAL_MAX_LOAD_PROFILES", 3)
+# ── Load ceilings, two tiers ──
+# Safe methods (GET/HEAD/OPTIONS) read but do not change the application,
+# so they run against any confirmed origin under the first tier. Non-safe
+# methods change data and run only on a run carrying the
+# disposable-environment declaration, under the second, much lower tier —
+# the binding cap there is the total, deliberately in the *tens*.
+NONFUNCTIONAL_LOAD_MAX_CONCURRENCY: int = _get_int("NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 10)
+NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 60
+)
+NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS: int = _get_int("NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 2000)
+NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY: int = _get_int(
+    "NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY", 2
+)
+NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS", 20
+)
+# Seconds for one outbound load request.
+NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT: int = _get_int("NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT", 15)
+# Error rate above which a profile stops early rather than keeping traffic
+# on a host that is already failing.
+NONFUNCTIONAL_LOAD_ERROR_RATE_STOP: float = _get_float("NONFUNCTIONAL_LOAD_ERROR_RATE_STOP", 0.5)
 
 # ── LLM (OpenAI-compatible; DeepSeek by default) ─────────────────────
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")

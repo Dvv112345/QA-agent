@@ -64,6 +64,7 @@ class SprintResponse(SQLModel):
     test_plans_complete: bool = False
     has_test_runs: bool = False
     has_exploratory_runs: bool = False
+    has_nonfunctional_runs: bool = False
 
 
 class SprintUpdateRequest(SQLModel):
@@ -489,6 +490,173 @@ class ExploratoryRunCreateRequest(SQLModel):
     export_findings: bool = False
 
 
+# ── Nonfunctional testing ─────────────────────────────────────────────
+
+
+class NonfunctionalFindingResponse(FindingBase):
+    """One tool-found violation, in the shape the shared card renders.
+
+    ``domain`` and ``rule`` are the two fields the other two finding
+    sources have nothing to say about: they name the tool and the check
+    that produced this, which is what makes a nonfunctional finding
+    traceable rather than merely asserted.
+    """
+
+    id: int
+    position: int
+    domain: str
+    rule: str
+    url: str = ""
+    has_screenshot: bool = False
+    created_at: datetime
+
+
+class NonfunctionalTargetResponse(SQLModel):
+    """One URL and what each selected domain found there.
+
+    The three outcome fields are ``None`` when the domain was not selected
+    for the run — "not selected", "clean" and "could not run" are three
+    different answers and the panel says which.
+    """
+
+    id: int
+    position: int
+    url: str
+    kind: str
+    status: str
+    error: str | None = None
+    a11y_outcome: str | None = None
+    security_outcome: str | None = None
+    performance_outcome: str | None = None
+    # Parsed ``metrics_json`` — timings and Core Web Vitals. Data only:
+    # performance never becomes a finding, a defect, or a ticket.
+    metrics: dict = {}
+    finding_count: int = 0
+    updated_at: datetime
+
+
+class NonfunctionalLoadProfileResponse(SQLModel):
+    """One profile and the traffic it actually applied.
+
+    ``body`` is deliberately echoed with its ``$NAME`` placeholders
+    unresolved — that is how it is stored, and resolution happens inside
+    the load runner precisely so no resolved value is ever serialized.
+    """
+
+    id: int
+    position: int
+    url: str
+    method: str
+    body: str | None = None
+    concurrency: int
+    duration_seconds: int
+    total_request_cap: int
+    status: str
+    requests_sent: int = 0
+    # Parsed ``results_json`` — percentiles, throughput, status counts.
+    results: dict = {}
+    error: str | None = None
+    updated_at: datetime
+
+
+class NonfunctionalRunResponse(ExportRollup, OutdatedFields):
+    """List-page shape — aggregates computed at response time, never stored."""
+
+    id: int
+    sprint_id: int
+    requirement_id: int
+    requirement_name: str
+    status: str
+    domains: list[str] = []
+    environment_disposable: bool = False
+    summary: str | None = None
+    error: str | None = None
+    target_count: int = 0
+    load_profile_count: int = 0
+    bug_count: int = 0
+    issue_count: int = 0
+    high_severity_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class NonfunctionalRunDetailResponse(NonfunctionalRunResponse):
+    """The list shape plus what only the detail page needs.
+
+    Inherits rather than restating — see ``ExploratoryRunDetailResponse``.
+    """
+
+    base_url_env_vars: list[str] = []
+    targets: list[NonfunctionalTargetResponse] = []
+    load_profiles: list[NonfunctionalLoadProfileResponse] = []
+    findings: list[NonfunctionalFindingResponse] = []
+
+
+class LoadProfileDraft(SQLModel):
+    """One proposed load profile — request and response shape both.
+
+    ``rationale`` is the model's, and travels one way: it explains the
+    proposal to the user and is never read back as a permission.
+    """
+
+    url: str
+    method: str = "GET"
+    body: str | None = None
+    concurrency: int = 1
+    duration_seconds: int = 10
+    total_request_cap: int = 100
+    rationale: str = ""
+
+
+class DomainProposal(SQLModel):
+    """One domain the model thinks applies here, and why."""
+
+    domain: str
+    applicable: bool = True
+    rationale: str = ""
+
+
+class NonfunctionalPlanDraftResponse(SQLModel):
+    """What the setup modal reviews before a run exists.
+
+    Everything here is a *proposal*: the create route re-validates all of
+    it as user input, because by then it has been through a form.
+    """
+
+    requirement_id: int
+    requirement_name: str
+    domains: list[DomainProposal] = []
+    base_url_env_vars: list[str] = []
+    load_profiles: list[LoadProfileDraft] = []
+    # Ceilings for each tier, so the modal never restates a config literal
+    # (Convention #10). The unsafe pair is what the disposable declaration
+    # unlocks.
+    max_concurrency: int = 0
+    max_duration_seconds: int = 0
+    max_total_requests: int = 0
+    unsafe_max_concurrency: int = 0
+    unsafe_max_total_requests: int = 0
+    safe_methods: list[str] = []
+
+
+class NonfunctionalPlanGenerateRequest(SQLModel):
+    requirement_id: int
+
+
+class NonfunctionalRunCreateRequest(SQLModel):
+    requirement_id: int
+    domains: list[str]
+    base_url_env_vars: list[str]
+    load_profiles: list[LoadProfileDraft] = []
+    # The user's declaration that this environment can be damaged and
+    # rebuilt. The only thing that permits a non-safe load method, and
+    # stored on the run so a later change cannot rewrite what this run was
+    # allowed to do.
+    environment_disposable: bool = False
+    # See TestRunCreateRequest.export_findings.
+    export_findings: bool = False
+
+
 # ── QA metrics ────────────────────────────────────────────────────────
 
 
@@ -507,7 +675,13 @@ class RequirementMetrics(SQLModel):
     # in the headline, so hiding the row would make the numbers not add up
     # — the failure mode ``FindingType.normalize``'s docstring names.
     requirement_deleted: bool = False
+    # Three bug figures, and the total is not redundant: the table renders
+    # the two halves, while `bug_count` is the worst-first sort key and the
+    # input to the panel's "rows sum above the headline" footnote. The two
+    # halves always sum to it — the pools partition the sprint's defects.
     bug_count: int
+    functional_bug_count: int = 0
+    nonfunctional_bug_count: int = 0
     issue_count: int
     # Distinct, matching the sprint-level headline (see below).
     distinct_test_cases_run: int
@@ -541,8 +715,27 @@ class SprintMetricsResponse(SQLModel):
     # and a 3-step script are not the same unit.
     exploratory_sessions: int
     requirements_explored: int
+    # ── nonfunctional ──
+    # URLs, not sessions or cases: a nonfunctional run's unit of work is a
+    # page or endpoint examined, and a URL examined twice across two runs
+    # is one thing examined. Never summed with either count above.
+    urls_examined: int = 0
+    requirements_examined: int = 0
     # ── defects (distinct, after collapse) ──
+    # `bug_count` is the total and stays the headline: an accessibility
+    # violation a tool found is a real defect. The split below exists
+    # because only the functional half belongs in a density — a
+    # nonfunctional run finds violations per *page*, so dividing them by
+    # test cases moves a number whose denominator never saw them.
+    #
+    # The two halves add to the total, and a test pins that.
     bug_count: int
+    functional_bug_count: int = 0
+    nonfunctional_bug_count: int = 0
+    # Distinct nonfunctional defects per domain (accessibility / security).
+    # Performance is absent by design and not by omission: it is measured
+    # and stored, never judged, so it produces no defect to count.
+    bugs_by_domain: dict[str, int] = {}
     issue_count: int
     # A group's severity is the **highest** among its members, mirroring
     # how ``finding_dedup.elect_representative`` picks the report that
@@ -562,7 +755,8 @@ class SprintMetricsResponse(SQLModel):
     requirements_covered: int
     requirements_total: int
     # None when the denominator is zero, so the UI renders "—" and there is
-    # no divide guard in TSX.
+    # no divide guard in TSX. Both divide `functional_bug_count`, not
+    # `bug_count` — see the note on the split above.
     bugs_per_requirement: float | None = None
     bugs_per_test_case: float | None = None
     # ── breakdown ──

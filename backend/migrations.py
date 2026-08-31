@@ -7,9 +7,11 @@ schema and applies DDL only when it is missing, which keeps every run
 idempotent and dialect-portable (PostgreSQL in production, SQLite in
 tests).
 
-A step may also be data-only — repairing rows a past bug left behind
-(``_settle_orphaned_children``).  Same contract: it must match nothing on
-the second run and nothing at all on a fresh database.
+A step may also be data-only — backfilling a column a new feature made
+load-bearing, or repairing rows a past bug left behind.  Same contract: it
+must match nothing on the second run and nothing at all on a fresh
+database.  ``_add_defect_group_pool`` is both halves at once: the ALTER
+and the backfill that makes the new column mean something.
 """
 
 import logging
@@ -49,8 +51,46 @@ def _add_test_case_script_revisions(engine: Engine) -> None:
     logger.info("Migration: added %s to testcase", ", ".join(missing))
 
 
+def _add_defect_group_pool(engine: Engine) -> None:
+    """Give ``defectgroup`` the pool it belongs to, and backfill it.
+
+    Nonfunctional findings group in their own pool, so every read of a
+    sprint's known defects filters on this column.  The backfill is
+    therefore load-bearing rather than tidiness: a NULL pool drops the row
+    out of every such read, and an existing defect that cannot be matched
+    is silently re-opened as a new one — under an append-only table and a
+    monotonic bug count, with no signal that it happened.
+
+    ``ADD COLUMN <name> VARCHAR`` with no default and no constraint is the
+    one form both dialects take; the ``UPDATE`` then does what a server
+    default would have, for existing rows only.
+    """
+    inspector = inspect(engine)
+    if "defectgroup" not in inspector.get_table_names():
+        return  # fresh database: create_all already made the table with the column
+    existing = {column["name"] for column in inspector.get_columns("defectgroup")}
+    with engine.begin() as connection:
+        if "pool" not in existing:
+            connection.execute(text("ALTER TABLE defectgroup ADD COLUMN pool VARCHAR"))
+            # create_all would have made this index alongside the column;
+            # ADD COLUMN does not, and the grouping read filters on it.
+            # `IF NOT EXISTS` is accepted by both dialects.
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_defectgroup_pool ON defectgroup (pool)")
+            )
+            logger.info("Migration: added pool to defectgroup")
+        # Runs even when the column already existed: a row inserted between
+        # the ALTER and a crashed backfill would otherwise stay NULL forever.
+        result = connection.execute(
+            text("UPDATE defectgroup SET pool = 'functional' WHERE pool IS NULL")
+        )
+        if result.rowcount:
+            logger.info("Migration: backfilled pool on %d defectgroup rows", result.rowcount)
+
+
 _MIGRATIONS = [
     _add_test_case_script_revisions,
+    _add_defect_group_pool,
 ]
 
 

@@ -41,6 +41,7 @@ class _StubQueueService:
         self.enqueued_executions: list[int] = []
         self.enqueued_explorations: list[int] = []
         self.enqueued_cicd_exports: list[int] = []
+        self.enqueued_nonfunctional_runs: list[int] = []
 
     def enqueue_analysis(self, requirement_id: int):
         self.enqueued.append(requirement_id)
@@ -57,6 +58,10 @@ class _StubQueueService:
     def enqueue_exploration(self, exploratory_run_id: int):
         self.enqueued_explorations.append(exploratory_run_id)
         return SimpleNamespace(id=f"exploration-job-{exploratory_run_id}")
+
+    def enqueue_nonfunctional_run(self, nonfunctional_run_id: int):
+        self.enqueued_nonfunctional_runs.append(nonfunctional_run_id)
+        return SimpleNamespace(id=f"nonfunctional-job-{nonfunctional_run_id}")
 
     def enqueue_cicd_export(self, cicd_export_id: int):
         self.enqueued_cicd_exports.append(cicd_export_id)

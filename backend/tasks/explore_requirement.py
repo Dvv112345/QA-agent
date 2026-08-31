@@ -128,7 +128,11 @@ class _SessionWriter:
         if png is not None:
             try:
                 screenshot_path = self.storage.store_screenshot(
-                    png, self.directory, self.exploratory_session.id, self.position
+                    png,
+                    self.directory,
+                    "exploratory",
+                    self.exploratory_session.id,
+                    self.position,
                 )
             except OSError as exc:
                 # An unwritable disk must not cost us the finding itself.

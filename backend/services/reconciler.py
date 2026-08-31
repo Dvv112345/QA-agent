@@ -54,6 +54,8 @@ from backend.models.database import (
     CicdExportStatus,
     ExploratoryRun,
     ExploratoryRunStatus,
+    NonfunctionalRun,
+    NonfunctionalRunStatus,
     Requirement,
     RequirementStatus,
     Sprint,
@@ -64,6 +66,8 @@ from backend.models.database import (
 )
 from backend.services.finalization import (
     EXPLORATORY_SESSION_SPEC,
+    LOAD_PROFILE_SPEC,
+    NONFUNCTIONAL_TARGET_SPEC,
     TEST_CASE_SPEC,
     ChildSpec,
     abandon_unreached_children,
@@ -95,14 +99,15 @@ class SweepSpec:
     clear_field: str | None
     enqueue_name: str  # QueueService method used to (re-)enqueue
     stale_error: str  # user-facing error once retries are exhausted
-    # Child rows to settle whenever this row type is *failed* here, so a
-    # terminal parent never leaves cases or charter sessions reading as
-    # "Queued" forever. None for Requirement/TestPlan, which have none.
+    # Child row types to settle whenever this row type is *failed* here, so
+    # a terminal parent never leaves cases or charter sessions reading as
+    # "Queued" forever. Empty for Requirement/TestPlan, which have none; a
+    # tuple because one run type may drive more than one kind of child row.
     #
     # Deliberately not applied on the re-pend branches: a `running` child
     # belonging to a row going back to `pending` must stay as it is, since
     # the next attempt resumes exactly there.
-    child_spec: ChildSpec | None
+    child_specs: tuple[ChildSpec, ...]
     # Joins the row type to Sprint so sprint activity can be filtered on.
     #
     # Deliberately does *not* exclude rows belonging to an archived
@@ -144,7 +149,7 @@ SWEEP_SPECS: tuple[SweepSpec, ...] = (
             "Analysis worker died repeatedly while processing this requirement. "
             "Use Restart to try again."
         ),
-        child_spec=None,
+        child_specs=(),
         scope_query=lambda stmt: stmt.join(Sprint),
     ),
     SweepSpec(
@@ -159,7 +164,7 @@ SWEEP_SPECS: tuple[SweepSpec, ...] = (
             "Generation worker died repeatedly while processing this test plan. "
             "Use Restart to try again."
         ),
-        child_spec=None,
+        child_specs=(),
         scope_query=lambda stmt: stmt.join(
             Requirement, TestPlan.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
@@ -176,7 +181,7 @@ SWEEP_SPECS: tuple[SweepSpec, ...] = (
             "Execution worker died repeatedly while processing this test run. "
             "Use Restart to try again."
         ),
-        child_spec=TEST_CASE_SPEC,
+        child_specs=(TEST_CASE_SPEC,),
         scope_query=lambda stmt: stmt.join(
             Requirement, TestExecution.requirement_id == Requirement.id
         ).join(Sprint, Requirement.sprint_id == Sprint.id),
@@ -193,10 +198,29 @@ SWEEP_SPECS: tuple[SweepSpec, ...] = (
             "Exploration worker died repeatedly while processing this run. "
             "Use Restart to try again."
         ),
-        child_spec=EXPLORATORY_SESSION_SPEC,
+        child_specs=(EXPLORATORY_SESSION_SPEC,),
         # Joins straight to Sprint — unlike plans and executions, an
         # exploratory run carries its own sprint_id.
         scope_query=lambda stmt: stmt.join(Sprint, ExploratoryRun.sprint_id == Sprint.id),
+    ),
+    SweepSpec(
+        model=NonfunctionalRun,
+        label="Nonfunctional run",
+        pending_status=NonfunctionalRunStatus.PENDING,
+        running_status=NonfunctionalRunStatus.RUNNING,
+        failed_status=NonfunctionalRunStatus.FAILED,
+        clear_field=None,
+        enqueue_name="enqueue_nonfunctional_run",
+        stale_error=(
+            "Nonfunctional worker died repeatedly while processing this run. "
+            "Use Restart to try again."
+        ),
+        # Both child types — the URLs it examined and the traffic it
+        # applied. See NONFUNCTIONAL_RUN_SPEC for why a settled load
+        # profile still must not be re-sent.
+        child_specs=(NONFUNCTIONAL_TARGET_SPEC, LOAD_PROFILE_SPEC),
+        # Carries its own sprint_id, like ExploratoryRun.
+        scope_query=lambda stmt: stmt.join(Sprint, NonfunctionalRun.sprint_id == Sprint.id),
     ),
     SweepSpec(
         model=CicdExport,
@@ -209,7 +233,7 @@ SWEEP_SPECS: tuple[SweepSpec, ...] = (
         stale_error=(
             "Export worker died repeatedly while processing this export. Use Restart to try again."
         ),
-        child_spec=None,
+        child_specs=(),
         # Carries its own sprint_id, like ExploratoryRun.
         scope_query=lambda stmt: stmt.join(Sprint, CicdExport.sprint_id == Sprint.id),
         inactive_sprint_ok=True,
@@ -238,9 +262,8 @@ def _settle_children(session, spec: SweepSpec, parent_id: int, reason: str) -> N
     reach ``failed_status`` — never from the ones that re-pend a row, which
     are resumed exactly where they stopped.
     """
-    if spec.child_spec is None:
-        return
-    abandon_unreached_children(session, spec.child_spec, parent_id, reason)
+    for child_spec in spec.child_specs:
+        abandon_unreached_children(session, child_spec, parent_id, reason)
 
 
 def fail_in_progress_rows(session, spec: SweepSpec, scope, now: datetime) -> list:

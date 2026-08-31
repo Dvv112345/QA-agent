@@ -28,6 +28,8 @@ from backend.config import (
     EXPLORATORY_CONTEXT_TOKEN_LIMIT,
     EXPLORATORY_MAX_CHARTERS,
     EXPLORATORY_MAX_FINDINGS,
+    NONFUNCTIONAL_PLAN_TOOL_ROUNDS,
+    NONFUNCTIONAL_TRIAGE_MAX_CHARS,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
@@ -45,6 +47,12 @@ from backend.services.llm_prompts import (
     EXPLORATION_SYSTEM_PROMPT,
     FINDING_GROUPING_SYSTEM_PROMPT,
     HISTORY_COMPACTION_PROMPT,
+    ITINERARY_WRAPUP_PROMPT,
+    NONFUNCTIONAL_PLAN_SYSTEM_PROMPT,
+    NONFUNCTIONAL_SUMMARY_SYSTEM_PROMPT,
+    NONFUNCTIONAL_SYSTEM_PROMPT,
+    NONFUNCTIONAL_TOOLS,
+    NONFUNCTIONAL_TRIAGE_SYSTEM_PROMPT,
     READ_FILE_TOOL,
     REVISE_SYSTEM_PROMPT,
     SESSION_WRAPUP_PROMPT,
@@ -58,7 +66,10 @@ from backend.services.llm_prompts import (
     ExploratorySessionLike,
     FindingCandidate,
     KnownDefect,
+    LoadProfileLike,
+    TargetLike,
     TestCaseLike,
+    ViolationLike,
     charter_context,
     cicd_context,
     context_sections,
@@ -66,6 +77,10 @@ from backend.services.llm_prompts import (
     exploration_context,
     exploration_summary_context,
     finding_grouping_context,
+    nonfunctional_itinerary_context,
+    nonfunctional_plan_context,
+    nonfunctional_summary_context,
+    nonfunctional_triage_context,
     requirements_section,
     test_plan_context,
     test_script_context,
@@ -663,6 +678,242 @@ def diagnose_and_fix_script(
     return _validate_diagnosis(result)
 
 
+# ── Nonfunctional testing ─────────────────────────────────────────────
+
+
+class DomainProposalItem(SQLModel):
+    domain: str
+    applicable: bool = True
+    rationale: str = ""
+
+
+class LoadProfileItem(SQLModel):
+    """One proposed load profile, in the only terms the model can be trusted with.
+
+    Deliberately **not** a URL.  The model is never shown an environment
+    variable's value, so an absolute URL is something it cannot construct —
+    it would have to invent a host, and ``_validate_load_profiles`` would
+    then refuse the result.  Asking instead for *which key pairs with which
+    endpoint* makes the composed URL land on a confirmed origin **by
+    construction**, so the origin check stops being a hope the model
+    guessed the host right.
+
+    The route composes ``base_url_env_var``'s real value with ``path`` and
+    hands the UI a ``LoadProfileDraft`` carrying the absolute URL.
+    """
+
+    base_url_env_var: str
+    path: str = "/"
+    method: str = "GET"
+    body: str | None = None
+    concurrency: int = 1
+    duration_seconds: int = 10
+    total_request_cap: int = 100
+    rationale: str = ""
+
+
+class NonfunctionalPlanResult(SQLModel):
+    domains: list[DomainProposalItem] = []
+    base_url_env_vars: list[str] = []
+    load_profiles: list[LoadProfileItem] = []
+
+
+class TriagedFinding(SQLModel):
+    """One violation written up.
+
+    Note what is not here: **severity**, and any field naming a rule or a
+    verdict. axe or the security table already graded this, and a schema
+    with nowhere to put a second opinion is how that stays true — the
+    prompt asking for prose is a request, but the schema is a wall.
+    """
+
+    id: str
+    title: str
+    steps_to_reproduce: str
+    expected: str
+    actual: str
+
+
+class TriageResult(SQLModel):
+    findings: list[TriagedFinding] = []
+
+
+class NonfunctionalSummaryResult(SQLModel):
+    summary: str
+
+
+def generate_nonfunctional_plan(
+    name: str,
+    description: str,
+    covered_cases: list[TestCaseLike],
+    url_env_var_names: list[str],
+    other_env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+    read_file: Callable[[str], str] | None,
+) -> NonfunctionalPlanResult:
+    """Propose domains, base URLs and load profiles for one requirement.
+
+    Runs a bounded ``read_file`` loop (``NONFUNCTIONAL_PLAN_TOOL_ROUNDS``,
+    deliberately shorter than the other two — this one runs synchronously
+    inside a request).  The repo is what turns a load profile from a guess
+    into a proposal: the file tree lists paths but not routes, so without
+    reading source the model cannot say which endpoints exist or what
+    methods they accept.
+
+    The standing "a read_file tool becomes the model's oracle" hazard does
+    not apply here, for the same reason it does not in
+    ``generate_cicd_integration``: nothing this returns is a verdict.  It is
+    a proposal a human edits and approves, and the nonfunctional oracle is
+    inverted anyway — the tools grade, the model never does.
+
+    Variable names arrive pre-split into those holding http(s) URLs and the
+    rest, and **no value is ever sent**.  The model pairs a key with a path;
+    the route resolves the key.
+
+    ``on_round`` is a no-op: there is no heartbeat to keep in a synchronous
+    request, and the caller is a route rather than a task row.
+    """
+    parts = nonfunctional_plan_context(
+        name,
+        description,
+        covered_cases,
+        url_env_var_names,
+        other_env_var_names,
+        readme,
+        file_tree,
+    )
+    result = _complete_with_tools(
+        NONFUNCTIONAL_PLAN_SYSTEM_PROMPT,
+        "\n\n".join(parts),
+        NonfunctionalPlanResult,
+        read_file,
+        lambda: None,
+        NONFUNCTIONAL_PLAN_TOOL_ROUNDS,
+    )
+    if not result.base_url_env_vars:
+        raise LLMError("LLM nominated no environment variable for the application URL.")
+    if not any(domain.applicable for domain in result.domains):
+        raise LLMError("LLM proposed no applicable domain for this requirement.")
+    return result
+
+
+def triage_nonfunctional_findings(
+    violations: list[ViolationLike],
+    max_chars: int = NONFUNCTIONAL_TRIAGE_MAX_CHARS,
+    on_attempt: Callable[[], None] | None = None,
+) -> dict[str, TriagedFinding]:
+    """Write readable prose for violations the tools already found and graded.
+
+    Returns a mapping **keyed by violation id**, never a list.  A batch that
+    comes back one item short would otherwise re-label every finding after
+    the gap — silently, and with plausible-looking prose, which is the worst
+    shape a bug can take.  An id with no entry keeps its deterministic
+    fallback text (``services/nonfunctional_checks``) instead of borrowing
+    its neighbour's.
+
+    Chunked at ``max_chars`` because the per-target cap alone allows
+    ``MAX_TARGETS × AXE_MAX_CHARS`` in one request.  That would truncate or
+    time out — and since the fallback text absorbs a triage failure, the
+    symptom would not be an error but the LLM half of the feature quietly
+    never running.
+
+    Never raises: this call is optional by construction.  A chunk that fails
+    costs its violations their prose, not the run.
+
+    ``on_attempt`` fires once per chunk so a caller being watched for
+    liveness can heartbeat.  It is not optional in practice: each chunk is
+    an independent completion bounded by ``OPENAI_TIMEOUT``, so a run with
+    several of them can out-wait ``HEARTBEAT_STALE_SECONDS`` and have the
+    reconciler re-enqueue the whole browser walk as a crashed worker.  Same
+    contract as ``summarize_exploration`` — heartbeating per unit of work
+    makes the safety condition "one call shorter than the stale threshold"
+    rather than arithmetic over how many there turned out to be.
+    """
+    written: dict[str, TriagedFinding] = {}
+    for chunk in _chunk_violations(violations, max_chars):
+        if on_attempt is not None:
+            on_attempt()
+        parts = nonfunctional_triage_context(chunk)
+        try:
+            result = _complete(NONFUNCTIONAL_TRIAGE_SYSTEM_PROMPT, "\n\n".join(parts), TriageResult)
+        except LLMError as exc:
+            logger.warning("Triage failed for a batch of %d violations: %s", len(chunk), exc)
+            continue
+        wanted = {violation.id for violation in chunk}
+        for finding in result.findings:
+            # An id we did not send is a hallucinated one — dropping it is
+            # what keeps a stray entry from displacing a real violation.
+            if finding.id in wanted:
+                written[finding.id] = finding
+    return written
+
+
+def _chunk_violations(violations: list[ViolationLike], max_chars: int) -> list[list[ViolationLike]]:
+    """Split violations into batches whose rendered context fits *max_chars*.
+
+    A single violation over the limit still goes out alone: the alternative
+    is dropping it, and one oversized item is a truncation risk while a
+    dropped one is a lost finding.
+    """
+    batches: list[list[ViolationLike]] = []
+    current: list[ViolationLike] = []
+    size = 0
+    for violation in violations:
+        rendered = len(nonfunctional_triage_context([violation])[0])
+        if current and size + rendered > max_chars:
+            batches.append(current)
+            current, size = [], 0
+        current.append(violation)
+        size += rendered
+    if current:
+        batches.append(current)
+    return batches
+
+
+def summarize_nonfunctional(
+    name: str,
+    description: str,
+    targets: list[TargetLike],
+    load_profiles: list[LoadProfileLike],
+    on_attempt: Callable[[], None] | None = None,
+) -> NonfunctionalSummaryResult:
+    """Synthesize one run's targets and profiles into a narrative.
+
+    Mirrors ``summarize_exploration`` — same retry count, same per-attempt
+    heartbeat, same "callers treat exhaustion as non-fatal" contract.
+
+    ``LoadProfileLike`` deliberately carries no request body: a body may hold
+    a ``$NAME`` whose value is a credential, and the summary has nothing to
+    say about it.
+    """
+    parts = nonfunctional_summary_context(name, description, targets, load_profiles)
+    user_prompt = "\n\n".join(parts)
+
+    for attempt in range(1, _SUMMARY_ATTEMPTS + 1):
+        if on_attempt is not None:
+            on_attempt()
+        try:
+            result = _complete(
+                NONFUNCTIONAL_SUMMARY_SYSTEM_PROMPT, user_prompt, NonfunctionalSummaryResult
+            )
+            if not result.summary.strip():
+                raise LLMError("LLM returned a blank nonfunctional summary.")
+            return result
+        except LLMError as exc:
+            if attempt == _SUMMARY_ATTEMPTS:
+                raise
+            logger.warning(
+                "Nonfunctional summary attempt %d of %d failed, retrying: %s",
+                attempt,
+                _SUMMARY_ATTEMPTS,
+                exc,
+            )
+
+    # Unreachable: the loop either returns or re-raises on the last attempt.
+    raise LLMError("Nonfunctional summary exhausted its attempts.")
+
+
 # ── Finding grouping (issue-tracker de-duplication) ───────────────────
 
 
@@ -740,6 +991,37 @@ class ExplorationLoopResult:
     action_log: list[str]
 
 
+@dataclass(frozen=True)
+class LoopProfile:
+    """What differs between the two browser loops, and nothing else.
+
+    Both loops drive the same browser through the same snapshot pruning,
+    the same repeat detection, the same context compaction and the same
+    forced wrap-up.  They differ in the seven things below — so the
+    machinery has one implementation and a fix to it reaches both.
+
+    ``tool_schema`` is the load-bearing one.  It is what goes on the wire
+    as ``tools=``, and therefore what decides which tools the model is
+    *offered*.  The executor dict is a separate object that merely
+    dispatches a call already made: omitting an entry there makes a tool
+    fail loudly, it does not make it unavailable.
+    """
+
+    system_prompt: str
+    tool_schema: list[dict]
+    terminal_tool: str
+    wrapup_prompt: str
+    nudge: str
+    low_budget_tail: str
+    normal_tail: str
+    # A non-terminal tool that costs no action, or None. Exploratory
+    # recording is free because findings are the session's deliverable and
+    # charging them makes the model trade away its own output; a
+    # nonfunctional run has no such tool, because its findings come from
+    # the checks rather than from anything the model may call.
+    free_tool: str | None = None
+
+
 # Stop reasons recorded on ExploratorySession.stop_reason.
 STOP_CHARTER_COMPLETE = "charter_complete"
 STOP_ACTION_CAP = "action_cap"
@@ -775,6 +1057,13 @@ _ACT_OR_FINISH_NUDGE = (
     "That response did not call a tool, so nothing happened. Use the tool "
     "interface to act — do not describe a tool call in your message text. If "
     "the charter is fully explored, call finish_session with your notes."
+)
+
+_WALK_OR_FINISH_NUDGE = (
+    "That response did not call a tool, so nothing happened. Use the tool "
+    "interface to act — do not describe a tool call in your message text. If "
+    "you have reached everything this feature consists of, call "
+    "finish_itinerary with your notes."
 )
 
 # Placeholder replacing a pruned snapshot tool result. Snapshots are the only
@@ -895,6 +1184,141 @@ def summarize_exploration(
     raise LLMError("Exploration summary exhausted its attempts.")
 
 
+EXPLORATION_PROFILE = LoopProfile(
+    system_prompt=EXPLORATION_SYSTEM_PROMPT,
+    tool_schema=BROWSER_TOOLS,
+    terminal_tool="finish_session",
+    wrapup_prompt=SESSION_WRAPUP_PROMPT,
+    nudge=_ACT_OR_FINISH_NUDGE,
+    # Near the cap the advice changes: the forced wrap-up runs with
+    # tool_choice="none", so record_finding is genuinely unreachable once the
+    # budget is gone. A finding still unrecorded at that point can only ever
+    # land in the notes, where nothing reads it as a finding.
+    low_budget_tail=(
+        "record anything you have found but not yet recorded — after "
+        "your last action you can only write notes, not findings"
+    ),
+    normal_tail="call finish_session when the charter is explored",
+    free_tool="record_finding",
+)
+
+NONFUNCTIONAL_PROFILE = LoopProfile(
+    system_prompt=NONFUNCTIONAL_SYSTEM_PROMPT,
+    tool_schema=NONFUNCTIONAL_TOOLS,
+    terminal_tool="finish_itinerary",
+    wrapup_prompt=ITINERARY_WRAPUP_PROMPT,
+    nudge=_WALK_OR_FINISH_NUDGE,
+    low_budget_tail="reach anything important you have not visited yet",
+    normal_tail="call finish_itinerary once you have covered the feature",
+    # No free tool: this loop has no recording tool to make free. Every
+    # round is navigation, and navigation is what the budget is for.
+    free_tool=None,
+)
+
+
+def run_exploration_loop(
+    name: str,
+    description: str,
+    charter: str,
+    sfdipot_areas: list[str],
+    base_urls: list[str],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+    tools: dict[str, Callable[..., str]],
+    max_actions: int,
+    snapshot_window: int,
+    on_round: Callable[[int], None],
+    secrets: Mapping[str, str] | None = None,
+    max_free_recordings: int = EXPLORATORY_MAX_FINDINGS,
+    context_token_limit: int = EXPLORATORY_CONTEXT_TOKEN_LIMIT,
+) -> ExplorationLoopResult:
+    """Drive one charter's exploratory session.
+
+    ``record_finding`` is free for the first ``max_free_recordings`` calls:
+    findings are the session's whole deliverable, and charging them against
+    the same budget as exploration makes the model trade away its own output
+    under budget pressure.  It stops being free after that — ``actions_used <
+    max_actions`` is the loop's only bound, so an unconditionally free
+    non-terminal tool would remove the termination guarantee entirely (unlike
+    ``finish_session``, which is free *and* terminal and therefore cannot
+    loop).  Total rounds are thus capped at
+    ``max_actions + max_free_recordings``.
+    """
+    parts = exploration_context(
+        name, description, charter, sfdipot_areas, base_urls, env_var_names, readme, file_tree
+    )
+    user_prompt = (
+        "\n\n".join(parts)
+        + f"\n\nYou have {max_actions} actions for this session. Use them deliberately."
+    )
+    return _run_browser_loop(
+        EXPLORATION_PROFILE,
+        [
+            {"role": "system", "content": EXPLORATION_PROFILE.system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        tools=tools,
+        max_actions=max_actions,
+        snapshot_window=snapshot_window,
+        on_round=on_round,
+        secrets=secrets,
+        max_free_calls=max_free_recordings,
+        context_token_limit=context_token_limit,
+    )
+
+
+def run_nonfunctional_loop(
+    name: str,
+    description: str,
+    covered_cases: list[TestCaseLike],
+    base_urls: list[str],
+    env_var_names: list[str],
+    readme: str | None,
+    file_tree: str | None,
+    tools: dict[str, Callable[..., str]],
+    max_actions: int,
+    snapshot_window: int,
+    on_round: Callable[[int], None],
+    secrets: Mapping[str, str] | None = None,
+    context_token_limit: int = EXPLORATORY_CONTEXT_TOKEN_LIMIT,
+) -> ExplorationLoopResult:
+    """Walk one requirement's feature so the catalogue runs everywhere.
+
+    The same machinery as the exploratory loop and a deliberately different
+    surface: ``NONFUNCTIONAL_TOOLS`` carries no ``record_finding``, so the
+    model cannot report a violation even if the prompt somehow convinced it
+    to try.  That is the whole inverted-oracle claim, and it lives here — in
+    the request body — rather than in the executor dict, which only
+    dispatches calls the model has already made.
+
+    It also gets its own system prompt.  Reusing the exploratory one would
+    spend three paragraphs teaching the model to call two tools it is not
+    offered, which burns actions and teaches it the wrong loop.
+    """
+    parts = nonfunctional_itinerary_context(
+        name, description, covered_cases, base_urls, env_var_names, readme, file_tree
+    )
+    user_prompt = (
+        "\n\n".join(parts)
+        + f"\n\nYou have {max_actions} actions. Spend them reaching screens, not studying them."
+    )
+    return _run_browser_loop(
+        NONFUNCTIONAL_PROFILE,
+        [
+            {"role": "system", "content": NONFUNCTIONAL_PROFILE.system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        tools=tools,
+        max_actions=max_actions,
+        snapshot_window=snapshot_window,
+        on_round=on_round,
+        secrets=secrets,
+        max_free_calls=0,
+        context_token_limit=context_token_limit,
+    )
+
+
 def _prune_snapshots(messages: list, snapshot_indices: list[int], window: int) -> None:
     """Replace all but the newest *window* snapshot results with a placeholder.
 
@@ -997,21 +1421,15 @@ def _compact_history(messages: list, keep_groups: int) -> bool:
     return True
 
 
-def run_exploration_loop(
-    name: str,
-    description: str,
-    charter: str,
-    sfdipot_areas: list[str],
-    base_urls: list[str],
-    env_var_names: list[str],
-    readme: str | None,
-    file_tree: str | None,
+def _run_browser_loop(
+    profile: LoopProfile,
+    messages: list,
     tools: dict[str, Callable[..., str]],
     max_actions: int,
     snapshot_window: int,
     on_round: Callable[[int], None],
     secrets: Mapping[str, str] | None = None,
-    max_free_recordings: int = EXPLORATORY_MAX_FINDINGS,
+    max_free_calls: int = 0,
     context_token_limit: int = EXPLORATORY_CONTEXT_TOKEN_LIMIT,
 ) -> ExplorationLoopResult:
     """Drive one charter's session as a bounded browser tool loop.
@@ -1053,17 +1471,6 @@ def run_exploration_loop(
     ``max_actions + max_free_recordings``.
     """
     client = _get_client()
-    parts = exploration_context(
-        name, description, charter, sfdipot_areas, base_urls, env_var_names, readme, file_tree
-    )
-    user_prompt = (
-        "\n\n".join(parts)
-        + f"\n\nYou have {max_actions} actions for this session. Use them deliberately."
-    )
-    messages: list = [
-        {"role": "system", "content": EXPLORATION_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
 
     action_log: list[str] = []
     snapshot_indices: list[int] = []
@@ -1074,7 +1481,7 @@ def run_exploration_loop(
     repeat_count = 0
     actions_used = 0
     idle_rounds = 0
-    free_recordings_left = max_free_recordings
+    free_calls_left = max_free_calls
 
     while actions_used < max_actions:
         try:
@@ -1089,7 +1496,7 @@ def run_exploration_loop(
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
-                tools=BROWSER_TOOLS,
+                tools=profile.tool_schema,
             )
         except openai.OpenAIError as exc:
             raise LLMError(f"LLM request failed: {exc}") from exc
@@ -1106,7 +1513,7 @@ def run_exploration_loop(
                 # channel. Point it back at the tools rather than throwing
                 # away the charter.
                 messages.append(message)
-                messages.append({"role": "user", "content": _ACT_OR_FINISH_NUDGE})
+                messages.append({"role": "user", "content": profile.nudge})
                 continue
             # Twice in a row: take it at its word. Parse as a wrap-up when it
             # fits, else keep the raw text so nothing the model said is lost.
@@ -1131,9 +1538,9 @@ def run_exploration_loop(
             except json.JSONDecodeError:
                 arguments = {}
 
-            if tool_name == "finish_session":
+            if tool_name == profile.terminal_tool:
                 notes = str(arguments.get("notes", "")).strip()
-                action_log.append("finish_session()")
+                action_log.append(f"{profile.terminal_tool}()")
                 return ExplorationLoopResult(
                     notes=notes or "(session finished without notes)",
                     stop_reason=STOP_CHARTER_COMPLETE,
@@ -1145,8 +1552,8 @@ def run_exploration_loop(
             # budget. Free only while it can still succeed: past the cap the
             # executor just returns "limit reached", and a free call that
             # changes nothing is how a stuck model loops forever.
-            if tool_name == "record_finding" and free_recordings_left > 0:
-                free_recordings_left -= 1
+            if tool_name == profile.free_tool and free_calls_left > 0:
+                free_calls_left -= 1
             else:
                 actions_used += 1
 
@@ -1164,7 +1571,7 @@ def run_exploration_loop(
                 result = (
                     "You have repeated this exact action several times with the "
                     "same result. Try something different, or call "
-                    "finish_session if the charter is explored."
+                    f"{profile.terminal_tool} if there is nothing left to do."
                 )
             else:
                 executor = tools.get(tool_name)
@@ -1183,17 +1590,10 @@ def run_exploration_loop(
                 _prune_snapshots(messages, snapshot_indices, snapshot_window)
 
         remaining = max_actions - actions_used
-        # Near the cap the advice changes: the forced wrap-up runs with
-        # tool_choice="none", so record_finding is genuinely unreachable once
-        # the budget is gone. A finding still unrecorded at that point can only
-        # ever land in the notes, where nothing reads it as a finding.
-        if remaining <= _LOW_BUDGET_ACTIONS:
-            tail = (
-                "record anything you have found but not yet recorded — after "
-                "your last action you can only write notes, not findings"
-            )
-        else:
-            tail = "call finish_session when the charter is explored"
+        # Near the cap the advice changes — see each profile's two tails.
+        # The forced wrap-up runs with tool_choice="none", so whatever the
+        # loop still wanted done has to happen before the budget is gone.
+        tail = profile.low_budget_tail if remaining <= _LOW_BUDGET_ACTIONS else profile.normal_tail
         messages[-1]["content"] += f"\n[{remaining} of {max_actions} actions remaining — {tail}]"
 
         # Report the round's actions as soon as they are spent. The heartbeat
@@ -1216,7 +1616,13 @@ def run_exploration_loop(
             except LLMError as exc:
                 logger.warning("Exploration history compaction failed: %s", exc)
                 return _forced_wrap_up(
-                    client, messages, on_round, STOP_CONTEXT_LIMIT, actions_used, action_log
+                    client,
+                    profile,
+                    messages,
+                    on_round,
+                    STOP_CONTEXT_LIMIT,
+                    actions_used,
+                    action_log,
                 )
             on_round(actions_used)
             if not compacted:
@@ -1224,7 +1630,13 @@ def run_exploration_loop(
                 # floor exceeds it, so retrying next round would only thrash.
                 logger.warning("Exploration context over limit with nothing left to compact")
                 return _forced_wrap_up(
-                    client, messages, on_round, STOP_CONTEXT_LIMIT, actions_used, action_log
+                    client,
+                    profile,
+                    messages,
+                    on_round,
+                    STOP_CONTEXT_LIMIT,
+                    actions_used,
+                    action_log,
                 )
             snapshot_indices = [
                 index
@@ -1232,11 +1644,14 @@ def run_exploration_loop(
                 if _is_tool_result(item) and item.get("tool_call_id") in snapshot_call_ids
             ]
 
-    return _forced_wrap_up(client, messages, on_round, STOP_ACTION_CAP, actions_used, action_log)
+    return _forced_wrap_up(
+        client, profile, messages, on_round, STOP_ACTION_CAP, actions_used, action_log
+    )
 
 
 def _forced_wrap_up(
     client,
+    profile: LoopProfile,
     messages: list,
     on_round: Callable[[int], None],
     stop_reason: str,
@@ -1270,7 +1685,7 @@ def _forced_wrap_up(
     The wrap-up prompt is appended once, outside the retry loop: appending it
     per attempt would send the model two wrap-up instructions.
     """
-    messages.append({"role": "user", "content": SESSION_WRAPUP_PROMPT})
+    messages.append({"role": "user", "content": profile.wrapup_prompt})
 
     notes: str | None = None
     for attempt in range(1, _SUMMARY_ATTEMPTS + 1):
@@ -1279,7 +1694,7 @@ def _forced_wrap_up(
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
-                tools=BROWSER_TOOLS,
+                tools=profile.tool_schema,
                 tool_choice="none",
                 response_format={"type": "json_object"},
             )

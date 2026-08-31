@@ -50,13 +50,12 @@ from sqlmodel import Session, select
 
 from backend.models.database import (
     DefectGroupTicket,
-    ExploratoryRun,
     FindingType,
     IssueTrackerConfig,
     Sprint,
-    TestExecution,
 )
 from backend.services import finding_dedup, finding_grouping, issue_tracker
+from backend.services import findings as findings_registry
 from backend.services.findings import Finding, iter_findings
 from backend.services.issue_tracker import (
     FindingContext,
@@ -115,31 +114,28 @@ class _ParentSpec:
 
 
 def _spec_for(parent: object) -> _ParentSpec | None:
-    if isinstance(parent, TestExecution):
-        run = parent.test_run
-        # Reached through the *run*, never through the requirement: a
-        # superseded execution may have an archived or deleted
-        # requirement, and that is precisely a path where export still
-        # has real findings to file.
-        return _ParentSpec(
-            sprint=run.sprint if run is not None else None,
-            export_findings=bool(run is not None and run.export_findings),
-            rows=lambda: list(iter_findings(parent, bugs_only=True, unfiled_only=True)),
-            run_label=f"Scripted run {run.id}" if run is not None else "Scripted run",
-            source_kind="scripted",
-            requirement_name=parent.requirement_name,
-        )
-    if isinstance(parent, ExploratoryRun):
-        return _ParentSpec(
-            sprint=parent.sprint,
-            export_findings=bool(parent.export_findings),
-            rows=lambda: list(iter_findings(parent, bugs_only=True, unfiled_only=True)),
-            run_label=f"Exploratory run {parent.id}",
-            source_kind="exploratory",
-            requirement_name=parent.requirement_name,
-        )
-    logger.warning("Cannot export findings for %r — unknown parent type", type(parent))
-    return None
+    """The export shape for *parent*, read from the one dispatch registry.
+
+    Every field below used to be decided by a local ``isinstance`` chain,
+    which is how the third run mode was added everywhere except here — and
+    an unknown parent falls through to ``return None``, which ``_export``
+    turns into an empty ``ExportOutcome``. The route then answers **200
+    with zero tickets filed**, evidenced only by a warning in a worker log.
+    Reading the registry means a run mode that can be walked can also be
+    exported, or neither.
+    """
+    kind = findings_registry.kind_for(parent)
+    if kind is None or not kind.exportable:
+        logger.warning("Cannot export findings for %r — unknown parent type", type(parent))
+        return None
+    return _ParentSpec(
+        sprint=kind.sprint(parent),
+        export_findings=kind.export_findings(parent),
+        rows=lambda: list(iter_findings(parent, bugs_only=True, unfiled_only=True)),
+        run_label=kind.run_label(parent),
+        source_kind=kind.source_kind,
+        requirement_name=kind.requirement_name(parent),
+    )
 
 
 # ── Config and context ────────────────────────────────────────────────

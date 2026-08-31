@@ -39,7 +39,12 @@ export default function SprintMetricsPanel({ metrics }: Props) {
     executions_errored: errored,
     exploratory_sessions: sessions,
     requirements_explored: explored,
+    urls_examined: urlsExamined,
+    requirements_examined: examined,
     bug_count: bugs,
+    functional_bug_count: functionalBugs,
+    nonfunctional_bug_count: nonfunctionalBugs,
+    bugs_by_domain: bugsByDomain,
     issue_count: issues,
     high_severity_bug_count: highSeverity,
     requirements_covered: covered,
@@ -57,6 +62,12 @@ export default function SprintMetricsPanel({ metrics }: Props) {
   // they actually differ — a sprint with no cross-cutting defect, which is
   // the common case, never sees the sentence.
   const rowBugTotal = rows.reduce((sum, row) => sum + row.bug_count, 0)
+  // Performance never appears here, and not by omission: it is measured
+  // and stored, never judged, so it produces no defect to count.
+  const domainBreakdown = Object.entries(bugsByDomain)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([domain, count]) => `${count} ${domain}`)
+    .join(' · ')
 
   return (
     <section className="sprint-metrics">
@@ -88,12 +99,38 @@ export default function SprintMetricsPanel({ metrics }: Props) {
           </span>
         </div>
 
+        {/* A third "tests run" tile, in its own unit again: a URL
+            examined is neither a case nor a session. Rendered only when a
+            nonfunctional run has actually been counted, so a sprint that
+            never used the mode is not asked to read a row of zeros. */}
+        {urlsExamined > 0 && (
+          <div className="sprint-metrics-tile">
+            <span className="sprint-metrics-tile-label">Nonfunctional</span>
+            <span className="sprint-metrics-tile-value">{urlsExamined}</span>
+            <span className="sprint-metrics-tile-unit">URLs examined</span>
+            <span className="sprint-metrics-tile-detail">
+              {plural(examined, 'requirement')} examined
+            </span>
+            {domainBreakdown && (
+              <span className="sprint-metrics-tile-detail">{domainBreakdown}</span>
+            )}
+          </div>
+        )}
+
         <div className="sprint-metrics-tile">
           <span className="sprint-metrics-tile-label">Bugs</span>
           <span className="sprint-metrics-tile-value">{bugs}</span>
           <span className="sprint-metrics-tile-unit">distinct</span>
           <span className="sprint-metrics-tile-detail">{highSeverity} high severity</span>
           <span className="sprint-metrics-tile-detail">{plural(issues, 'issue')}</span>
+          {/* The split is only shown once both halves exist: on a sprint
+              with no nonfunctional run it would be the headline repeated
+              back with a second label. */}
+          {nonfunctionalBugs > 0 && (
+            <span className="sprint-metrics-tile-detail">
+              {functionalBugs} functional · {nonfunctionalBugs} nonfunctional
+            </span>
+          )}
         </div>
 
         <div className="sprint-metrics-tile">
@@ -101,6 +138,14 @@ export default function SprintMetricsPanel({ metrics }: Props) {
           <span className="sprint-metrics-tile-value">{formatDensity(perRequirement)}</span>
           <span className="sprint-metrics-tile-unit">bugs / requirement</span>
           <span className="sprint-metrics-tile-detail">{formatDensity(perCase)} bugs / case</span>
+          {/* Both densities divide the functional count. A nonfunctional
+              run finds violations per page, so feeding them into a
+              per-case ratio would move a number whose denominator never
+              saw them — said here rather than left for a reader to
+              discover from a figure that does not add up. */}
+          {nonfunctionalBugs > 0 && (
+            <span className="sprint-metrics-tile-detail">functional bugs only</span>
+          )}
           {/* Coverage sits beside the ratio rather than inside it: the
               denominator above is what was actually exercised, so this is
               the only place the untested remainder is visible.
@@ -141,7 +186,14 @@ export default function SprintMetricsPanel({ metrics }: Props) {
             <thead>
               <tr>
                 <th>Requirement</th>
-                <th>Bugs</th>
+                {/* The two pools never merge into one defect count
+                    anywhere else in the app, so the breakdown does not
+                    merge them either: "5 bugs" reads as five broken
+                    behaviours when it may be one logic defect and four
+                    accessibility violations. Both columns show on every
+                    sprint — a stable column layout beats hiding one. */}
+                <th>Functional</th>
+                <th>Nonfunctional</th>
                 <th>Issues</th>
                 <th>Cases</th>
                 <th>Sessions</th>
@@ -156,7 +208,8 @@ export default function SprintMetricsPanel({ metrics }: Props) {
                       <span className="sprint-metrics-deleted"> (deleted)</span>
                     )}
                   </td>
-                  <td>{row.bug_count}</td>
+                  <td>{row.functional_bug_count}</td>
+                  <td>{row.nonfunctional_bug_count}</td>
                   <td>{row.issue_count}</td>
                   <td>{row.distinct_test_cases_run}</td>
                   <td>{row.exploratory_sessions}</td>

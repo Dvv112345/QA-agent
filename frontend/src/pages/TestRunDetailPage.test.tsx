@@ -49,6 +49,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     test_plans_complete: true,
     has_test_runs: true,
     has_exploratory_runs: false,
+    has_nonfunctional_runs: false,
     ...overrides,
   }
 }

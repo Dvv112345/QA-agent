@@ -9,6 +9,8 @@ function makeRow(overrides: Partial<RequirementMetrics> = {}): RequirementMetric
     requirement_name: 'Checkout',
     requirement_deleted: false,
     bug_count: 0,
+    functional_bug_count: 0,
+    nonfunctional_bug_count: 0,
     issue_count: 0,
     distinct_test_cases_run: 0,
     exploratory_sessions: 0,
@@ -26,7 +28,12 @@ function makeMetrics(overrides: Partial<SprintMetrics> = {}): SprintMetrics {
     executions_errored: 2,
     exploratory_sessions: 8,
     requirements_explored: 3,
+    urls_examined: 12,
+    requirements_examined: 2,
     bug_count: 9,
+    functional_bug_count: 7,
+    nonfunctional_bug_count: 2,
+    bugs_by_domain: { accessibility: 2 },
     issue_count: 2,
     high_severity_bug_count: 4,
     requirements_covered: 5,
@@ -181,5 +188,78 @@ describe('SprintMetricsPanel', () => {
     )
 
     expect(screen.queryByText(/one defect can affect several requirements/)).not.toBeInTheDocument()
+  })
+
+  it('splits the breakdown bug column by defect pool', () => {
+    render(
+      <SprintMetricsPanel
+        metrics={makeMetrics({
+          bug_count: 5,
+          per_requirement: [
+            makeRow({
+              requirement_id: 1,
+              requirement_name: 'Checkout',
+              bug_count: 5,
+              functional_bug_count: 3,
+              nonfunctional_bug_count: 2,
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('columnheader', { name: 'Functional' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Nonfunctional' })).toBeInTheDocument()
+
+    // The halves are what the row shows; the total is not a cell.
+    const cells = screen.getAllByRole('cell').map((cell) => cell.textContent)
+    expect(cells).toEqual(['Checkout', '3', '2', '0', '0', '0'])
+  })
+
+  it('shows both bug columns on a sprint that never ran nonfunctional checks', () => {
+    // Deliberately not hidden when zero, unlike the tiles above: a column
+    // that appears and disappears between sprints moves every figure
+    // beside it.
+    render(
+      <SprintMetricsPanel
+        metrics={makeMetrics({
+          bug_count: 3,
+          nonfunctional_bug_count: 0,
+          per_requirement: [
+            makeRow({ requirement_name: 'Checkout', bug_count: 3, functional_bug_count: 3 }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('columnheader', { name: 'Nonfunctional' })).toBeInTheDocument()
+  })
+
+  it('keys the footnote on the row total, not on either half', () => {
+    // One defect spanning two requirements, counted once in the headline.
+    // The halves alone would not reveal the overlap.
+    render(
+      <SprintMetricsPanel
+        metrics={makeMetrics({
+          bug_count: 1,
+          per_requirement: [
+            makeRow({
+              requirement_id: 1,
+              requirement_name: 'Checkout',
+              bug_count: 1,
+              nonfunctional_bug_count: 1,
+            }),
+            makeRow({
+              requirement_id: 2,
+              requirement_name: 'Login',
+              bug_count: 1,
+              nonfunctional_bug_count: 1,
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText(/one defect can affect several requirements/)).toBeInTheDocument()
   })
 })

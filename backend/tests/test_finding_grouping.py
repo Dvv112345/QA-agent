@@ -440,3 +440,155 @@ def test_an_unknown_parent_type_is_a_no_op(db_session, no_llm):
     finding_grouping.assign_defect_groups(db_session, object())  # must not raise
 
     assert no_llm.calls == []
+
+
+# ── Pools ═════════════════════════════════════════════════════════════
+
+
+def _seed_nonfunctional(db_session, sprint, requirement, *, title="Images lack alt text", count=1):
+    from backend.models.database import NonfunctionalRunStatus
+    from backend.tests.test_nonfunctional_models import (
+        _seed_nonfunctional_finding,
+        _seed_nonfunctional_run,
+        _seed_nonfunctional_target,
+    )
+
+    run = _seed_nonfunctional_run(
+        db_session, sprint, requirement, status=NonfunctionalRunStatus.COMPLETED
+    )
+    target = _seed_nonfunctional_target(db_session, run)
+    for index in range(count):
+        _seed_nonfunctional_finding(db_session, target, position=index, title=title)
+    db_session.refresh(run)
+    return run
+
+
+class TestDefectPools:
+    """Functional and nonfunctional defects never join each other's groups."""
+
+    def test_a_new_nonfunctional_group_is_stamped_with_its_pool(self, db_session, no_llm):
+        from backend.models.database import DefectPool
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        run = _seed_nonfunctional(db_session, sprint, requirement)
+
+        finding_grouping.assign_defect_groups(db_session, run)
+
+        groups = db_session.exec(select(DefectGroup)).all()
+        assert len(groups) == 1
+        assert groups[0].pool == DefectPool.NONFUNCTIONAL
+
+    def test_identical_text_in_the_other_pool_is_not_matched(self, db_session, no_llm):
+        """The prefilter would otherwise collapse them — the pool filter is
+        what keeps two different kinds of defect apart."""
+        from backend.models.database import DefectPool
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        execution = _scripted_run(
+            db_session, sprint, requirement=requirement, findings=[{"title": "Same text"}]
+        )[1]
+        run = _seed_nonfunctional(db_session, sprint, requirement, title="Same text")
+
+        finding_grouping.assign_defect_groups(db_session, execution)
+        finding_grouping.assign_defect_groups(db_session, run)
+
+        groups = db_session.exec(select(DefectGroup)).all()
+        assert len(groups) == 2
+        assert {group.pool for group in groups} == {
+            DefectPool.FUNCTIONAL,
+            DefectPool.NONFUNCTIONAL,
+        }
+
+    def test_a_pre_existing_backfilled_group_is_still_matched(self, db_session, no_llm):
+        """A group written before pools existed reads as `functional`."""
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        first = _scripted_run(db_session, sprint, requirement=requirement)[1]
+        finding_grouping.assign_defect_groups(db_session, first)
+        existing = db_session.exec(select(DefectGroup)).one()
+
+        second = _scripted_run(db_session, sprint)[1]
+        finding_grouping.assign_defect_groups(db_session, second)
+
+        assert len(db_session.exec(select(DefectGroup)).all()) == 1
+        db_session.expire_all()
+        assert all(
+            case.defect_group_id == existing.id
+            for case in db_session.exec(select(TestCaseExecution)).all()
+            if case.finding_title
+        )
+
+    def test_two_nonfunctional_runs_share_one_group(self, db_session, no_llm):
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        first = _seed_nonfunctional(db_session, sprint, requirement)
+        second = _seed_nonfunctional(db_session, sprint, requirement)
+
+        finding_grouping.assign_defect_groups(db_session, first)
+        finding_grouping.assign_defect_groups(db_session, second)
+
+        assert len(db_session.exec(select(DefectGroup)).all()) == 1
+
+    def test_the_pass_is_idempotent_for_the_third_mode_too(self, db_session, no_llm):
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        run = _seed_nonfunctional(db_session, sprint, requirement)
+
+        finding_grouping.assign_defect_groups(db_session, run)
+        finding_grouping.assign_defect_groups(db_session, run)
+
+        assert len(db_session.exec(select(DefectGroup)).all()) == 1
+
+
+# ── The dispatch registry ═════════════════════════════════════════════
+
+
+class TestRunKindRegistry:
+    """One table, so a new run mode cannot be half-added."""
+
+    def test_every_exportable_kind_walks_resolves_and_exports(self, db_session):
+        """The three job-owned levels, parametrized over the registry itself."""
+        from backend.services import finding_export, findings
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        parents = {
+            "scripted": _scripted_run(db_session, sprint, requirement=requirement)[1],
+            "exploratory": _exploratory_run(db_session, sprint)[1],
+            "nonfunctional": _seed_nonfunctional(db_session, sprint, requirement),
+        }
+
+        exportable = [kind for kind in findings.RUN_KINDS if kind.exportable]
+        assert {kind.source_kind for kind in exportable} == set(parents)
+
+        for kind in exportable:
+            parent = parents[kind.source_kind]
+            assert list(findings.iter_findings(parent, bugs_only=True)), kind.source_kind
+            assert findings.sprint_for(parent) is not None, kind.source_kind
+            spec = finding_export._spec_for(parent)
+            assert spec is not None, kind.source_kind
+            assert spec.source_kind == kind.source_kind
+            assert spec.run_label
+
+    def test_an_unknown_parent_answers_none_everywhere(self, db_session):
+        from backend.services import finding_export, findings
+
+        assert findings.kind_for(object()) is None
+        assert list(findings.iter_findings(object())) == []
+        assert findings.sprint_for(object()) is None
+        assert finding_export._spec_for(object()) is None
+
+    def test_the_pool_is_derived_in_exactly_one_place(self, db_session):
+        """Both consumers read `RunKind.pool` — see the reference_map gotcha."""
+        from backend.models.database import DefectPool
+        from backend.services import findings
+
+        sprint = _seed_sprint(db_session)
+        requirement = _seed_requirement(db_session, sprint, status=RequirementStatus.CONFIRMED)
+        run = _seed_nonfunctional(db_session, sprint, requirement)
+        execution = _scripted_run(db_session, sprint, requirement=requirement)[1]
+
+        assert all(f.pool == DefectPool.NONFUNCTIONAL for f in findings.iter_findings(run))
+        assert all(f.pool == DefectPool.FUNCTIONAL for f in findings.iter_findings(execution))

@@ -128,7 +128,7 @@ class FindingContext:
     requirement_name: str
     run_label: str  # "Scripted run 14" | "Exploratory run 3"
     source_label: str  # test-case title | charter text
-    source_kind: str  # "scripted" | "exploratory" — selects the label
+    source_kind: str  # one of _SOURCE_KINDS — selects the ticket label
     # The environment values to rewrite to their variable names — so
     # repr=False for the same reason TrackerConfig.api_token has it.
     secrets: Mapping[str, str] = field(repr=False)
@@ -164,6 +164,12 @@ def _redact_report(report: FindingReport, secrets: Mapping[str, str]) -> Finding
 # ── Labels ────────────────────────────────────────────────────────────
 
 
+# The run modes a ticket can come from. Each becomes a `qa-agent-{kind}`
+# label, so a reader can filter a tracker by which kind of testing found
+# what — and none may contain a space (see below).
+_SOURCE_KINDS = frozenset({"scripted", "exploratory", "nonfunctional"})
+
+
 def _labels(report: FindingReport, context: FindingContext) -> list[str]:
     """The labels every filed ticket carries.
 
@@ -171,7 +177,10 @@ def _labels(report: FindingReport, context: FindingContext) -> list[str]:
     is instance-configured and a wrong value 400s the whole create, while
     an unknown label is simply created.
     """
-    kind = "exploratory" if context.source_kind == "exploratory" else "scripted"
+    # An unrecognised kind reads as scripted rather than becoming a label
+    # of its own: a typo must not quietly create a new label namespace in
+    # somebody's tracker, and the run itself already names the mode.
+    kind = context.source_kind if context.source_kind in _SOURCE_KINDS else "scripted"
     labels = ["qa-agent", f"qa-agent-{kind}", f"severity-{report.severity}"]
     labels.extend(context.extra_labels)
     for label in labels:

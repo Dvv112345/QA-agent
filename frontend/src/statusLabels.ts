@@ -13,8 +13,11 @@
  */
 import type {
   CicdExportStatus,
+  DomainOutcome,
   ExploratoryRunStatus,
   ExploratorySessionStatus,
+  NonfunctionalChildStatus,
+  NonfunctionalRunStatus,
   TestCaseExecutionStatus,
   TestExecutionStatus,
 } from './types'
@@ -49,6 +52,50 @@ export const SESSION_STATUS_LABELS: Record<ExploratorySessionStatus, string> = {
   completed: 'Completed',
   error: 'Error',
   skipped: 'Not explored',
+}
+
+/** Nonfunctional runs — "Examining" is the honest verb. */
+export const NONFUNCTIONAL_RUN_STATUS_LABELS: Record<NonfunctionalRunStatus, string> = {
+  pending: 'Queued',
+  running: 'Examining',
+  completed: 'Completed',
+  failed: 'Failed',
+}
+
+/** One examined URL, or one applied load profile. */
+export const NONFUNCTIONAL_CHILD_STATUS_LABELS: Record<NonfunctionalChildStatus, string> = {
+  pending: 'Queued',
+  running: 'In progress',
+  completed: 'Done',
+  error: 'Error',
+  skipped: 'Not reached',
+}
+
+/**
+ * How one outcome reads on screen.
+ *
+ * `measured` is deliberately **not** a backend value — `DomainOutcome`
+ * keeps mirroring exactly the four the API sends. It is what `clean` means
+ * for performance, which is measured and never judged: it has no oracle,
+ * produces no finding and no defect, and `violations` is unreachable for
+ * it. So `clean` there means "we took the measurement", not "it passed",
+ * and any verdict would need a threshold — a judgement about somebody
+ * else's capacity planning, which is exactly what the backend refuses to
+ * make. The panel must not make it on the backend's behalf.
+ */
+export type DomainOutcomeDisplay = DomainOutcome | 'measured'
+
+/**
+ * What one domain found at one URL. Four backend answers, plus the display
+ * case above: a check that could not run is not a clean one, and a domain
+ * that does not apply to an endpoint was never asked.
+ */
+export const DOMAIN_OUTCOME_LABELS: Record<DomainOutcomeDisplay, string> = {
+  clean: 'No violations',
+  violations: 'Violations found',
+  not_applicable: 'Not applicable here',
+  failed_to_run: 'Could not run',
+  measured: 'Measured',
 }
 
 export const CASE_STATUS_LABELS: Record<TestCaseExecutionStatus, string> = {

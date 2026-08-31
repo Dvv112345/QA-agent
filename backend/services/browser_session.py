@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,6 +37,7 @@ from backend.config import (
     EXPLORATORY_HEADLESS,
     EXPLORATORY_MAX_FINDINGS,
     EXPLORATORY_SNAPSHOT_MAX_CHARS,
+    NONFUNCTIONAL_CATALOGUE_TIMEOUT,
 )
 from backend.utils import environment_utils
 
@@ -51,6 +53,37 @@ _STALE_REF = (
     "changed since your last snapshot — call snapshot to get fresh refs "
     "before interacting again."
 )
+
+# Endpoint URLs one session remembers. Bounded because a chatty SPA can
+# poll the same shape of URL indefinitely, and the run examines at most
+# NONFUNCTIONAL_MAX_TARGETS of them anyway.
+MAX_DISCOVERED_ENDPOINTS = 50
+# Main-frame document responses kept for the passive-security check.
+MAX_DOCUMENT_RESPONSES = 50
+# How much of an error page is read for the stack-trace rule.
+_BODY_SAMPLE_MAX_CHARS = 4000
+
+# Navigation Timing + paint entries, read out of the page already loaded.
+# Everything here is a number the browser recorded during the load we
+# already performed; nothing triggers a second one.
+_PERFORMANCE_SCRIPT = """() => {
+  const nav = performance.getEntriesByType('navigation')[0];
+  const paints = {};
+  for (const entry of performance.getEntriesByType('paint')) {
+    paints[entry.name] = Math.round(entry.startTime);
+  }
+  const resources = performance.getEntriesByType('resource');
+  return {
+    ttfb_ms: nav ? Math.round(nav.responseStart) : null,
+    dom_content_loaded_ms: nav ? Math.round(nav.domContentLoadedEventEnd) : null,
+    load_ms: nav ? Math.round(nav.loadEventEnd) : null,
+    transfer_bytes: nav ? nav.transferSize : null,
+    first_paint_ms: paints['first-paint'] ?? null,
+    first_contentful_paint_ms: paints['first-contentful-paint'] ?? null,
+    resource_count: resources.length,
+    resource_bytes: resources.reduce((total, r) => total + (r.transferSize || 0), 0)
+  };
+}"""
 
 _FINDING_LIMIT = (
     "ERROR: this session has reached its limit of {limit} findings. "
@@ -71,6 +104,25 @@ class FindingRecord:
     # Browser, viewport, OS, and page URL at the moment of recording.
     # Optional so a session assembled without a live browser still records.
     environment: str | None = None
+
+
+@dataclass
+class CheckOutcome:
+    """One catalogue check's result, or why it could not produce one.
+
+    A third state alongside "found something" and "found nothing": a check
+    that could not run has told us nothing about the page, and recording
+    that as clean is the one reading that is actually false.  The caller
+    turns ``error`` into a ``failed_to_run`` outcome on the target row.
+    """
+
+    data: Any = None
+    error: str | None = None
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
 
 
 def allowed_origins(urls: list[str]) -> set[tuple[str, str]]:
@@ -98,6 +150,8 @@ class BrowserSession:
         headless: bool | None = None,
         action_timeout: int | None = None,
         max_findings: int | None = None,
+        on_navigated: Callable[[str, float], str] | None = None,
+        catalogue_timeout: int | None = None,
     ) -> None:
         self._origins = allowed_origins(base_urls)
         # Kept alongside _origins because order matters and a set has none:
@@ -111,11 +165,28 @@ class BrowserSession:
             EXPLORATORY_ACTION_TIMEOUT if action_timeout is None else action_timeout
         )
         self._max_findings = EXPLORATORY_MAX_FINDINGS if max_findings is None else max_findings
+        # Fired after any executor that can change the URL — see
+        # `_fire_navigated`. None for an exploratory session, which has no
+        # catalogue to run.
+        self._on_navigated = on_navigated
+        self._catalogue_timeout = (
+            NONFUNCTIONAL_CATALOGUE_TIMEOUT if catalogue_timeout is None else catalogue_timeout
+        )
 
         self._playwright: Any = None
         self._browser: Any = None
         self._page: Any = None
         self._console: list[str] = []
+        # XHR/fetch URLs the application called for itself. Deliberately NOT
+        # in `_console`: `read_console` drains and clears that list, and a
+        # discovery set the task reads after the loop cannot live somewhere
+        # the model can empty.
+        self.discovered_endpoints: list[str] = []
+        # Main-frame document responses, by URL — captured as they arrive so
+        # the passive-security check reads the response the *browser* got
+        # rather than issuing a second request that a server could answer
+        # differently.
+        self._document_responses: dict[str, dict] = {}
         self.findings_recorded = 0
         # Set once in __enter__. Initialized here because this class is also
         # constructed directly with a page injected (tests do exactly that),
@@ -141,6 +212,12 @@ class BrowserSession:
         self._page.set_default_timeout(self._action_timeout * 1000)
         self._page.on("console", self._record_console)
         self._page.on("requestfailed", self._record_request_failure)
+        # A separate handler, not a widening of `_record_request_failure`:
+        # that one is bound to "requestfailed" and therefore only ever sees
+        # requests that *failed*, which is precisely the traffic this is not
+        # interested in.
+        self._page.on("request", self._record_request)
+        self._page.on("response", self._record_response)
 
         # Open on the application rather than about:blank. Without this the
         # model's first action is spent discovering where the app lives.
@@ -171,6 +248,97 @@ class BrowserSession:
     def _record_request_failure(self, request: Any) -> None:
         failure = getattr(request, "failure", None)
         self._console.append(f"request failed: {request.url} ({failure})")
+
+    def _record_request(self, request: Any) -> None:
+        """Remember an XHR/fetch URL the application called for itself.
+
+        These are the endpoint targets — URLs the application uses, not
+        anything guessed or crawled.  Off-origin traffic is skipped: an
+        analytics beacon is not part of the software under test, and
+        examining it would put our requests on a third party's API.
+
+        Never raises: it runs inside Playwright's event dispatch, where an
+        exception has no caller of ours to catch it.
+        """
+        try:
+            if getattr(request, "resource_type", None) not in ("xhr", "fetch"):
+                return
+            url = str(request.url).split("#", 1)[0]
+            if not self._is_allowed(url) or url in self.discovered_endpoints:
+                return
+            if len(self.discovered_endpoints) >= MAX_DISCOVERED_ENDPOINTS:
+                return
+            self.discovered_endpoints.append(url)
+        except Exception:  # pragma: no cover - event handlers have no caller
+            logger.debug("Could not record a request URL", exc_info=True)
+
+    def _record_response(self, response: Any) -> None:
+        """Keep the main-frame document response for the passive checks."""
+        try:
+            request = response.request
+            if getattr(request, "resource_type", None) != "document":
+                return
+            is_navigation = getattr(request, "is_navigation_request", None)
+            if callable(is_navigation) and not is_navigation():
+                return
+            url = str(response.url).split("#", 1)[0]
+            self._document_responses[url] = {
+                "status": response.status,
+                "headers": dict(response.headers or {}),
+            }
+            if len(self._document_responses) > MAX_DOCUMENT_RESPONSES:
+                # Oldest first: a run walks forward, so the page we are on is
+                # always among the newest.
+                for stale in list(self._document_responses)[:-MAX_DOCUMENT_RESPONSES]:
+                    self._document_responses.pop(stale, None)
+        except Exception:  # pragma: no cover - event handlers have no caller
+            logger.debug("Could not record a document response", exc_info=True)
+
+    # ── the navigation hook ───────────────────────────────────────────
+
+    def _fire_navigated(self, previous_url: str | None) -> str:
+        """Run the arrival callback when an executor changed the URL.
+
+        The catalogue runs here rather than behind a tool the model calls,
+        because a tool the model calls is a tool the model can decline to
+        call — and "the full catalogue at every target" would quietly become
+        "wherever it remembered to look".
+
+        Wrapped in its own ``try`` because this hook widens the never-raise
+        contract further than any other executor: after it, ``click()``
+        transitively performs an axe injection, a screenshot, a disk write
+        and several database commits.  A full disk must cost the target row,
+        never the session — a session that dies here loses every target
+        after it, and a ``failed_to_run`` outcome would have survived.
+        """
+        if self._on_navigated is None:
+            return ""
+        try:
+            current = self._page.url
+        except PlaywrightError:
+            return ""
+        if previous_url is not None and current == previous_url:
+            return ""
+
+        started = time.monotonic()
+        # A synchronous callback on this thread cannot be preempted — the
+        # browser lives here and cannot be driven from another thread — so
+        # the budget is a deadline the callback honours between checks.
+        deadline = started + self._catalogue_timeout
+        try:
+            note = self._on_navigated(current, deadline)
+        except Exception:
+            logger.exception("The arrival callback failed for %s", current)
+            return ""
+        elapsed = time.monotonic() - started
+        if elapsed > self._catalogue_timeout:
+            logger.warning(
+                "Arrival callback for %s took %.1fs, over its %ds budget",
+                current,
+                elapsed,
+                self._catalogue_timeout,
+            )
+        return "\n" + note if note else ""
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -221,6 +389,13 @@ class BrowserSession:
             "application when you are done."
         )
 
+    def _current_url(self) -> str | None:
+        """The page's URL, or None when the page cannot answer for it."""
+        try:
+            return self._page.url
+        except PlaywrightError:
+            return None
+
     def _is_allowed(self, url: str) -> bool:
         parsed = urlparse(url)
         return (parsed.scheme, parsed.netloc) in self._origins
@@ -252,6 +427,7 @@ class BrowserSession:
                 f"ERROR: navigation to {url!r} is not allowed. This session may "
                 f"only visit the application under test: {self._origins_text()}."
             )
+        before = self._current_url()
         try:
             self._page.goto(url)
         except PlaywrightError as exc:
@@ -267,9 +443,16 @@ class BrowserSession:
                 f"ERROR: {url!r} redirected to {landed!r}, which is outside the "
                 f"application under test ({self._origins_text()}). Navigation was undone."
             )
-        return f"Navigated to {landed}. Call snapshot to see the page."
+        # Ordering is load-bearing: the hook fires only *after* the
+        # post-settle origin check above. Firing it first would run the whole
+        # catalogue — axe injection included — against a third-party site the
+        # application merely redirected to.
+        return f"Navigated to {landed}. Call snapshot to see the page." + self._fire_navigated(
+            before
+        )
 
     def click(self, ref: str = "") -> str:
+        before = self._current_url()
         try:
             self._locator(ref).click()
         except PlaywrightError as exc:
@@ -277,6 +460,7 @@ class BrowserSession:
         return (
             f"Clicked {ref}. The page may have changed — take a fresh snapshot."
             + self._off_origin_notice()
+            + self._fire_navigated(before)
         )
 
     def fill(self, ref: str = "", value: str = "") -> str:
@@ -303,6 +487,7 @@ class BrowserSession:
         return f"Filled {ref} with the value of {env_var_name}."
 
     def press(self, ref: str = "", key: str = "") -> str:
+        before = self._current_url()
         try:
             self._locator(ref).press(key)
         except PlaywrightError as exc:
@@ -310,22 +495,31 @@ class BrowserSession:
         return (
             f"Pressed {key} on {ref}. The page may have changed — take a fresh snapshot."
             + self._off_origin_notice()
+            + self._fire_navigated(before)
         )
 
     def go_back(self) -> str:
+        before = self._current_url()
         try:
             self._page.go_back()
         except PlaywrightError as exc:
             return f"ERROR: could not go back: {exc}"
-        return f"Went back to {self._page.url}. Take a fresh snapshot." + self._off_origin_notice()
+        return (
+            f"Went back to {self._page.url}. Take a fresh snapshot."
+            + self._off_origin_notice()
+            + self._fire_navigated(before)
+        )
 
     def go_forward(self) -> str:
+        before = self._current_url()
         try:
             self._page.go_forward()
         except PlaywrightError as exc:
             return f"ERROR: could not go forward: {exc}"
         return (
-            f"Went forward to {self._page.url}. Take a fresh snapshot." + self._off_origin_notice()
+            f"Went forward to {self._page.url}. Take a fresh snapshot."
+            + self._off_origin_notice()
+            + self._fire_navigated(before)
         )
 
     def set_viewport(self, width: int = 1280, height: int = 720) -> str:
@@ -405,6 +599,150 @@ class BrowserSession:
             viewport = self._page.viewport_size
         return environment_utils.browser_environment(self._browser_label, viewport, url)
 
+    # ── the catalogue (nonfunctional runs) ────────────────────────────
+    #
+    # None of these is a tool. The model is never offered them, because a
+    # check it can call is a check it can decline to call — and the whole
+    # claim of this run mode is that the full catalogue runs at every
+    # target. They are called by the arrival callback instead.
+
+    def scan_accessibility(self) -> CheckOutcome:
+        """Run axe-core against the current page.
+
+        ``axe-playwright-python`` injects through ``page.evaluate``, so page
+        CSP is not a failure mode here — verified against 0.1.8.  What does
+        fail is the evaluate itself: a page navigating under the call, a
+        detached frame, JavaScript disabled.
+
+        Known limit, and not detectable from here: axe analyses the **main
+        frame only**, so a violation inside a cross-origin iframe reads
+        exactly like a clean frame.
+        """
+        try:
+            from axe_playwright_python.sync_playwright import Axe
+        except ImportError as exc:  # pragma: no cover - dependency is declared
+            return CheckOutcome(error=f"axe is not installed: {exc}")
+        try:
+            return CheckOutcome(data=Axe().run(self._page))
+        except Exception as exc:
+            return CheckOutcome(error=f"axe could not run on this page: {exc}")
+
+    def document_content_type(self) -> str | None:
+        """The media type the browser was served for the current page.
+
+        Read off the captured document response, never re-requested, and
+        never inferred from the DOM: Chromium renders an
+        ``application/json`` body through its own JSON viewer, so the page
+        axe sees is real HTML whatever the server said.  The header is the
+        only thing that can tell a page from a payload.
+
+        ``None`` when the URL, the record or the header is missing — an
+        in-page SPA navigation captures no document response, and the
+        caller must read that as *unknown*, never as "not a page".
+        """
+        url = self._current_url()
+        if url is None:
+            return None
+        recorded = self._document_responses.get(url.split("#", 1)[0])
+        if recorded is None:
+            return None
+        header = (recorded.get("headers") or {}).get("content-type")
+        if not header:
+            return None
+        return str(header).split(";", 1)[0].strip().lower() or None
+
+    def check_headers(self) -> CheckOutcome:
+        """The response the browser actually got for the current page.
+
+        Read from the captured document response rather than re-requested:
+        a second request is a second chance for the server to answer
+        differently, and the passive checks are supposed to describe what a
+        real visitor received.
+        """
+        url = self._current_url()
+        if url is None:
+            return CheckOutcome(error="the page could not be read")
+        recorded = self._document_responses.get(url.split("#", 1)[0])
+        if recorded is None:
+            return CheckOutcome(
+                error=f"no document response was captured for {url} (an in-page navigation?)"
+            )
+        cookies: list[dict] = []
+        with contextlib.suppress(Exception):
+            cookies = list(self._page.context.cookies())
+        body_sample = ""
+        if recorded["status"] >= 400:
+            # Only for an error response: the stack-trace rule is the one
+            # check that reads a body, and a 200 page about tracebacks is
+            # not a leaking error response.
+            with contextlib.suppress(Exception):
+                body_sample = (self._page.content() or "")[:_BODY_SAMPLE_MAX_CHARS]
+        return CheckOutcome(
+            data={
+                "url": url,
+                "status": recorded["status"],
+                "headers": recorded["headers"],
+                # Names and flags only — a cookie value is never returned to
+                # a caller, logged, or rendered into a finding.
+                "cookies": [
+                    {
+                        "name": cookie.get("name"),
+                        "secure": cookie.get("secure"),
+                        "httpOnly": cookie.get("httpOnly"),
+                        "sameSite": cookie.get("sameSite"),
+                    }
+                    for cookie in cookies
+                ],
+                "body_sample": body_sample,
+            }
+        )
+
+    def measure_performance(self) -> CheckOutcome:
+        """Timings for the page already loaded — no second page load.
+
+        Navigation Timing plus the paint entries, read out of the page that
+        is already there.  Deliberately not LCP or CLS: both need a
+        ``PerformanceObserver`` running from before navigation and settle
+        only after user-visible delay, which would mean loading the page a
+        second time to measure it.  Data only, either way — decision 11
+        keeps performance out of findings entirely.
+        """
+        try:
+            data = self._page.evaluate(_PERFORMANCE_SCRIPT)
+        except Exception as exc:
+            return CheckOutcome(error=f"performance timings could not be read: {exc}")
+        if not isinstance(data, dict):
+            return CheckOutcome(error="performance timings came back in an unexpected shape")
+        return CheckOutcome(data=data)
+
+    def cookies_for_load(self) -> dict[str, str]:
+        """The browser's cookies, for a load profile to send.
+
+        Called on the **main thread** and passed into the thread pool by
+        value: no Playwright handle ever crosses that boundary, because the
+        sync API belongs to the thread that opened it.
+
+        Values are returned — they have to be, the requests carry them — but
+        never logged here and never persisted by the caller.
+        """
+        try:
+            return {
+                str(cookie["name"]): str(cookie.get("value", ""))
+                for cookie in self._page.context.cookies()
+                if cookie.get("name")
+            }
+        except Exception:
+            logger.warning("Could not read cookies for a load profile", exc_info=True)
+            return {}
+
+    def screenshot(self) -> bytes | None:
+        """One page image, or None. Never raises — evidence is optional."""
+        try:
+            return self._page.screenshot()
+        except Exception as exc:
+            logger.warning("Page screenshot failed: %s", exc)
+            return None
+
     def _element_error(self, ref: str, exc: PlaywrightError, action: str) -> str:
         message = str(exc)
         if "Timeout" in message or "strict mode violation" in message:
@@ -432,3 +770,18 @@ class BrowserSession:
             "read_console": self.read_console,
             "record_finding": self.record_finding,
         }
+
+    def nonfunctional_tool_registry(self) -> dict[str, Callable[..., str]]:
+        """Navigation only — the executor half of the inverted oracle.
+
+        ``record_finding`` is absent, but note what that does and does not
+        buy: this dict *dispatches* a call the model already made, so
+        omitting an entry makes the tool fail loudly rather than making it
+        unavailable.  The guarantee lives in the request **schema**
+        (``NONFUNCTIONAL_TOOLS`` in ``llm_prompts.py``), which is what
+        decides whether the model is offered the tool at all.  This is a
+        cheap second layer, not the pin.
+        """
+        navigation_only = self.tool_registry()
+        navigation_only.pop("record_finding", None)
+        return navigation_only

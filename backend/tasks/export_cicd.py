@@ -60,15 +60,11 @@ import asyncio
 import json
 import logging
 import secrets as secrets_module
-from collections.abc import Callable
 from datetime import datetime, timezone
 
 import httpx
 
-from backend.config import (
-    CICD_MAX_WORKFLOWS,
-    TEST_EXECUTION_FILE_MAX_CHARS,
-)
+from backend.config import CICD_MAX_WORKFLOWS
 from backend.database import new_session
 from backend.models.database import (
     CicdExport,
@@ -76,7 +72,13 @@ from backend.models.database import (
     CicdExportStatus,
     CicdProvider,
 )
-from backend.services import cicd_eligibility, cicd_export, finalization, llm
+from backend.services import (
+    cicd_eligibility,
+    cicd_export,
+    finalization,
+    llm,
+    repo_reader,
+)
 from backend.services.ci_introspect import (
     add_job,
     parse_workflow,
@@ -118,33 +120,6 @@ def _branch_name(sprint_id: int) -> str:
     """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"qa-agent/sprint-{sprint_id}-{stamp}-{secrets_module.token_hex(2)}"
-
-
-def _build_read_file(
-    file_tree: str, owner: str, repo: str, token: str | None
-) -> Callable[[str], str]:
-    """Executor for the LLM's read_file tool — same contract as ``execute_test``.
-
-    Path-validated against the file tree, truncating, and never raising:
-    errors go back to the model as strings it can react to.
-    """
-    allowed_paths = set(file_tree.splitlines())
-
-    def read_file(path: str) -> str:
-        requested = (path or "").strip().lstrip("/")
-        if requested not in allowed_paths:
-            return f"ERROR: could not read '{requested}': path is not in the repository file tree."
-        try:
-            content = asyncio.run(github_utils.fetch_file(owner, repo, requested, token))
-        except github_utils.GitHubError as exc:
-            return f"ERROR: could not read '{requested}': {exc}"
-        if content is None:
-            return f"ERROR: could not read '{requested}': file not found."
-        if len(content) > TEST_EXECUTION_FILE_MAX_CHARS:
-            content = content[:TEST_EXECUTION_FILE_MAX_CHARS] + _FILE_TRUNCATION_MARKER
-        return content
-
-    return read_file
 
 
 def _ci_paths(file_tree: str | None, provider: str) -> list[str]:
@@ -372,7 +347,7 @@ def export_cicd_task(cicd_export_id: int) -> None:
 
             read_file = None
             if file_tree:
-                read_file = _build_read_file(file_tree, owner, repo_name, token)
+                read_file = repo_reader.build_read_file(file_tree, owner, repo_name, token)
 
             readme = asyncio.run(resolve_readme(sprint))
             result = llm.generate_cicd_integration(
