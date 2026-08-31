@@ -153,9 +153,47 @@ describe('NonfunctionalRunDetailPage', () => {
     renderPage()
 
     await waitFor(() => expect(screen.getByText('Violations found')).toBeInTheDocument())
-    expect(screen.getAllByText('No violations')).toHaveLength(2)
+    // Security only. Performance is `clean` in the fixture too, but it is
+    // measured and never judged, so it must not claim a verdict.
+    expect(screen.getAllByText('No violations')).toHaveLength(1)
     expect(screen.getByText('load ms')).toBeInTheDocument()
     expect(screen.getByText('340')).toBeInTheDocument()
+  })
+
+  it('reads a clean performance outcome as measured, not as a verdict', async () => {
+    // Performance has no oracle — `violations` is unreachable for it — so
+    // `clean` means "we took the measurement". "No violations" would report
+    // a threshold nobody set, and the green chip would say it again.
+    mockFetchRun.mockResolvedValue(makeRun())
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('Measured')).toBeInTheDocument())
+    expect(screen.getByText('Measured')).toHaveClass('nf-outcome-measured')
+  })
+
+  it('still reads a clean security outcome as a verdict', async () => {
+    // The remap is per domain, not global: security is graded by the rule
+    // table, so its `clean` genuinely is "no violations".
+    mockFetchRun.mockResolvedValue(
+      makeRun({
+        targets: [makeTarget({ a11y_outcome: 'clean', security_outcome: 'clean' })],
+      }),
+    )
+    renderPage()
+
+    await waitFor(() => expect(screen.getAllByText('No violations')).toHaveLength(2))
+  })
+
+  it('leaves an unmeasurable performance outcome saying so', async () => {
+    // `clean` is the only value remapped: a domain without an oracle can
+    // still fail to run, and that reading was already correct.
+    mockFetchRun.mockResolvedValue(
+      makeRun({ targets: [makeTarget({ performance_outcome: 'failed_to_run' })] }),
+    )
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('Could not run')).toBeInTheDocument())
+    expect(screen.queryByText('Measured')).not.toBeInTheDocument()
   })
 
   it('distinguishes could-not-run from clean', async () => {

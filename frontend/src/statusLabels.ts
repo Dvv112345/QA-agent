@@ -72,15 +72,30 @@ export const NONFUNCTIONAL_CHILD_STATUS_LABELS: Record<NonfunctionalChildStatus,
 }
 
 /**
- * What one domain found at one URL. Four labels because there are four
- * answers: a check that could not run is not a clean one, and a domain
+ * How one outcome reads on screen.
+ *
+ * `measured` is deliberately **not** a backend value — `DomainOutcome`
+ * keeps mirroring exactly the four the API sends. It is what `clean` means
+ * for performance, which is measured and never judged: it has no oracle,
+ * produces no finding and no defect, and `violations` is unreachable for
+ * it. So `clean` there means "we took the measurement", not "it passed",
+ * and any verdict would need a threshold — a judgement about somebody
+ * else's capacity planning, which is exactly what the backend refuses to
+ * make. The panel must not make it on the backend's behalf.
+ */
+export type DomainOutcomeDisplay = DomainOutcome | 'measured'
+
+/**
+ * What one domain found at one URL. Four backend answers, plus the display
+ * case above: a check that could not run is not a clean one, and a domain
  * that does not apply to an endpoint was never asked.
  */
-export const DOMAIN_OUTCOME_LABELS: Record<DomainOutcome, string> = {
+export const DOMAIN_OUTCOME_LABELS: Record<DomainOutcomeDisplay, string> = {
   clean: 'No violations',
   violations: 'Violations found',
   not_applicable: 'Not applicable here',
   failed_to_run: 'Could not run',
+  measured: 'Measured',
 }
 
 export const CASE_STATUS_LABELS: Record<TestCaseExecutionStatus, string> = {

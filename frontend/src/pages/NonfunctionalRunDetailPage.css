@@ -156,8 +156,12 @@
   color: var(--status-waiting-fg);
 }
 
+/* `measured` sits here rather than with `clean`: performance is measured
+   and never judged, so the green that means "passed" would report the
+   verdict the label deliberately avoids. */
 .nf-outcome-not_applicable,
-.nf-outcome-unselected {
+.nf-outcome-unselected,
+.nf-outcome-measured {
   background: var(--surface-recessed);
   color: var(--text);
 }

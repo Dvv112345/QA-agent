@@ -29,25 +29,43 @@ import { useAsyncData } from '../hooks/useAsyncData'
 import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
 import {
   DOMAIN_OUTCOME_LABELS,
+  type DomainOutcomeDisplay,
   NONFUNCTIONAL_CHILD_STATUS_LABELS,
   NONFUNCTIONAL_RUN_STATUS_LABELS,
 } from '../statusLabels'
 import './NonfunctionalRunDetailPage.css'
 
-/** The three domains, in the order the panel reads them. */
-const DOMAIN_ROWS: [string, keyof NonfunctionalTargetResponse][] = [
-  ['Accessibility', 'a11y_outcome'],
-  ['Security', 'security_outcome'],
-  ['Performance', 'performance_outcome'],
+/**
+ * The three domains, in the order the panel reads them.
+ *
+ * `judged` is what separates a domain with an oracle from one without.
+ * Accessibility is graded by axe-core and security by the fixed rule
+ * table, so their `clean` is a verdict. Performance is measured and never
+ * judged, so its `clean` is not — and a domain-blind cell reported one
+ * anyway, in the word and in the colour.
+ */
+const DOMAIN_ROWS: {
+  label: string
+  key: keyof NonfunctionalTargetResponse
+  judged: boolean
+}[] = [
+  { label: 'Accessibility', key: 'a11y_outcome', judged: true },
+  { label: 'Security', key: 'security_outcome', judged: true },
+  { label: 'Performance', key: 'performance_outcome', judged: false },
 ]
 
-function OutcomeCell({ outcome }: { outcome: DomainOutcome | null }) {
+function OutcomeCell({ outcome, judged }: { outcome: DomainOutcome | null; judged: boolean }) {
   // Null is "not selected for this run" — a fourth thing, and saying
   // nothing about it is the honest rendering.
   if (outcome === null)
     return <span className="nf-outcome nf-outcome-unselected">Not selected</span>
+  // `clean` is the only value that needs remapping: an unjudged domain can
+  // still fail to run, and that reading is already correct.
+  const display: DomainOutcomeDisplay = !judged && outcome === 'clean' ? 'measured' : outcome
+  // One key drives the label and the colour together, so the chip cannot
+  // say "Measured" in the green that means "passed".
   return (
-    <span className={`nf-outcome nf-outcome-${outcome}`}>{DOMAIN_OUTCOME_LABELS[outcome]}</span>
+    <span className={`nf-outcome nf-outcome-${display}`}>{DOMAIN_OUTCOME_LABELS[display]}</span>
   )
 }
 
@@ -265,10 +283,10 @@ export default function NonfunctionalRunDetailPage() {
                   </span>
                 </div>
                 <div className="nf-target-outcomes">
-                  {DOMAIN_ROWS.map(([label, key]) => (
+                  {DOMAIN_ROWS.map(({ label, key, judged }) => (
                     <span key={label} className="nf-outcome-row">
                       <span className="nf-outcome-label">{label}</span>
-                      <OutcomeCell outcome={target[key] as DomainOutcome | null} />
+                      <OutcomeCell outcome={target[key] as DomainOutcome | null} judged={judged} />
                     </span>
                   ))}
                 </div>
