@@ -675,7 +675,13 @@ class RequirementMetrics(SQLModel):
     # in the headline, so hiding the row would make the numbers not add up
     # — the failure mode ``FindingType.normalize``'s docstring names.
     requirement_deleted: bool = False
+    # Three bug figures, and the total is not redundant: the table renders
+    # the two halves, while `bug_count` is the worst-first sort key and the
+    # input to the panel's "rows sum above the headline" footnote. The two
+    # halves always sum to it — the pools partition the sprint's defects.
     bug_count: int
+    functional_bug_count: int = 0
+    nonfunctional_bug_count: int = 0
     issue_count: int
     # Distinct, matching the sprint-level headline (see below).
     distinct_test_cases_run: int

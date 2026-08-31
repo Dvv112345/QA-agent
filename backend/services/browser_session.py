@@ -627,6 +627,30 @@ class BrowserSession:
         except Exception as exc:
             return CheckOutcome(error=f"axe could not run on this page: {exc}")
 
+    def document_content_type(self) -> str | None:
+        """The media type the browser was served for the current page.
+
+        Read off the captured document response, never re-requested, and
+        never inferred from the DOM: Chromium renders an
+        ``application/json`` body through its own JSON viewer, so the page
+        axe sees is real HTML whatever the server said.  The header is the
+        only thing that can tell a page from a payload.
+
+        ``None`` when the URL, the record or the header is missing — an
+        in-page SPA navigation captures no document response, and the
+        caller must read that as *unknown*, never as "not a page".
+        """
+        url = self._current_url()
+        if url is None:
+            return None
+        recorded = self._document_responses.get(url.split("#", 1)[0])
+        if recorded is None:
+            return None
+        header = (recorded.get("headers") or {}).get("content-type")
+        if not header:
+            return None
+        return str(header).split(";", 1)[0].strip().lower() or None
+
     def check_headers(self) -> CheckOutcome:
         """The response the browser actually got for the current page.
 

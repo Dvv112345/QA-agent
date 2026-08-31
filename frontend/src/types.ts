@@ -567,7 +567,16 @@ export interface RequirementMetrics {
   requirement_id: number
   requirement_name: string
   requirement_deleted: boolean
+  /**
+   * The row's total, and not redundant beside the two halves: it is the
+   * worst-first sort key the backend already applied, and what the
+   * "rows sum above the headline" footnote compares. Never re-derive it
+   * by summing the halves here — every figure in this file is computed in
+   * Python precisely so there is one definition of each.
+   */
   bug_count: number
+  functional_bug_count: number
+  nonfunctional_bug_count: number
   issue_count: number
   distinct_test_cases_run: number
   exploratory_sessions: number

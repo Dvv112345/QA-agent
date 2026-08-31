@@ -17,6 +17,7 @@ from backend.services.nonfunctional_checks import (
     CheckError,
     RawViolation,
     RunViolations,
+    accessibility_applies,
     axe_violations,
     capped_axe_payload,
     passive_security_violations,
@@ -150,6 +151,29 @@ class TestAxeViolations:
     def test_something_that_is_not_a_payload_raises(self):
         with pytest.raises(CheckError):
             axe_violations("<html>", URL)
+
+
+class TestAccessibilityApplies:
+    """Applicability is a fact about the served document, not about how the
+    target was reached."""
+
+    @pytest.mark.parametrize("content_type", ["text/html", "application/xhtml+xml"])
+    def test_html_documents_are_examined(self, content_type):
+        assert accessibility_applies(content_type) is True
+
+    @pytest.mark.parametrize(
+        "content_type", ["application/json", "text/plain", "application/pdf", "image/png"]
+    )
+    def test_a_payload_is_not_a_page(self, content_type):
+        # The reported bug: Chromium renders JSON through its own viewer, so
+        # axe is handed a real DOM for a body with no user interface at all.
+        assert accessibility_applies(content_type) is False
+
+    def test_unknown_reads_as_applicable_rather_than_skipping_a_real_page(self):
+        # None means no document response was captured — an in-page SPA
+        # navigation, which is a genuine HTML page. Over-reporting a scan is
+        # recoverable; silently skipping a real page is not.
+        assert accessibility_applies(None) is True
 
 
 class TestCappedAxePayload:

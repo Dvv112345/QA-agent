@@ -381,7 +381,15 @@ def _compute(sprint) -> dict:
         ),
         "bugs_per_requirement": _density(functional_bug_count, len(covered)),
         "bugs_per_test_case": _density(functional_bug_count, distinct_cases),
-        "per_requirement": _per_requirement(sprint, counted, bug_groups, issue_findings, covered),
+        "per_requirement": _per_requirement(
+            sprint,
+            counted,
+            bug_groups,
+            functional_groups,
+            nonfunctional_groups,
+            issue_findings,
+            covered,
+        ),
         "excluded_runs_running": counted.excluded_running,
         "excluded_runs_failed": counted.excluded_failed,
     }
@@ -403,10 +411,25 @@ def _bugs_by_domain(nonfunctional_groups: list[list[Finding]]) -> dict[str, int]
     return counts
 
 
+def _count_by_requirement(groups: list[list[Finding]]) -> dict[int, int]:
+    """How many of *groups* touch each requirement.
+
+    A group is counted once per requirement it touches, never once overall
+    — see ``_per_requirement`` for why that is the right lie to tell.
+    """
+    counts: dict[int, int] = {}
+    for group in groups:
+        for requirement_id in {f.requirement_id for f in group}:
+            counts[requirement_id] = counts.get(requirement_id, 0) + 1
+    return counts
+
+
 def _per_requirement(
     sprint,
     counted: _Counted,
     bug_groups: list[list[Finding]],
+    functional_groups: list[list[Finding]],
+    nonfunctional_groups: list[list[Finding]],
     issue_findings: list[Finding],
     covered: set[int],
 ) -> list[dict]:
@@ -426,11 +449,18 @@ def _per_requirement(
     """
     labels = _requirement_labels(sprint)
 
-    bugs_by_requirement: dict[int, int] = {}
+    # The pools are partitioned by `_compute` off `Finding.pool`, and are
+    # reused rather than re-derived here: two derivations of "is this a
+    # nonfunctional defect" would let the breakdown and the headline tiles
+    # disagree. The two partitions are exclusive and exhaustive over
+    # `bug_groups`, so per row the halves sum to `bug_count` — asserted by
+    # a test rather than trusted, since a third pool would break it
+    # silently.
+    bugs_by_requirement = _count_by_requirement(bug_groups)
+    functional_by_requirement = _count_by_requirement(functional_groups)
+    nonfunctional_by_requirement = _count_by_requirement(nonfunctional_groups)
+
     issues_by_requirement: dict[int, int] = {}
-    for group in bug_groups:
-        for requirement_id in {f.requirement_id for f in group}:
-            bugs_by_requirement[requirement_id] = bugs_by_requirement.get(requirement_id, 0) + 1
     for finding in issue_findings:
         issues_by_requirement[finding.requirement_id] = (
             issues_by_requirement.get(finding.requirement_id, 0) + 1
@@ -448,7 +478,14 @@ def _per_requirement(
                 "requirement_id": requirement_id,
                 "requirement_name": name,
                 "requirement_deleted": deleted,
+                # The total stays on the row even though the table shows
+                # the halves: it is the worst-first sort key below, and the
+                # panel's "rows sum above the headline" footnote compares
+                # it against the headline total. The frontend may not sum
+                # the halves itself (see `types.ts`).
                 "bug_count": bugs_by_requirement.get(requirement_id, 0),
+                "functional_bug_count": functional_by_requirement.get(requirement_id, 0),
+                "nonfunctional_bug_count": nonfunctional_by_requirement.get(requirement_id, 0),
                 "issue_count": issues_by_requirement.get(requirement_id, 0),
                 "distinct_test_cases_run": len(
                     counted.cases_by_requirement.get(requirement_id, ())

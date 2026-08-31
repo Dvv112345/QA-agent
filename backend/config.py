@@ -217,7 +217,12 @@ NONFUNCTIONAL_MAX_TARGETS: int = _get_int("NONFUNCTIONAL_MAX_TARGETS", 10)
 # navigates and nothing else here: findings come from the tools, so there
 # is no free "record" round to budget for as there is in exploratory.
 NONFUNCTIONAL_MAX_ACTIONS: int = _get_int("NONFUNCTIONAL_MAX_ACTIONS", 30)
-# Findings persisted per run, across every target and domain.
+# read_file rounds when proposing a run plan. The model needs the repo to
+# know which endpoints exist before it can pair one with a base-URL
+# variable; without it, load profiles are guesses. Deliberately lower
+# than the other two tool loops (5): this one runs *synchronously inside
+# a request*, so every round is latency a user watches a spinner for.
+NONFUNCTIONAL_PLAN_TOOL_ROUNDS: int = _get_int("NONFUNCTIONAL_PLAN_TOOL_ROUNDS", 3)
 # Per-target cap on the axe payload before anything reaches a prompt.
 NONFUNCTIONAL_AXE_MAX_CHARS: int = _get_int("NONFUNCTIONAL_AXE_MAX_CHARS", 20000)
 # Cap on one *batched* triage call. The per-target cap alone allows

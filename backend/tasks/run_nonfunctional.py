@@ -38,6 +38,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from sqlmodel import Session, select
@@ -98,6 +99,25 @@ def _heartbeat(session: Session, run: NonfunctionalRun) -> None:
     session.commit()
 
 
+def _canonical_url(url: str) -> str:
+    """One spelling per page, so the same target is not examined twice.
+
+    ``seen_urls`` is a plain string set, so ``http://app`` and
+    ``http://app/`` were two targets carrying two sets of findings for one
+    page.  The browser answers with its own normalization and a nominated
+    env var need not match it, so the two spellings genuinely do meet.
+
+    Deliberately conservative.  Scheme and host are case-insensitive per RFC
+    3986 and an empty path means ``/``; the query is kept, because two query
+    strings are usually two pages, and the path keeps its case, because
+    paths are case-sensitive.
+    """
+    split = urlsplit(url.split("#", 1)[0])
+    return urlunsplit(
+        (split.scheme.lower(), split.netloc.lower(), split.path or "/", split.query, "")
+    )
+
+
 @dataclass
 class _Catalogue:
     """Runs the checks at one URL and writes the target row.
@@ -134,7 +154,7 @@ class _Catalogue:
         is not judging this application, and telling it what the checks
         found would invite it to start.
         """
-        clean = url.split("#", 1)[0]
+        clean = _canonical_url(url)
         if clean in self.seen_urls:
             return ""
         if len(self.seen_urls) >= NONFUNCTIONAL_MAX_TARGETS:
@@ -164,7 +184,7 @@ class _Catalogue:
         to say so.  Silence here would read exactly like a URL that was
         never nominated.
         """
-        clean = url.split("#", 1)[0]
+        clean = _canonical_url(url)
         if clean in self.seen_urls:
             return
         self.seen_urls.add(clean)
@@ -220,11 +240,28 @@ class _Catalogue:
         domain the budget cuts off records ``failed_to_run`` — never
         silence.
         """
-        assert self.browser is not None
+        # Not an `assert`: that vanishes under `python -O`, leaving an
+        # AttributeError several lines down, and `str(AssertionError())` is
+        # the empty string — which is precisely how an earlier ordering bug
+        # here wrote `status=error` with a blank message and hid itself in
+        # the data. `_walk_the_feature` assigns the browser before
+        # `__enter__`, so this is unreachable; it exists to be legible if
+        # that ordering ever regresses.
+        if self.browser is None:  # pragma: no cover - see the comment above
+            raise RuntimeError("the catalogue has no browser — the target cannot be examined")
         state = f"target {target.position}"
 
         if NonfunctionalDomain.ACCESSIBILITY in self.domains:
-            if self._expired(deadline):
+            # Applicability first, and it is decided by what the server
+            # served rather than by how this target was reached: the walk
+            # can navigate to a raw API URL, and Chromium's JSON viewer
+            # hands axe a real DOM for a body that has no user interface at
+            # all. `not_applicable` before `failed_to_run`, because a
+            # document axe was never going to examine did not run out of
+            # budget — it was never in scope.
+            if not nonfunctional_checks.accessibility_applies(self.browser.document_content_type()):
+                target.a11y_outcome = DomainOutcome.NOT_APPLICABLE
+            elif self._expired(deadline):
                 target.a11y_outcome = DomainOutcome.FAILED_TO_RUN
                 target.error = _budget_error("accessibility")
             else:
@@ -314,7 +351,7 @@ class _Catalogue:
         recorded as ``not_applicable`` rather than left blank — the run says
         what it did not look at, so a blank never has to be interpreted.
         """
-        clean = url.split("#", 1)[0]
+        clean = _canonical_url(url)
         if clean in self.seen_urls or len(self.seen_urls) >= NONFUNCTIONAL_MAX_TARGETS:
             return
         self.seen_urls.add(clean)
@@ -572,7 +609,7 @@ def _walk_the_feature(
     may cross into the thread pool.
     """
     cookies: dict[str, str] = {}
-    with browser_session.BrowserSession(
+    browser = browser_session.BrowserSession(
         base_urls=base_urls,
         env_vars=env_vars,
         # No findings come from the browser here: the model is not offered
@@ -581,21 +618,33 @@ def _walk_the_feature(
         on_finding=lambda record, png: None,
         on_navigated=catalogue.on_navigated,
         catalogue_timeout=NONFUNCTIONAL_CATALOGUE_TIMEOUT,
-    ) as browser:
-        catalogue.browser = browser
+    )
+    # Before `__enter__`, not inside the block. `on_navigated` is bound in
+    # the constructor, so `__enter__`'s own opening navigation already fires
+    # the arrival hook — and a catalogue that has no browser at that moment
+    # cannot examine the landing page at all.
+    catalogue.browser = browser
+    with browser:
         # Seed the coverage floor: every confirmed base URL is examined
         # whether or not the model goes there.
         #
         # Ordering is load-bearing, and it is the whole of a bug this once
-        # had. `__enter__` opens on base_urls[0] and nothing else, so the
-        # first URL is examined where it already is — but every *later* one
-        # has to be navigated to first. Calling the hook directly for a URL
-        # the browser is not on runs the catalogue against whatever page is
-        # loaded and files the result under the URL that was named: wrong
+        # had. `__enter__` opens on base_urls[0], and *that navigation
+        # examines it* — under the URL it actually landed on, which a
+        # redirect makes different from the one we named. Every later URL
+        # has to be navigated to instead: firing the hook for a URL the
+        # browser is not on runs the catalogue against whatever page is
+        # loaded and files the result under the URL that was named — wrong
         # evidence on a bug report, and the named URL silently never
         # examined, because `seen_urls` now holds it. `navigate` fires the
         # hook itself, after its own post-settle origin re-check.
-        catalogue.on_navigated(base_urls[0], time.monotonic() + NONFUNCTIONAL_CATALOGUE_TIMEOUT)
+        if not catalogue.seen_urls:
+            # Nothing arrived, so the opening navigation failed. Retry to
+            # learn *why* — `__enter__` only logs it — and to give a
+            # transient failure a second chance.
+            outcome = browser.navigate(base_urls[0])
+            if outcome.startswith("ERROR:"):
+                catalogue.record_unreachable(base_urls[0], outcome)
         for url in base_urls[1:]:
             outcome = browser.navigate(url)
             if outcome.startswith("ERROR:"):

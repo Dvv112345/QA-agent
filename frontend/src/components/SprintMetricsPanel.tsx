@@ -186,7 +186,14 @@ export default function SprintMetricsPanel({ metrics }: Props) {
             <thead>
               <tr>
                 <th>Requirement</th>
-                <th>Bugs</th>
+                {/* The two pools never merge into one defect count
+                    anywhere else in the app, so the breakdown does not
+                    merge them either: "5 bugs" reads as five broken
+                    behaviours when it may be one logic defect and four
+                    accessibility violations. Both columns show on every
+                    sprint — a stable column layout beats hiding one. */}
+                <th>Functional</th>
+                <th>Nonfunctional</th>
                 <th>Issues</th>
                 <th>Cases</th>
                 <th>Sessions</th>
@@ -201,7 +208,8 @@ export default function SprintMetricsPanel({ metrics }: Props) {
                       <span className="sprint-metrics-deleted"> (deleted)</span>
                     )}
                   </td>
-                  <td>{row.bug_count}</td>
+                  <td>{row.functional_bug_count}</td>
+                  <td>{row.nonfunctional_bug_count}</td>
                   <td>{row.issue_count}</td>
                   <td>{row.distinct_test_cases_run}</td>
                   <td>{row.exploratory_sessions}</td>

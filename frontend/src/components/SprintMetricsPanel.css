@@ -82,6 +82,10 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text);
+  /* "NONFUNCTIONAL" is wider than the 6rem column below. The wrapper
+     scrolls, so a narrow viewport pans rather than stacking a header
+     into two lines and misaligning every row beside it. */
+  white-space: nowrap;
 }
 
 .sprint-metrics-table td:not(:first-child),

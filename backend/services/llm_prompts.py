@@ -885,6 +885,11 @@ NONFUNCTIONAL_SYSTEM_PROMPT = (
     "worth more here than one screen studied closely, because each new URL "
     "is a whole catalogue of checks that would otherwise never run. "
     "Revisiting a URL you have already been to adds nothing.\n\n"
+    "WALK THE USER INTERFACE, not the API. Do not type the URL of a raw "
+    "API endpoint: the requests the application makes for itself are "
+    "captured from its own traffic and examined automatically, without "
+    "costing you an action. A JSON response is not a screen, and going "
+    "there spends an action and a URL slot on nothing.\n\n"
     "CREDENTIALS: never type a real password or token literally — use "
     "fill_secret with the name of the environment variable, and the value is "
     "filled in for you without ever being shown to you.\n\n"
@@ -922,14 +927,23 @@ NONFUNCTIONAL_PLAN_SYSTEM_PROMPT = (
     "name you give must be one of the names listed, and must hold an "
     "http(s) URL.\n\n"
     "3. WHICH LOAD PROFILES to propose, if any. A load profile sends many "
-    "requests to ONE url over a short window, to see how the environment "
-    "behaves under concurrent use. Rules you must follow:\n"
+    "requests to ONE endpoint over a short window, to see how the "
+    "environment behaves under concurrent use. Rules you must follow:\n"
+    "- You do NOT write a URL. You give `base_url_env_var` — one of the "
+    "names you nominated in step 2 — and `path`, the path on that host "
+    '(for example "/api/reports"). You are never shown a variable\'s '
+    "value, and you do not need one: the path is joined onto it for you. "
+    "Never write a scheme, a host, a port, or a $NAME placeholder in "
+    "`path`.\n"
+    "- Read the source to find real endpoints. The file tree lists paths "
+    "but not routes, so open the routing or controller files and propose a "
+    "path that genuinely exists, with a method it genuinely accepts. A "
+    "guessed path is worse than no profile: it load-tests a 404.\n"
     "- Prefer safe methods (GET, HEAD, OPTIONS). They only read, so they can "
     "run anywhere.\n"
     "- Propose a non-safe method (POST, PUT, PATCH, DELETE) only when the "
     "requirement is genuinely about a write path, and expect it to be "
     "refused unless the human has declared the environment disposable.\n"
-    "- Every url must be on one of the origins you nominated above.\n"
     "- Never put a credential in a body. Reference an environment variable "
     "as $NAME and it is substituted at send time without you seeing it.\n"
     "- Propose nothing at all rather than something arbitrary. An empty list "
@@ -937,11 +951,17 @@ NONFUNCTIONAL_PLAN_SYSTEM_PROMPT = (
     "Concurrency, duration and total request count are capped by "
     "configuration and will be clamped down silently, so propose modest "
     "numbers and never argue for larger ones.\n\n"
+    "You may call read_file to confirm which endpoints exist, what methods "
+    "they accept, and which pages a requirement renders. Read code for "
+    "those interface facts ONLY. Never let what the code does decide "
+    "whether something is worth testing, or whether a domain applies — the "
+    "requirement and the tools settle that, not the implementation.\n\n"
     "Respond with a JSON object of the shape "
     '{"domains": [{"domain": "accessibility"|"performance"|"security", '
     '"applicable": bool, "rationale": string}], '
     '"base_url_env_vars": [string, ...], '
-    '"load_profiles": [{"url": string, "method": string, "body": string|null, '
+    '"load_profiles": [{"base_url_env_var": string, "path": string, '
+    '"method": string, "body": string|null, '
     '"concurrency": int, "duration_seconds": int, "total_request_cap": int, '
     '"rationale": string}]}.'
 )
@@ -1040,17 +1060,33 @@ def nonfunctional_plan_context(
     name: str,
     description: str,
     covered_cases: list[TestCaseLike],
-    env_var_names: list[str],
+    url_env_var_names: list[str],
+    other_env_var_names: list[str],
     readme: str | None,
     file_tree: str | None,
 ) -> list[str]:
-    """User-prompt blocks for the run-setup proposal."""
+    """User-prompt blocks for the run-setup proposal.
+
+    Variable **names only** — no value ever reaches this prompt.  They are
+    split into those holding an http(s) URL and the rest, because the model
+    is asked to pair a base-URL key with an endpoint path and otherwise has
+    only the naming convention to guess from.  A wrong guess is a 502 from
+    ``validate_url_vars``, so the split is worth the two lines.
+    """
     parts = context_sections(readme, file_tree)
     parts.append(f"Requirement name: {name}\nRequirement description:\n{description}")
     if covered_cases:
         covered = "\n".join(f"- {case.title}: {case.expected_result}" for case in covered_cases)
         parts.append(f"Approved test cases for this requirement:\n{covered}")
-    parts.append("Available test environment variable names:\n" + bullets(env_var_names))
+    parts.append(
+        "Environment variables that hold an http(s) URL — these are the only "
+        "names you may nominate as a base URL, and the only ones a load "
+        "profile may reference:\n"
+        + bullets(url_env_var_names)
+        + "\n\nOther environment variables (credentials, ids, flags). Their "
+        "values are never shown to you, and a load profile may reference one "
+        "only inside `body`, as $NAME:\n" + bullets(other_env_var_names)
+    )
     return parts
 
 

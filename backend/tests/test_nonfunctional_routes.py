@@ -92,12 +92,17 @@ def _create_body(**overrides):
 
 class TestGeneratePlan:
     def _stub_llm(self, monkeypatch, result=None, error=None):
+        """Records the kwargs, so what the route *hands the model* is assertable."""
+        calls: list[dict] = []
+
         def _generate(**kwargs):
+            calls.append(kwargs)
             if error is not None:
                 raise error
             return result
 
         monkeypatch.setattr(routes.llm, "generate_nonfunctional_plan", _generate)
+        return calls
 
     def _result(self, **overrides):
         payload = {
@@ -108,7 +113,8 @@ class TestGeneratePlan:
             "base_url_env_vars": ["BASE_URL"],
             "load_profiles": [
                 {
-                    "url": PROFILE_URL,
+                    "base_url_env_var": "BASE_URL",
+                    "path": "/api/reports",
                     "method": "get",
                     "body": None,
                     "concurrency": 2,
@@ -144,6 +150,175 @@ class TestGeneratePlan:
             == load_runner.NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS
         )
         assert set(data["safe_methods"]) == {"GET", "HEAD", "OPTIONS"}
+
+    # ── URL composition ───────────────────────────────────────────────
+    # The model gives (variable, path) and never sees a value, so the
+    # origin is ours to resolve. These pin that resolution: it is what
+    # makes a proposed profile land on a confirmed origin by construction
+    # rather than by the model having guessed the host right.
+
+    def _set_env_vars(self, db_session, sprint, env_vars):
+        """One TestEnvironmentAccess row per sprint, so re-point the existing one."""
+        env = sprint.test_environment
+        env.env_vars_json = json.dumps(env_vars)
+        db_session.add(env)
+        db_session.commit()
+
+    async def _profiles(self, async_client, sprint, requirement):
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
+            json={"requirement_id": requirement.id},
+        )
+        assert resp.status_code == 200
+        return resp.json()["load_profiles"]
+
+    @pytest.mark.asyncio
+    async def test_the_path_is_joined_onto_the_variable_value(
+        self, async_client, db_session, monkeypatch
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+        self._stub_llm(monkeypatch, result=self._result())
+
+        profiles = await self._profiles(async_client, sprint, requirement)
+
+        assert profiles[0]["url"] == PROFILE_URL
+
+    @pytest.mark.asyncio
+    async def test_a_base_url_path_prefix_survives_the_join(
+        self, async_client, db_session, monkeypatch
+    ):
+        """Not urljoin. urljoin treats a leading slash as root-relative and
+        discards the base's own path, silently re-aiming the profile at
+        whatever lives at the host root."""
+        sprint, requirement = _ready_sprint(db_session)
+        self._set_env_vars(db_session, sprint, {"BASE_URL": "https://staging.example.com/app"})
+        self._stub_llm(monkeypatch, result=self._result())
+
+        profiles = await self._profiles(async_client, sprint, requirement)
+
+        assert profiles[0]["url"] == "https://staging.example.com/app/api/reports"
+
+    @pytest.mark.asyncio
+    async def test_slashes_are_not_doubled(self, async_client, db_session, monkeypatch):
+        sprint, requirement = _ready_sprint(db_session)
+        self._set_env_vars(db_session, sprint, {"BASE_URL": "https://staging.example.com/"})
+        self._stub_llm(monkeypatch, result=self._result())
+
+        profiles = await self._profiles(async_client, sprint, requirement)
+
+        assert profiles[0]["url"] == PROFILE_URL
+
+    @pytest.mark.asyncio
+    async def test_an_empty_path_yields_the_base_url_itself(
+        self, async_client, db_session, monkeypatch
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+        self._stub_llm(
+            monkeypatch,
+            result=self._result(
+                load_profiles=[
+                    {
+                        "base_url_env_var": "BASE_URL",
+                        "path": "/",
+                        "method": "GET",
+                        "rationale": "root",
+                    }
+                ]
+            ),
+        )
+
+        profiles = await self._profiles(async_client, sprint, requirement)
+
+        assert profiles[0]["url"] == "https://staging.example.com"
+
+    @pytest.mark.asyncio
+    async def test_a_profile_naming_an_unnominated_variable_is_dropped(
+        self, async_client, db_session, monkeypatch
+    ):
+        """Composing against an origin nobody nominated is worse than
+        proposing nothing — and API_TOKEN is not even a URL."""
+        sprint, requirement = _ready_sprint(db_session)
+        self._stub_llm(
+            monkeypatch,
+            result=self._result(
+                load_profiles=[
+                    {
+                        "base_url_env_var": "API_TOKEN",
+                        "path": "/x",
+                        "method": "GET",
+                        "rationale": "no",
+                    },
+                    {
+                        "base_url_env_var": "BASE_URL",
+                        "path": "/api/reports",
+                        "method": "GET",
+                        "rationale": "yes",
+                    },
+                ]
+            ),
+        )
+
+        profiles = await self._profiles(async_client, sprint, requirement)
+
+        assert [p["url"] for p in profiles] == [PROFILE_URL]
+
+    @pytest.mark.asyncio
+    async def test_a_composed_profile_survives_the_create_route(
+        self, async_client, db_session, monkeypatch, queue_stub
+    ):
+        """The whole point: Start without editing must not 422. This is the
+        end-to-end shape the original bug broke — a proposal the app's own
+        validator would refuse."""
+        sprint, requirement = _ready_sprint(db_session)
+        self._stub_llm(monkeypatch, result=self._result())
+        profiles = await self._profiles(async_client, sprint, requirement)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(requirement_id=requirement.id, load_profiles=profiles),
+        )
+
+        assert resp.status_code == 201, resp.text
+
+    # ── read_file wiring ──────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_no_file_tree_means_no_read_file(self, async_client, db_session, monkeypatch):
+        """Degrades to a plain completion rather than raising."""
+        sprint, requirement = _ready_sprint(db_session)
+        calls = self._stub_llm(monkeypatch, result=self._result())
+
+        await self._profiles(async_client, sprint, requirement)
+
+        assert calls[0]["read_file"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_file_tree_supplies_a_read_file_executor(
+        self, async_client, db_session, monkeypatch
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+        sprint.repo.file_tree = "backend/routes/reports.py"
+        db_session.add(sprint.repo)
+        db_session.commit()
+        calls = self._stub_llm(monkeypatch, result=self._result())
+
+        await self._profiles(async_client, sprint, requirement)
+
+        assert callable(calls[0]["read_file"])
+
+    @pytest.mark.asyncio
+    async def test_variable_names_are_split_and_no_value_is_sent(
+        self, async_client, db_session, monkeypatch
+    ):
+        """The design decision, pinned at the route boundary too."""
+        sprint, requirement = _ready_sprint(db_session)
+        calls = self._stub_llm(monkeypatch, result=self._result())
+
+        await self._profiles(async_client, sprint, requirement)
+
+        assert calls[0]["url_env_var_names"] == ["BASE_URL"]
+        assert calls[0]["other_env_var_names"] == ["API_TOKEN"]
+        assert "env_vars" not in calls[0]
 
     @pytest.mark.asyncio
     async def test_persists_nothing(self, async_client, db_session, monkeypatch):

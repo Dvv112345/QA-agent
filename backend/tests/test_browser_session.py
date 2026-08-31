@@ -537,6 +537,64 @@ class TestOpensOnTheApplication:
         ) as session:
             assert session.snapshot().startswith("Current URL:")
 
+    # ── the opening navigation fires the arrival hook ──────────────────
+    #
+    # `on_navigated` is bound in the constructor, so the navigation
+    # `__enter__` performs is a real arrival like any other. A caller that
+    # assumed otherwise — attaching its catalogue only after `__enter__`
+    # returned — could not examine the landing page at all, and every test
+    # here used to bypass `__enter__`, so nothing said so.
+
+    def _entered(self, monkeypatch, page, base_urls=("https://app.test/home",)):
+        arrivals: list[str] = []
+        _patch_playwright(monkeypatch, page)
+        with BrowserSession(
+            base_urls=list(base_urls),
+            env_vars={},
+            on_finding=lambda r, p: None,
+            on_navigated=lambda url, deadline: arrivals.append(url) or "",
+        ):
+            pass
+        return arrivals
+
+    def test_enter_fires_the_arrival_hook_for_the_first_base_url(self, monkeypatch):
+        arrivals = self._entered(monkeypatch, _FakePage(url="about:blank"))
+
+        assert arrivals == ["https://app.test/home"]
+
+    def test_enter_fires_the_hook_with_where_it_landed_not_what_was_asked(self, monkeypatch):
+        """A redirect makes these two different, and only one is the page.
+
+        Filing the landing page's evidence under the pre-redirect URL is
+        wrong evidence on a bug report.
+        """
+        page = _FakePage(url="about:blank")
+        page.redirect_to = "https://app.test/login"
+
+        assert self._entered(monkeypatch, page) == ["https://app.test/login"]
+
+    def test_a_failed_opening_navigation_fires_nothing(self, monkeypatch):
+        """Nothing arrived, so there is no page to examine.
+
+        The caller detects this by the hook never having fired, and records
+        the URL as unreachable rather than examining `about:blank` and
+        calling the application clean.
+        """
+        page = _FakePage(url="about:blank")
+        page.goto_error = "net::ERR_CONNECTION_REFUSED"
+
+        assert self._entered(monkeypatch, page) == []
+
+    def test_only_the_first_base_url_is_opened(self, monkeypatch):
+        """Later base URLs are the caller's job to navigate to."""
+        arrivals = self._entered(
+            monkeypatch,
+            _FakePage(url="about:blank"),
+            base_urls=("https://app.test/home", "https://api.test/v1"),
+        )
+
+        assert arrivals == ["https://app.test/home"]
+
 
 class TestLifecycle:
     def test_enter_launches_and_configures(self, monkeypatch):
@@ -789,6 +847,44 @@ class TestCheckHeaders:
 
         session._record_response(_FakeResponse("https://app.test/boom", 200))
         assert session.check_headers().data["body_sample"] == ""
+
+
+class TestDocumentContentType:
+    """What the server served, which is the only thing that can say
+    whether axe has a page to look at.  Chromium renders JSON through its
+    own viewer, so the DOM always looks like HTML."""
+
+    def test_reads_the_media_type_off_the_captured_response(self):
+        page = _FakePage(url="https://app.test/api/reports")
+        session = _session(page)
+        session._record_response(
+            _FakeResponse("https://app.test/api/reports", 404, {"content-type": "application/json"})
+        )
+
+        assert session.document_content_type() == "application/json"
+
+    def test_parameters_and_case_are_stripped(self):
+        page = _FakePage(url="https://app.test/login")
+        session = _session(page)
+        session._record_response(
+            _FakeResponse(
+                "https://app.test/login", 200, {"content-type": "TEXT/HTML; charset=UTF-8"}
+            )
+        )
+
+        assert session.document_content_type() == "text/html"
+
+    def test_no_captured_response_answers_unknown(self):
+        # An in-page SPA navigation. The caller must read None as unknown,
+        # never as "not a page".
+        assert _session(_FakePage(url="https://app.test/spa-route")).document_content_type() is None
+
+    def test_a_response_without_the_header_answers_unknown(self):
+        page = _FakePage(url="https://app.test/login")
+        session = _session(page)
+        session._record_response(_FakeResponse("https://app.test/login", 200, {"Server": "nginx"}))
+
+        assert session.document_content_type() is None
 
 
 class TestAccessibilityAndPerformance:

@@ -2431,7 +2431,8 @@ class TestGenerateNonfunctionalPlan:
             "base_url_env_vars": ["APP_URL"],
             "load_profiles": [
                 {
-                    "url": "https://app.test/api/reports",
+                    "base_url_env_var": "APP_URL",
+                    "path": "/api/reports",
                     "method": "GET",
                     "body": None,
                     "concurrency": 2,
@@ -2444,14 +2445,16 @@ class TestGenerateNonfunctionalPlan:
         payload.update(overrides)
         return json.dumps(payload)
 
-    def _call(self):
+    def _call(self, read_file=None):
         return llm.generate_nonfunctional_plan(
             name="Export reports",
             description="Users can export reports",
             covered_cases=[],
-            env_var_names=["APP_URL"],
+            url_env_var_names=["APP_URL"],
+            other_env_var_names=["ADMIN_PASSWORD"],
             readme=None,
             file_tree=None,
+            read_file=read_file,
         )
 
     def test_parses_a_well_formed_response(self, stub_client):
@@ -2466,6 +2469,84 @@ class TestGenerateNonfunctionalPlan:
         ]
         assert result.base_url_env_vars == ["APP_URL"]
         assert result.load_profiles[0].method == "GET"
+
+    def test_the_model_names_a_variable_and_a_path_never_a_url(self, stub_client):
+        """The schema is the wall. A URL is not expressible, so it cannot be guessed."""
+        stub_client.content = self._payload()
+
+        profile = self._call().load_profiles[0]
+
+        assert profile.base_url_env_var == "APP_URL"
+        assert profile.path == "/api/reports"
+        assert not hasattr(profile, "url")
+
+    def test_no_env_var_value_reaches_the_prompt(self, monkeypatch):
+        """The design decision, pinned.
+
+        The model is given keys and asked which pairs with which endpoint;
+        the route resolves the key. A value in this prompt would mean the
+        model is being trusted to build an origin.
+        """
+        client = _sequence_client(monkeypatch, _final_response(json.loads(self._payload())))
+
+        self._call()
+
+        user = client.requests[0]["messages"][1]["content"]
+        assert "APP_URL" in user
+        assert "ADMIN_PASSWORD" in user
+        assert "https://" not in user
+        assert "hunter2" not in user
+
+    def test_url_holding_names_are_listed_apart_from_the_rest(self, monkeypatch):
+        """Without the split the model guesses which key is a base URL from
+        naming alone, and a wrong guess is a 502 from validate_url_vars."""
+        client = _sequence_client(monkeypatch, _final_response(json.loads(self._payload())))
+
+        self._call()
+
+        user = client.requests[0]["messages"][1]["content"]
+        assert user.index("APP_URL") < user.index("ADMIN_PASSWORD")
+        assert "hold an http(s) URL" in user
+
+    def test_tool_round_trip(self, monkeypatch):
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("backend/routes/reports.py"),
+            _final_response(json.loads(self._payload())),
+        )
+        read_paths: list[str] = []
+
+        def read_file(path: str) -> str:
+            read_paths.append(path)
+            return "@router.get('/api/reports')"
+
+        result = self._call(read_file=read_file)
+
+        assert result.load_profiles[0].path == "/api/reports"
+        assert read_paths == ["backend/routes/reports.py"]
+        assert len(client.requests) == 2
+
+    def test_read_file_none_skips_tools(self, monkeypatch):
+        """A sprint with no captured file tree still gets a plan."""
+        client = _sequence_client(monkeypatch, _final_response(json.loads(self._payload())))
+
+        self._call(read_file=None)
+
+        assert "tools" not in client.requests[0]
+
+    def test_round_cap_forces_a_final_answer(self, monkeypatch):
+        monkeypatch.setattr(llm, "NONFUNCTIONAL_PLAN_TOOL_ROUNDS", 2)
+        client = _sequence_client(
+            monkeypatch,
+            _tool_call_response("a.py"),
+            _tool_call_response("b.py"),
+            _final_response(json.loads(self._payload())),
+        )
+
+        self._call(read_file=lambda path: "content")
+
+        assert len(client.requests) == 3
+        assert client.requests[2]["tool_choice"] == "none"
 
     def test_no_nominated_url_raises(self, stub_client):
         stub_client.content = self._payload(base_url_env_vars=[])

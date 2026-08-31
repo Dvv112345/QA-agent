@@ -28,6 +28,7 @@ from backend.config import (
     EXPLORATORY_CONTEXT_TOKEN_LIMIT,
     EXPLORATORY_MAX_CHARTERS,
     EXPLORATORY_MAX_FINDINGS,
+    NONFUNCTIONAL_PLAN_TOOL_ROUNDS,
     NONFUNCTIONAL_TRIAGE_MAX_CHARS,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
@@ -687,7 +688,22 @@ class DomainProposalItem(SQLModel):
 
 
 class LoadProfileItem(SQLModel):
-    url: str
+    """One proposed load profile, in the only terms the model can be trusted with.
+
+    Deliberately **not** a URL.  The model is never shown an environment
+    variable's value, so an absolute URL is something it cannot construct —
+    it would have to invent a host, and ``_validate_load_profiles`` would
+    then refuse the result.  Asking instead for *which key pairs with which
+    endpoint* makes the composed URL land on a confirmed origin **by
+    construction**, so the origin check stops being a hope the model
+    guessed the host right.
+
+    The route composes ``base_url_env_var``'s real value with ``path`` and
+    hands the UI a ``LoadProfileDraft`` carrying the absolute URL.
+    """
+
+    base_url_env_var: str
+    path: str = "/"
     method: str = "GET"
     body: str | None = None
     concurrency: int = 1
@@ -730,23 +746,50 @@ def generate_nonfunctional_plan(
     name: str,
     description: str,
     covered_cases: list[TestCaseLike],
-    env_var_names: list[str],
+    url_env_var_names: list[str],
+    other_env_var_names: list[str],
     readme: str | None,
     file_tree: str | None,
+    read_file: Callable[[str], str] | None,
 ) -> NonfunctionalPlanResult:
     """Propose domains, base URLs and load profiles for one requirement.
 
-    Plain single completion, no tool loop — the same cheap profile as
-    ``generate_charters``, which it mirrors deliberately.  Everything it
-    returns is a *proposal*: the caller validates the nominated variable
-    names, and the create route re-validates the whole lot as user input
-    once a human has edited it.
+    Runs a bounded ``read_file`` loop (``NONFUNCTIONAL_PLAN_TOOL_ROUNDS``,
+    deliberately shorter than the other two — this one runs synchronously
+    inside a request).  The repo is what turns a load profile from a guess
+    into a proposal: the file tree lists paths but not routes, so without
+    reading source the model cannot say which endpoints exist or what
+    methods they accept.
+
+    The standing "a read_file tool becomes the model's oracle" hazard does
+    not apply here, for the same reason it does not in
+    ``generate_cicd_integration``: nothing this returns is a verdict.  It is
+    a proposal a human edits and approves, and the nonfunctional oracle is
+    inverted anyway — the tools grade, the model never does.
+
+    Variable names arrive pre-split into those holding http(s) URLs and the
+    rest, and **no value is ever sent**.  The model pairs a key with a path;
+    the route resolves the key.
+
+    ``on_round`` is a no-op: there is no heartbeat to keep in a synchronous
+    request, and the caller is a route rather than a task row.
     """
     parts = nonfunctional_plan_context(
-        name, description, covered_cases, env_var_names, readme, file_tree
+        name,
+        description,
+        covered_cases,
+        url_env_var_names,
+        other_env_var_names,
+        readme,
+        file_tree,
     )
-    result = _complete(
-        NONFUNCTIONAL_PLAN_SYSTEM_PROMPT, "\n\n".join(parts), NonfunctionalPlanResult
+    result = _complete_with_tools(
+        NONFUNCTIONAL_PLAN_SYSTEM_PROMPT,
+        "\n\n".join(parts),
+        NonfunctionalPlanResult,
+        read_file,
+        lambda: None,
+        NONFUNCTIONAL_PLAN_TOOL_ROUNDS,
     )
     if not result.base_url_env_vars:
         raise LLMError("LLM nominated no environment variable for the application URL.")

@@ -261,6 +261,36 @@ def axe_violations(result: Any, url: str) -> AxeScan:
     return scan
 
 
+# Media types axe has anything to say about. Everything else is a payload,
+# not a page: an API answering `application/json` has no landmarks, no
+# labels and no contrast, so every rule it "breaks" is an artefact of asking.
+_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+
+def accessibility_applies(content_type: str | None) -> bool:
+    """Whether the accessibility catalogue has a page to examine.
+
+    Applicability is a fact about the **document**, not about how the target
+    was reached.  The walk can navigate to a raw API URL — its origin is
+    nominated, or the application links to it — and Chromium renders an
+    ``application/json`` body through its own JSON viewer, so axe is handed
+    a real DOM and dutifully reports missing landmarks on ``{"detail": "Not
+    found"}``.  The DOM cannot answer this question; only the response
+    header can.  Findings from such a scan are indistinguishable from real
+    ones downstream, and permanent: an append-only ``DefectGroup`` and a
+    monotonic ``bug_count``.
+
+    ``None`` means the browser captured no document response — an in-page
+    SPA navigation is the common cause, and those are genuine HTML pages.
+    Unknown therefore reads as **applicable**: over-reporting a scanned page
+    is recoverable, silently skipping a real one is the failure this whole
+    run mode exists to avoid.
+    """
+    if content_type is None:
+        return True
+    return content_type in _HTML_MEDIA_TYPES
+
+
 def capped_axe_payload(result: Any, max_chars: int = NONFUNCTIONAL_AXE_MAX_CHARS) -> str:
     """The axe payload as text, truncated before it can reach a prompt.
 

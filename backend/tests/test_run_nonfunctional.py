@@ -42,6 +42,14 @@ ENV_VARS_JSON = json.dumps({"BASE_URL": BASE_URL})
 ADMIN_URL = "https://admin.example.com"
 TWO_URL_ENV_VARS_JSON = json.dumps({"BASE_URL": BASE_URL, "ADMIN_URL": ADMIN_URL})
 
+# What a target row *stores*, which is not what the env var said: an empty
+# path canonicalizes to "/" so one page cannot become two targets. Kept as
+# separate names rather than adding the slash to the constants above,
+# because the difference between the nominated spelling and the stored one
+# is the thing worth being able to see in an assertion.
+BASE_URL_STORED = f"{BASE_URL}/"
+ADMIN_URL_STORED = f"{ADMIN_URL}/"
+
 AXE_CLEAN = {"violations": [], "testEngine": {"version": "4.12.1"}}
 AXE_DIRTY = {
     "violations": [
@@ -89,6 +97,12 @@ class _FakeBrowser:
         self.catalogue_timeout = kwargs.get("catalogue_timeout", 30)
         self.axe_result = AXE_CLEAN
         self.axe_error = None
+        self.axe_calls: list[str] = []
+        # What the server served, per URL. HTML by default, because that is
+        # what a page is — a URL that answers otherwise is not examined for
+        # accessibility at all.
+        self.content_type_by_url: dict[str, str] = {}
+        self.content_type = "text/html"
         self.headers = dict(CLEAN_HEADERS)
         self.headers_error = None
         self.performance = {"load_ms": 340}
@@ -99,14 +113,34 @@ class _FakeBrowser:
         # Where the fake believes it is, and what each URL answers with.
         # A URL-blind fake is what let a whole class of bug pass 1725
         # tests: the task can examine the wrong page and nothing notices.
-        base_urls = kwargs.get("base_urls") or [BASE_URL]
-        self.current_url: str = base_urls[0]
+        self.base_urls: list[str] = kwargs.get("base_urls") or [BASE_URL]
+        self.current_url: str = self.base_urls[0]
         self.axe_by_url: dict[str, dict] = {}
         self.performance_by_url: dict[str, dict] = {}
         self.unreachable: set[str] = set()
         self.navigations: list[str] = []
+        # Where the opening navigation actually lands. Not always
+        # base_urls[0]: `/` redirecting to `/login` is the ordinary case,
+        # and it is the one that tells a target row from a wrong one.
+        self.settled_url: str | None = None
 
     def __enter__(self):
+        """Open on base_urls[0] and fire the hook, as the real one does.
+
+        ``BrowserSession.__enter__`` navigates to ``base_urls[0]`` and that
+        navigation fires ``on_navigated`` itself — the callback is bound in
+        the constructor, not attached afterwards.  A fake that merely
+        returned ``self`` here hid a whole class of bug: the task could seed
+        the first URL against a page it was not on, and nothing noticed.
+        """
+        landed = self.settled_url or self.base_urls[0]
+        if landed in self.unreachable or self.base_urls[0] in self.unreachable:
+            # goto raised: the real one logs and carries on from about:blank,
+            # firing nothing.
+            return self
+        self.current_url = landed
+        if self.on_navigated is not None:
+            self.on_navigated(landed, task_module.time.monotonic() + self.catalogue_timeout)
         return self
 
     def __exit__(self, *exc):
@@ -124,7 +158,11 @@ class _FakeBrowser:
             self.on_navigated(url, task_module.time.monotonic() + self.catalogue_timeout)
         return f"Navigated to {url}. Call snapshot to see the page."
 
+    def document_content_type(self):
+        return self.content_type_by_url.get(self.current_url, self.content_type)
+
     def scan_accessibility(self):
+        self.axe_calls.append(self.current_url)
         if self.axe_error:
             return browser_module.CheckOutcome(error=self.axe_error)
         return browser_module.CheckOutcome(
@@ -187,8 +225,12 @@ def patched(monkeypatch):
         if state["loop_error"]:
             raise state["loop_error"]
         browser = state["browser"]
-        # The walk: every URL the model reached fires the arrival hook.
+        # The walk: every URL the model reached fires the arrival hook —
+        # with the browser actually *on* that URL, as the real executors
+        # leave it. A hook fired from somewhere else is how a URL-blind
+        # fake hides a catalogue examining the wrong page.
         for url in browser.visits:
+            browser.current_url = url
             browser.on_navigated(url, task_module.time.monotonic() + 30)
         return SimpleNamespace(
             notes="Walked it.", stop_reason="charter_complete", actions_used=3, action_log=[]
@@ -277,7 +319,10 @@ class TestCleanRun:
         targets = _targets(db_session, run.id)
         # The coverage floor is the confirmed base URL, plus whatever the
         # walk reached.
-        assert [t.url for t in targets] == [BASE_URL, "https://staging.example.com/reports"]
+        assert [t.url for t in targets] == [
+            BASE_URL_STORED,
+            "https://staging.example.com/reports",
+        ]
         for target in targets:
             assert target.status == NonfunctionalChildStatus.COMPLETED
             assert target.a11y_outcome == DomainOutcome.CLEAN
@@ -458,6 +503,85 @@ class TestOutcomes:
         target = _targets(db_session, run.id)[0]
         assert target.status == NonfunctionalChildStatus.ERROR
         assert "browser exploded" in target.error
+
+
+# ── what is a page ────────────────────────────────────────────────────
+
+
+class TestNonHtmlTargets:
+    """A URL the walk reached that answered with a payload, not a page.
+
+    Chromium renders `application/json` through its own JSON viewer, so the
+    DOM axe sees is real HTML and the scan comes back full of "violations"
+    about a body with no user interface. Those findings are permanent
+    downstream — append-only defect groups, monotonic bug count — so the
+    gate is on the served media type, not on the DOM.
+    """
+
+    def _run_with_json_url(self, db_session, patched, monkeypatch, json_url):
+        _sprint, _requirement, run = _seed_run(db_session)
+
+        def _factory(**kwargs):
+            browser = _FakeBrowser(**kwargs)
+            # Dirty on purpose: if the gate leaks, this produces findings.
+            browser.axe_result = AXE_DIRTY
+            browser.visits = [json_url]
+            browser.content_type_by_url = {json_url: "application/json"}
+            patched["browser"] = browser
+            return browser
+
+        monkeypatch.setattr(task_module.browser_session, "BrowserSession", _factory)
+        run_nonfunctional_task(run.id)
+        return run
+
+    def test_a_json_url_is_not_scanned_for_accessibility(self, db_session, patched, monkeypatch):
+        json_url = f"{BASE_URL}/api/reports"
+        run = self._run_with_json_url(db_session, patched, monkeypatch, json_url)
+
+        target = next(t for t in _targets(db_session, run.id) if t.url == json_url)
+        assert target.a11y_outcome == DomainOutcome.NOT_APPLICABLE
+        # The outcome alone would also pass if axe ran and found nothing:
+        # assert the scan never happened.
+        assert json_url not in patched["browser"].axe_calls
+
+        db_session.expire_all()
+        findings = db_session.exec(task_module.select(NonfunctionalFinding)).all()
+        # The seeded base URL is real HTML and still reports its violation;
+        # nothing is filed against the JSON URL.
+        assert [f.target.url for f in findings] == [BASE_URL_STORED]
+
+    def test_the_other_domains_still_run_there(self, db_session, patched, monkeypatch):
+        # An API response has real headers worth checking and a real
+        # response time worth measuring — only accessibility is out of scope.
+        json_url = f"{BASE_URL}/api/reports"
+        run = self._run_with_json_url(db_session, patched, monkeypatch, json_url)
+
+        target = next(t for t in _targets(db_session, run.id) if t.url == json_url)
+        assert target.status == NonfunctionalChildStatus.COMPLETED
+        assert target.security_outcome == DomainOutcome.CLEAN
+        assert target.performance_outcome == DomainOutcome.CLEAN
+        assert target.error is None
+
+    def test_an_uncaptured_media_type_is_still_examined(self, db_session, patched, monkeypatch):
+        # None means no document response was captured — the signature of an
+        # in-page SPA navigation, which is a genuine page. Unknown must not
+        # become a silent skip.
+        _sprint, _requirement, run = _seed_run(db_session)
+        spa_url = f"{BASE_URL}/reports/7"
+
+        def _factory(**kwargs):
+            browser = _FakeBrowser(**kwargs)
+            browser.visits = [spa_url]
+            browser.content_type_by_url = {spa_url: None}
+            patched["browser"] = browser
+            return browser
+
+        monkeypatch.setattr(task_module.browser_session, "BrowserSession", _factory)
+        run_nonfunctional_task(run.id)
+
+        target = next(t for t in _targets(db_session, run.id) if t.url == spa_url)
+        assert target.a11y_outcome == DomainOutcome.CLEAN
+        assert spa_url in patched["browser"].axe_calls
 
 
 # ── endpoints ─────────────────────────────────────────────────────────
@@ -827,11 +951,11 @@ class TestBaseUrlSeeding:
             task_module.browser_session.BrowserSession = original
 
         by_url = {t.url: t for t in _targets(db_session, run.id)}
-        assert set(by_url) == {BASE_URL, ADMIN_URL}
+        assert set(by_url) == {BASE_URL_STORED, ADMIN_URL_STORED}
         # The dirty payload belongs to ADMIN_URL and must not have leaked
         # onto the URL the browser merely opened on.
-        assert by_url[BASE_URL].a11y_outcome == DomainOutcome.CLEAN
-        assert by_url[ADMIN_URL].a11y_outcome == DomainOutcome.VIOLATIONS
+        assert by_url[BASE_URL_STORED].a11y_outcome == DomainOutcome.CLEAN
+        assert by_url[ADMIN_URL_STORED].a11y_outcome == DomainOutcome.VIOLATIONS
 
     def test_a_later_base_url_is_navigated_to_not_just_recorded(self, db_session, patched):
         _sprint, _requirement, run = self._two_url_run(db_session)
@@ -841,6 +965,116 @@ class TestBaseUrlSeeding:
         # First base URL: already open, examined where it is. Second: reached.
         # Then back to the first, so the walk starts where the prompt says.
         assert patched["browser"].navigations == [ADMIN_URL, BASE_URL]
+
+    # ── the *first* base URL, which the fix above did not originally reach ──
+    #
+    # `on_navigated` is bound in BrowserSession's constructor, so
+    # `__enter__`'s own opening navigation fires the arrival hook. The
+    # catalogue therefore needs its browser *before* the context is entered;
+    # when it did not have one, `_examine_page` raised and the landing page
+    # became an `error` row with a blank message — and, in the common
+    # single-base-URL case, was never examined at all.
+
+    def test_the_only_base_url_is_examined_not_left_in_error(
+        self, db_session, patched, monkeypatch
+    ):
+        _sprint, _requirement, run = _seed_run(db_session)
+
+        def _factory(**kwargs):
+            browser = _FakeBrowser(**kwargs)
+            browser.visits = []  # the landing page is the whole run
+            patched["browser"] = browser
+            return browser
+
+        monkeypatch.setattr(task_module.browser_session, "BrowserSession", _factory)
+        run_nonfunctional_task(run.id)
+
+        targets = _targets(db_session, run.id)
+        assert len(targets) == 1, "the landing page must not produce a second row"
+        assert targets[0].url == BASE_URL_STORED
+        assert targets[0].status == NonfunctionalChildStatus.COMPLETED
+        # The whole point: real outcomes, not the NULLs a failed examination left.
+        assert targets[0].a11y_outcome == DomainOutcome.CLEAN
+        assert targets[0].security_outcome == DomainOutcome.CLEAN
+        assert targets[0].performance_outcome == DomainOutcome.CLEAN
+
+    def test_a_redirected_base_url_is_filed_under_where_it_landed(
+        self, db_session, patched, monkeypatch
+    ):
+        """One row, under the URL the browser reached — not the one we named.
+
+        A `/` that redirects to `/login` used to write two rows: an `error`
+        for `/login` and a `completed` for `/` carrying `/login`'s axe
+        result, headers, metrics and screenshot. Wrong evidence on a bug
+        report is worse than none.
+        """
+        _sprint, _requirement, run = _seed_run(db_session)
+        landed = f"{BASE_URL}/login"
+
+        def _factory(**kwargs):
+            browser = _FakeBrowser(**kwargs)
+            browser.settled_url = landed
+            browser.axe_by_url = {landed: AXE_DIRTY, BASE_URL_STORED: AXE_CLEAN}
+            browser.visits = []
+            patched["browser"] = browser
+            return browser
+
+        monkeypatch.setattr(task_module.browser_session, "BrowserSession", _factory)
+        run_nonfunctional_task(run.id)
+
+        targets = _targets(db_session, run.id)
+        assert [t.url for t in targets] == [landed]
+        # The landing page's own payload, not the nominated URL's.
+        assert targets[0].a11y_outcome == DomainOutcome.VIOLATIONS
+
+    def test_an_unopenable_first_base_url_records_failed_to_run_not_clean(
+        self, db_session, patched, monkeypatch
+    ):
+        """A false `clean` is the one reading that is actually wrong.
+
+        With the opening navigation refused the page is `about:blank`, and
+        running the catalogue there once reported the application clean.
+        """
+        _sprint, _requirement, run = _seed_run(db_session)
+
+        def _factory(**kwargs):
+            browser = _FakeBrowser(**kwargs)
+            browser.unreachable = {BASE_URL}
+            browser.visits = []
+            patched["browser"] = browser
+            return browser
+
+        monkeypatch.setattr(task_module.browser_session, "BrowserSession", _factory)
+        run_nonfunctional_task(run.id)
+
+        targets = _targets(db_session, run.id)
+        assert len(targets) == 1
+        assert targets[0].status == NonfunctionalChildStatus.ERROR
+        assert targets[0].a11y_outcome == DomainOutcome.FAILED_TO_RUN
+        assert targets[0].security_outcome == DomainOutcome.FAILED_TO_RUN
+        # Not the empty string an AssertionError used to leave behind.
+        assert "ERROR" in (targets[0].error or "")
+
+    def test_two_spellings_of_one_url_are_one_target(self, db_session, patched, monkeypatch):
+        """`https://app` and `https://app/` are the same page.
+
+        The browser answers with its own normalization while the env var
+        need not match it, so without canonicalization the landing page was
+        examined twice and carried two sets of findings.
+        """
+        _sprint, _requirement, run = _seed_run(db_session)
+
+        def _factory(**kwargs):
+            browser = _FakeBrowser(**kwargs)
+            browser.settled_url = BASE_URL_STORED  # the browser adds the slash
+            browser.visits = [BASE_URL]  # the model names it without one
+            patched["browser"] = browser
+            return browser
+
+        monkeypatch.setattr(task_module.browser_session, "BrowserSession", _factory)
+        run_nonfunctional_task(run.id)
+
+        assert [t.url for t in _targets(db_session, run.id)] == [BASE_URL_STORED]
 
     def test_an_unreachable_base_url_is_recorded_not_skipped(self, db_session, patched):
         _sprint, _requirement, run = self._two_url_run(db_session)
@@ -858,10 +1092,10 @@ class TestBaseUrlSeeding:
             task_module.browser_session.BrowserSession = original
 
         by_url = {t.url: t for t in _targets(db_session, run.id)}
-        assert ADMIN_URL in by_url, "a base URL we could not reach must not vanish"
-        assert by_url[ADMIN_URL].status == NonfunctionalChildStatus.ERROR
-        assert by_url[ADMIN_URL].a11y_outcome == DomainOutcome.FAILED_TO_RUN
-        assert "ERROR" in (by_url[ADMIN_URL].error or "")
+        assert ADMIN_URL_STORED in by_url, "a base URL we could not reach must not vanish"
+        assert by_url[ADMIN_URL_STORED].status == NonfunctionalChildStatus.ERROR
+        assert by_url[ADMIN_URL_STORED].a11y_outcome == DomainOutcome.FAILED_TO_RUN
+        assert "ERROR" in (by_url[ADMIN_URL_STORED].error or "")
 
 
 class TestTriageHeartbeat:
@@ -903,3 +1137,39 @@ class TestTriageHeartbeat:
 
         assert len(beats) == 3
         assert all(beat is not None for beat in beats)
+
+
+class TestCanonicalUrl:
+    """One spelling per page, so one page cannot become two targets.
+
+    The browser reports its own normalization while a nominated env var need
+    not match it, so `https://app` and `https://app/` genuinely do meet in
+    `seen_urls` — and before this they were two rows carrying two sets of
+    findings for one page.
+    """
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # An empty path means "/" — the case that actually fired.
+            ("https://app.test", "https://app.test/"),
+            ("https://app.test/", "https://app.test/"),
+            # Scheme and host are case-insensitive per RFC 3986.
+            ("HTTPS://App.Test/Reports", "https://app.test/Reports"),
+            # The path is not: two of these are two pages.
+            ("https://app.test/Reports", "https://app.test/Reports"),
+            # A fragment is not part of the request at all.
+            ("https://app.test/page#section", "https://app.test/page"),
+            # The query is kept: two query strings are usually two pages.
+            ("https://app.test/search?q=1", "https://app.test/search?q=1"),
+            ("https://app.test?q=1", "https://app.test/?q=1"),
+            # A port is part of the origin and stays.
+            ("https://app.test:8443", "https://app.test:8443/"),
+        ],
+    )
+    def test_canonicalization(self, raw, expected):
+        assert task_module._canonical_url(raw) == expected
+
+    def test_is_idempotent(self):
+        once = task_module._canonical_url("HTTPS://App.Test?q=1#frag")
+        assert task_module._canonical_url(once) == once

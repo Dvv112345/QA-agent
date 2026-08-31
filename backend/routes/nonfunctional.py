@@ -68,11 +68,14 @@ from backend.routes._common import (
     resolve_requirement_for_run,
     validate_url_vars,
 )
-from backend.services import finding_export, llm, load_runner
+from backend.services import finding_export, llm, load_runner, repo_reader
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.llm_prompts import TestCaseLike
 from backend.services.queue import enqueue_rows, get_queue_service
+from backend.utils import github_utils
 from backend.utils.auth import verify_auth
+from backend.utils.crypto import decrypt_token
+from backend.utils.environment_utils import url_values
 from backend.utils.nonfunctional_utils import (
     load_profile_summaries,
     parse_json_object,
@@ -217,6 +220,52 @@ def _validate_load_profiles(
     return checked
 
 
+def _compose_profiles(
+    result: llm.NonfunctionalPlanResult, env_vars: dict[str, str]
+) -> list[LoadProfileDraft]:
+    """Turn the model's (variable, path) pairs into absolute URLs.
+
+    The model never sees a variable's value, so it cannot write a URL — it
+    says *which key* and *which path*, and the host is resolved here.  That
+    is what makes a proposed profile land on a confirmed origin **by
+    construction** rather than by the model having guessed the host right.
+
+    A profile naming a variable the model did not nominate is dropped, the
+    same way an unknown domain is: it is malformed output, and composing a
+    URL against an origin nobody nominated is worse than proposing nothing.
+
+    The join is deliberately not ``urljoin``: ``urljoin`` treats a leading
+    slash as root-relative and discards the base's own path, so a base of
+    ``https://app.test/staging`` plus ``/api/x`` would silently become
+    ``https://app.test/api/x`` — a different origin path, aimed at whatever
+    lives there instead.  Base URLs with a path prefix are ordinary here.
+    """
+    nominated = set(result.base_url_env_vars)
+    composed: list[LoadProfileDraft] = []
+    for profile in result.load_profiles:
+        if profile.base_url_env_var not in nominated:
+            logger.warning(
+                "Dropping proposed load profile: '%s' was not nominated as a base URL.",
+                profile.base_url_env_var,
+            )
+            continue
+        base = env_vars[profile.base_url_env_var]
+        path = (profile.path or "").strip()
+        url = base.rstrip("/") + "/" + path.lstrip("/") if path.strip("/") else base
+        composed.append(
+            LoadProfileDraft(
+                url=url,
+                method=(profile.method or "GET").upper(),
+                body=profile.body,
+                concurrency=profile.concurrency,
+                duration_seconds=profile.duration_seconds,
+                total_request_cap=profile.total_request_cap,
+                rationale=profile.rationale,
+            )
+        )
+    return composed
+
+
 # ── response builders (aggregates computed here, never stored) ────────
 
 
@@ -351,15 +400,41 @@ async def generate_nonfunctional_plan(
     readme = await resolve_readme(sprint)
     file_tree = sprint.repo.file_tree if sprint.repo else None
 
+    # A load profile is only worth proposing if it names an endpoint that
+    # exists, and the file tree lists paths without routes — so the model
+    # reads source here. `build_read_file` calls `asyncio.run` internally,
+    # which is safe ONLY because `generate_nonfunctional_plan` is reached
+    # through `asyncio.to_thread` below: that runs it on a worker thread
+    # with no event loop. Calling it inline from this async route would
+    # raise. A sprint with no repo or no captured tree passes None, which
+    # the loop degrades to a plain completion for.
+    read_file = None
+    if file_tree and sprint.repo:
+        owner, repo_name = github_utils.parse_github_url(sprint.repo.github_link)
+        read_file = repo_reader.build_read_file(
+            file_tree,
+            owner,
+            repo_name,
+            decrypt_token(sprint.repo.github_token) if sprint.repo.github_token else None,
+        )
+
+    # Names only, never values — split so the model can tell which key is a
+    # candidate base URL without being shown one.
+    urls = url_values(env_vars)
+    url_names = sorted(name for name, value in env_vars.items() if value in urls)
+    other_names = sorted(name for name in env_vars if name not in set(url_names))
+
     try:
         result = await asyncio.to_thread(
             llm.generate_nonfunctional_plan,
             name=requirement.name,
             description=requirement.description,
             covered_cases=covered,
-            env_var_names=list(env_vars.keys()),
+            url_env_var_names=url_names,
+            other_env_var_names=other_names,
             readme=readme,
             file_tree=file_tree,
+            read_file=read_file,
         )
     except llm.LLMError as exc:
         logger.warning("Sprint id=%d: nonfunctional plan generation failed: %s", sprint_id, exc)
@@ -367,6 +442,8 @@ async def generate_nonfunctional_plan(
 
     # The model only ever saw variable *names*; confirm its nominations
     # resolve to real http(s) URLs before the user is asked to approve them.
+    # Everything below relies on this having passed: it is what makes the
+    # env_vars lookup in _compose_profiles safe.
     validate_url_vars(result.base_url_env_vars, env_vars, status_code=502)
 
     valid_domains = {domain.value for domain in NonfunctionalDomain}
@@ -383,18 +460,7 @@ async def generate_nonfunctional_plan(
             if proposal.domain in valid_domains
         ],
         base_url_env_vars=result.base_url_env_vars,
-        load_profiles=[
-            LoadProfileDraft(
-                url=profile.url,
-                method=(profile.method or "GET").upper(),
-                body=profile.body,
-                concurrency=profile.concurrency,
-                duration_seconds=profile.duration_seconds,
-                total_request_cap=profile.total_request_cap,
-                rationale=profile.rationale,
-            )
-            for profile in result.load_profiles
-        ],
+        load_profiles=_compose_profiles(result, env_vars),
         **_ceilings(environment_disposable=False),
     )
 

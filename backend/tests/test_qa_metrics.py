@@ -1180,6 +1180,107 @@ class TestNonfunctionalMetrics:
             == metrics["bug_count"]
         )
 
+    def test_the_breakdown_row_splits_by_pool_too(self):
+        """The table asks which feature carries which kind of defect, and
+        one merged column cannot answer it: three accessibility violations
+        and one broken login are not four broken behaviours."""
+        sprint = self._mixed_sprint(
+            [
+                _nf_finding("Images lack alt text", rule="image-alt"),
+                _nf_finding("No CSP", rule="missing-csp", domain="security"),
+            ]
+        )
+
+        row = compute_sprint_metrics(sprint)["per_requirement"][0]
+
+        assert row["requirement_name"] == "Login"
+        assert row["functional_bug_count"] == 1
+        assert row["nonfunctional_bug_count"] == 2
+        assert row["bug_count"] == 3
+
+    def test_every_row_halves_sum_to_its_total(self):
+        """The pools partition the sprint's defects, so this holds by
+        construction — asserted because a third pool would break it
+        silently, leaving a table whose columns quietly stop adding up."""
+        # Titles must differ by more than a digit: `finding_dedup._normalize`
+        # strips digits, so "Violation 1"/"Violation 2" would be one defect.
+        sprint = self._mixed_sprint(
+            [
+                _nf_finding("Images lack alt text", rule="image-alt"),
+                _nf_finding("Buttons have no accessible name", rule="button-name"),
+                _nf_finding("No CSP header", rule="missing-csp", domain="security"),
+            ]
+        )
+
+        rows = compute_sprint_metrics(sprint)["per_requirement"]
+
+        assert rows
+        for row in rows:
+            assert row["functional_bug_count"] + row["nonfunctional_bug_count"] == row["bug_count"]
+
+    def test_a_functional_only_sprint_reports_a_zero_nonfunctional_column(self):
+        """The column shows on every sprint, so the field is always present
+        rather than absent — an omitted key would render as blank, which
+        reads as "unknown" where the truth is "none"."""
+        sprint = _sprint(
+            requirements=[_requirement(1, "Login")],
+            test_runs=[
+                _run([_execution(1, [_case(10, TestCaseExecutionStatus.FAILED, title="Boom")])])
+            ],
+        )
+
+        row = compute_sprint_metrics(sprint)["per_requirement"][0]
+
+        assert row["functional_bug_count"] == 1
+        assert row["nonfunctional_bug_count"] == 0
+        assert row["bug_count"] == 1
+
+    def test_the_worst_first_sort_still_keys_on_the_total(self):
+        """Checkout carries more defects overall; Login carries more
+        *functional* ones. Sorting by either half would swap them."""
+        sprint = _sprint(
+            requirements=[_requirement(1, "Checkout"), _requirement(2, "Login")],
+            test_runs=[
+                _run(
+                    [
+                        _execution(
+                            1, [_case(10, TestCaseExecutionStatus.FAILED, title="Checkout 500")]
+                        ),
+                        _execution(
+                            2,
+                            [
+                                _case(20, TestCaseExecutionStatus.FAILED, title="Login A"),
+                                _case(21, TestCaseExecutionStatus.FAILED, title="Login B"),
+                            ],
+                        ),
+                    ]
+                )
+            ],
+            nonfunctional_runs=[
+                _nonfunctional_run(
+                    1,
+                    [
+                        _target(
+                            [
+                                _nf_finding("Images lack alt text", rule="image-alt"),
+                                _nf_finding("Buttons have no accessible name", rule="button-name"),
+                                _nf_finding("No CSP header", rule="missing-csp", domain="security"),
+                            ]
+                        )
+                    ],
+                )
+            ],
+        )
+
+        rows = compute_sprint_metrics(sprint)["per_requirement"]
+
+        assert [(r["requirement_name"], r["bug_count"]) for r in rows] == [
+            ("Checkout", 4),
+            ("Login", 2),
+        ]
+        # The half that would have reversed the order.
+        assert [r["functional_bug_count"] for r in rows] == [1, 2]
+
     def test_both_densities_exclude_nonfunctional_bugs(self):
         sprint = self._mixed_sprint(
             [_nf_finding(f"Violation {n}", rule=f"rule-{n}") for n in range(5)]
