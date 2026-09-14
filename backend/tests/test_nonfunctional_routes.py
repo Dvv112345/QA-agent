@@ -128,7 +128,7 @@ class TestGeneratePlan:
         return NonfunctionalPlanResult(**payload)
 
     @pytest.mark.asyncio
-    async def test_returns_proposals_and_both_ceiling_tiers(
+    async def test_returns_proposals_without_restating_the_ceilings(
         self, async_client, db_session, monkeypatch
     ):
         sprint, requirement = _ready_sprint(db_session)
@@ -144,12 +144,9 @@ class TestGeneratePlan:
         # An unknown domain is dropped rather than offered as a checkbox.
         assert [d["domain"] for d in data["domains"]] == ["accessibility"]
         assert data["load_profiles"][0]["method"] == "GET"
-        assert data["max_total_requests"] == load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS
-        assert (
-            data["unsafe_max_total_requests"]
-            == load_runner.NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS
-        )
-        assert set(data["safe_methods"]) == {"GET", "HEAD", "OPTIONS"}
+        # The ceilings ride on SprintResponse.load_limits now.
+        assert "unsafe_max_total_requests" not in data
+        assert "max_total_requests" not in data
 
     # ── URL composition ───────────────────────────────────────────────
     # The model gives (variable, path) and never sees a value, so the
@@ -502,7 +499,9 @@ class TestCreateRun:
         assert stored["total_request_cap"] == load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS
 
     @pytest.mark.asyncio
-    async def test_the_unsafe_tier_clamps_lower(self, async_client, db_session, queue_stub):
+    async def test_a_declared_non_safe_profile_clamps_to_the_same_ceiling_as_get(
+        self, async_client, db_session, queue_stub
+    ):
         sprint, requirement = _ready_sprint(db_session)
 
         resp = await async_client.post(
@@ -514,10 +513,9 @@ class TestCreateRun:
             ),
         )
 
+        assert resp.status_code == 201
         stored = resp.json()["load_profiles"][0]
-        assert (
-            stored["total_request_cap"] == load_runner.NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS
-        )
+        assert stored["total_request_cap"] == load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS
 
     @pytest.mark.asyncio
     async def test_an_off_origin_load_url_is_refused(self, async_client, db_session, queue_stub):

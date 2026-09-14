@@ -1,8 +1,9 @@
 from datetime import datetime
 
-from sqlmodel import SQLModel
+from sqlmodel import Field, SQLModel
 
-from backend.models.database import TestCasePriority
+from backend.config import server_limits
+from backend.models.database import LoadMethod, TestCasePriority
 
 # ── Health ────────────────────────────────────────────────────────────
 
@@ -46,6 +47,24 @@ class ReadmeStatusResponse(SQLModel):
 # ── Sprint ────────────────────────────────────────────────────────────
 
 
+class LoadLimits(SQLModel):
+    """The server's load maximums, so the frontend never restates them.
+
+    Convention #10: a config constant reaches the UI as a response field. It
+    rides on the sprint because the nonfunctional setup modal needs it
+    before any LLM call has produced a draft.
+    """
+
+    max_users: int
+    max_total_requests: int
+    max_duration_seconds: int
+    safe_methods: list[str]
+
+
+def _load_limits() -> LoadLimits:
+    return LoadLimits(**server_limits(), safe_methods=sorted(LoadMethod.safe_methods()))
+
+
 class SprintResponse(SQLModel):
     id: int
     name: str
@@ -65,6 +84,8 @@ class SprintResponse(SQLModel):
     has_test_runs: bool = False
     has_exploratory_runs: bool = False
     has_nonfunctional_runs: bool = False
+    # A config read, not a row property: the same for every sprint.
+    load_limits: LoadLimits = Field(default_factory=_load_limits)
 
 
 class SprintUpdateRequest(SQLModel):
@@ -628,15 +649,8 @@ class NonfunctionalPlanDraftResponse(SQLModel):
     domains: list[DomainProposal] = []
     base_url_env_vars: list[str] = []
     load_profiles: list[LoadProfileDraft] = []
-    # Ceilings for each tier, so the modal never restates a config literal
-    # (Convention #10). The unsafe pair is what the disposable declaration
-    # unlocks.
-    max_concurrency: int = 0
-    max_duration_seconds: int = 0
-    max_total_requests: int = 0
-    unsafe_max_concurrency: int = 0
-    unsafe_max_total_requests: int = 0
-    safe_methods: list[str] = []
+    # The ceilings are not repeated here: they ride on
+    # `SprintResponse.load_limits`, which the modal has before this exists.
 
 
 class NonfunctionalPlanGenerateRequest(SQLModel):

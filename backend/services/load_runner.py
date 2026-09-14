@@ -46,8 +46,6 @@ from backend.config import (
     NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
     NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
     NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT,
-    NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY,
-    NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS,
 )
 from backend.models.database import LoadMethod
 from backend.utils.http_utils import SSL_CONTEXT
@@ -94,12 +92,11 @@ class LoadResult:
 
 @dataclass(frozen=True)
 class Ceilings:
-    """The tier a profile runs under.
+    """The ceilings a profile runs under.
 
-    Two tiers rather than one knob: safe methods only read, so they run
-    against any confirmed origin; non-safe methods change data and run only
-    on a run carrying the disposable-environment declaration, under a cap
-    deliberately in the *tens*.
+    One tier for every method. What separates a non-safe method from a safe
+    one is permission, not size: it needs the run's disposable-environment
+    declaration, and once it has it, it runs under these same numbers.
     """
 
     concurrency: int
@@ -108,25 +105,16 @@ class Ceilings:
 
 
 def ceilings_for(method: str, *, environment_disposable: bool) -> Ceilings:
-    """The tier this method runs under, or a refusal if it has none."""
-    if LoadMethod.is_safe(method):
-        return Ceilings(
-            concurrency=NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
-            duration_seconds=NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
-            total_requests=NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
-        )
-    if not environment_disposable:
+    """The ceilings this method runs under, or a refusal if it may not run."""
+    if not LoadMethod.is_safe(method) and not environment_disposable:
         raise ValueError(
             f"{method} changes data and this run does not carry the "
             "disposable-environment declaration."
         )
     return Ceilings(
-        concurrency=NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY,
-        # A non-safe profile is bounded by its total, not its clock: the
-        # duration ceiling stays the same number so a reader comparing two
-        # profiles is not also comparing two time bases.
+        concurrency=NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
         duration_seconds=NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
-        total_requests=NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS,
+        total_requests=NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
     )
 
 
@@ -366,9 +354,9 @@ def run_profile(
     ``cookies`` are always supplied by the caller — the browser's own, by
     decision, so a profile exercises the application as a logged-in user
     rather than measuring the latency of a redirect to a login page. The
-    accepted consequence is that a non-safe profile performs up to
-    ``NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS`` authenticated writes,
-    which is invisible in the data and therefore stated in the UI instead.
+    accepted consequence is that a non-safe profile performs up to its
+    request cap in authenticated writes, which is invisible in the data and
+    therefore stated in the UI instead.
     """
     normalized = (method or "GET").upper()
 

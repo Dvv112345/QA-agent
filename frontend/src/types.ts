@@ -35,6 +35,15 @@ export interface SprintResponse {
   has_test_runs: boolean
   has_exploratory_runs: boolean
   has_nonfunctional_runs: boolean
+  /** The server's load maximums (Convention #10) — never restated as a literal here. */
+  load_limits: LoadLimits
+}
+
+export interface LoadLimits {
+  max_users: number
+  max_total_requests: number
+  max_duration_seconds: number
+  safe_methods: LoadMethod[]
 }
 
 export interface ReadmeStatusResponse {
@@ -553,12 +562,6 @@ export interface NonfunctionalPlanDraftResponse {
   domains: DomainProposal[]
   base_url_env_vars: string[]
   load_profiles: LoadProfileDraft[]
-  max_concurrency: number
-  max_duration_seconds: number
-  max_total_requests: number
-  unsafe_max_concurrency: number
-  unsafe_max_total_requests: number
-  safe_methods: LoadMethod[]
 }
 
 // ── QA metrics ────────────────────────────────────────────────────────

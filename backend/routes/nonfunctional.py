@@ -9,7 +9,7 @@ The create route is where this module differs from its exploratory twin, and
 the difference is the whole safety story: a load profile describes traffic
 this application will put on somebody else's environment, so *everything*
 the setup call proposed is re-validated here as user input — the origin, the
-method's tier, the placeholders in the body, and the ceilings — and the
+method's permission, the placeholders in the body, and the ceilings — and the
 clamped values are echoed back rather than silently applied.
 """
 
@@ -26,14 +26,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from backend.config import (
-    NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
-    NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
-    NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
-    NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY,
-    NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS,
-    NONFUNCTIONAL_MAX_LOAD_PROFILES,
-)
+from backend.config import NONFUNCTIONAL_MAX_LOAD_PROFILES
 from backend.database import get_session
 from backend.models.database import (
     FindingSeverity,
@@ -134,18 +127,6 @@ def _validate_domains(domains: list[str]) -> list[str]:
     # Deduplicated but order-preserving: the catalogue runs all of them at
     # every target, so a repeat would only double the work.
     return list(dict.fromkeys(domains))
-
-
-def _ceilings(environment_disposable: bool) -> dict:
-    """The two tiers, as the response echoes them back (Convention #10)."""
-    return {
-        "max_concurrency": NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
-        "max_duration_seconds": NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
-        "max_total_requests": NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
-        "unsafe_max_concurrency": NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY,
-        "unsafe_max_total_requests": NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS,
-        "safe_methods": sorted(LoadMethod.safe_methods()),
-    }
 
 
 def _validate_load_profiles(
@@ -461,7 +442,6 @@ async def generate_nonfunctional_plan(
         ],
         base_url_env_vars=result.base_url_env_vars,
         load_profiles=_compose_profiles(result, env_vars),
-        **_ceilings(environment_disposable=False),
     )
 
 

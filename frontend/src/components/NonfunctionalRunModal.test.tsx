@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import NonfunctionalRunModal from './NonfunctionalRunModal'
 import type { NonfunctionalPlanDraftResponse, TestPlanResponse } from '../types'
+import { LOAD_LIMITS } from '../test/fixtures'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -50,12 +51,6 @@ function makeDraft(
     ],
     base_url_env_vars: ['BASE_URL'],
     load_profiles: [],
-    max_concurrency: 10,
-    max_duration_seconds: 60,
-    max_total_requests: 2000,
-    unsafe_max_concurrency: 2,
-    unsafe_max_total_requests: 20,
-    safe_methods: ['GET', 'HEAD', 'OPTIONS'],
     ...overrides,
   }
 }
@@ -65,7 +60,14 @@ function renderModal(plans: TestPlanResponse[] = [makePlan()]) {
     [
       {
         path: '*',
-        element: <NonfunctionalRunModal sprintId={1} plans={plans} onClose={() => {}} />,
+        element: (
+          <NonfunctionalRunModal
+            sprintId={1}
+            plans={plans}
+            limits={LOAD_LIMITS}
+            onClose={() => {}}
+          />
+        ),
       },
     ],
     { initialEntries: ['/sprints/1/test-runs'] },
@@ -169,7 +171,7 @@ describe('NonfunctionalRunModal', () => {
     expect(screen.getByText(/declare the environment disposable/)).toBeInTheDocument()
   })
 
-  it('shows the ceiling for the tier a profile is in, from the server', async () => {
+  it('gives a declared non-safe method the same ceiling as GET, from the server', async () => {
     await reachTheReviewStep(
       makeDraft({
         load_profiles: [
@@ -187,15 +189,18 @@ describe('NonfunctionalRunModal', () => {
     )
 
     expect(screen.getByText('max 10 × 2000')).toBeInTheDocument()
+    const requests = () => screen.getByLabelText('Total requests') as HTMLInputElement
+    const getMax = requests().max
 
     fireEvent.click(screen.getByLabelText(/This environment is disposable/))
     fireEvent.change(screen.getByLabelText('Method for profile 1'), {
       target: { value: 'POST' },
     })
 
-    // The unsafe tier, and both figures came from the response — no config
-    // literal is restated in this component.
-    expect(screen.getByText('max 2 × 20')).toBeInTheDocument()
+    // One tier: the declaration changes what is permitted, not the ceiling,
+    // and both figures came from the `limits` prop.
+    expect(screen.getByText('max 10 × 2000')).toBeInTheDocument()
+    expect(requests().max).toBe(getMax)
   })
 
   it('says that load profiles run authenticated', async () => {

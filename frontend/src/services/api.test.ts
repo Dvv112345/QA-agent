@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { checkAuthStatus, createRepo, createSprint, finishSprint, verifyPassword } from './api'
 import type { RepoResponse, SprintResponse } from '../types'
+import { LOAD_LIMITS } from '../test/fixtures'
 
 function mockFetch(response: Response) {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(response)
@@ -43,6 +44,7 @@ const fakeSprint: SprintResponse = {
   has_test_runs: false,
   has_exploratory_runs: false,
   has_nonfunctional_runs: false,
+  load_limits: LOAD_LIMITS,
 }
 
 // ── Error handling ───────────────────────────────────────────────────

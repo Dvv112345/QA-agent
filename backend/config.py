@@ -242,23 +242,34 @@ NONFUNCTIONAL_CATALOGUE_TIMEOUT: int = _get_int("NONFUNCTIONAL_CATALOGUE_TIMEOUT
 NONFUNCTIONAL_JOB_TIMEOUT: int = _get_int("NONFUNCTIONAL_JOB_TIMEOUT", 5400)
 # Load profiles per run.
 NONFUNCTIONAL_MAX_LOAD_PROFILES: int = _get_int("NONFUNCTIONAL_MAX_LOAD_PROFILES", 3)
-# ── Load ceilings, two tiers ──
-# Safe methods (GET/HEAD/OPTIONS) read but do not change the application,
-# so they run against any confirmed origin under the first tier. Non-safe
-# methods change data and run only on a run carrying the
-# disposable-environment declaration, under the second, much lower tier —
-# the binding cap there is the total, deliberately in the *tens*.
+# ── Load ceilings: the server maximums ──
+# One tier for every method. A non-safe method (POST/PUT/PATCH/DELETE) differs
+# from a safe one only in needing the run's disposable-environment
+# declaration; once declared, it runs under these same numbers. The names
+# are kept from the two-tier era so existing .env files still apply.
 NONFUNCTIONAL_LOAD_MAX_CONCURRENCY: int = _get_int("NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 10)
 NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS: int = _get_int(
     "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 60
 )
 NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS: int = _get_int("NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 2000)
-NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY: int = _get_int(
-    "NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY", 2
-)
-NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS: int = _get_int(
-    "NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS", 20
-)
+
+
+def server_limits() -> dict[str, int]:
+    """The load maximums as the frontend and the routes read them.
+
+    The one read of those constants outside ``load_runner``. It lives here,
+    not in the service, so ``models/types.py`` can fill
+    ``SprintResponse.load_limits`` without importing the service layer. It
+    reads the globals at call time, so a test that monkeypatches this module
+    sees its own numbers.
+    """
+    return {
+        "max_users": NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
+        "max_duration_seconds": NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
+        "max_total_requests": NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
+    }
+
+
 # Seconds for one outbound load request.
 NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT: int = _get_int("NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT", 15)
 # Error rate above which a profile stops early rather than keeping traffic

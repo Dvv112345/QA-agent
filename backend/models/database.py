@@ -1509,8 +1509,9 @@ class LoadMethod(str, Enum):
 
     "Safe" is the HTTP sense: the request is a read, so repeating it two
     thousand times changes nothing but the load. Non-safe methods change
-    data, which is why they need the disposable-environment declaration
-    and a much lower ceiling — see ``NonfunctionalRun.environment_disposable``.
+    data, which is why they need the disposable-environment declaration —
+    see ``NonfunctionalRun.environment_disposable``. Once declared they run
+    under the same ceilings as a safe method; there is one tier.
     """
 
     GET = "GET"
@@ -1566,8 +1567,8 @@ class NonfunctionalRun(SQLModel, table=True):
     # of them runs at every target.
     domains_csv: str
     # Whether the user declared this environment disposable — the gate on
-    # non-safe load methods, and the only thing that unlocks the second,
-    # lower ceiling tier. Stored on the run because it describes what this
+    # non-safe load methods. There is one ceiling tier, so the declaration
+    # grants permission, not a different size. Stored on the run because it describes what this
     # run was permitted to do, which a later config change must not rewrite.
     environment_disposable: bool = Field(default=False)
     # Best-effort synthesis, recoverable via the summarize endpoint. See

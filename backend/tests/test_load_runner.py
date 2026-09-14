@@ -187,7 +187,11 @@ class TestRefusals:
         assert allowed.refused is None
         assert allowed.requests_sent == 2
 
-    def test_the_unsafe_tier_binds_even_when_more_is_asked_for(self, stub, local_allowed):
+    def test_a_declared_non_safe_method_clamps_to_the_same_ceiling_as_get(
+        self, stub, local_allowed, monkeypatch
+    ):
+        monkeypatch.setattr(load_runner, "NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 4)
+
         result = run_profile(
             url=stub.url,
             method="POST",
@@ -197,15 +201,14 @@ class TestRefusals:
             environment_disposable=True,
         )
 
-        assert stub.recorder.count == load_runner.NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS
-        assert result.requests_sent == load_runner.NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS
+        assert stub.recorder.count == 4
+        assert result.requests_sent == 4
 
-    def test_ceilings_for_names_both_tiers(self):
+    def test_ceilings_for_is_one_tier(self):
         safe = ceilings_for("GET", environment_disposable=False)
         unsafe = ceilings_for("POST", environment_disposable=True)
 
-        assert safe.total_requests > unsafe.total_requests
-        assert safe.concurrency > unsafe.concurrency
+        assert safe == unsafe
         with pytest.raises(ValueError):
             ceilings_for("POST", environment_disposable=False)
 

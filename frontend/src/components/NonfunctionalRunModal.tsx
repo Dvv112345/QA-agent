@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { createNonfunctionalRun, generateNonfunctionalPlan } from '../services/api'
 import type {
   IssueTrackerConfig,
+  LoadLimits,
   LoadMethod,
   LoadProfileDraft,
   NonfunctionalDomain,
@@ -18,6 +19,8 @@ interface Props {
   sprintId: number
   /** The sprint's approved plans — see ExploratoryCharterModal for why. */
   plans: TestPlanResponse[]
+  /** `SprintResponse.load_limits` — the server's maximums, never a literal here. */
+  limits: LoadLimits
   tracker?: IssueTrackerConfig | null
   onClose: () => void
 }
@@ -28,7 +31,13 @@ const DOMAIN_LABELS: Record<NonfunctionalDomain, string> = {
   security: 'Security',
 }
 
-export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClose }: Props) {
+export default function NonfunctionalRunModal({
+  sprintId,
+  plans,
+  limits,
+  tracker,
+  onClose,
+}: Props) {
   const navigate = useNavigate()
   const [selected, setSelected] = useState<number | null>(plans[0]?.requirement_id ?? null)
   const [draft, setDraft] = useState<NonfunctionalPlanDraftResponse | null>(null)
@@ -110,16 +119,9 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
   }
 
   // Ceilings come from the server, never from a config literal restated
-  // here (Convention #10). The declaration selects the tier.
-  const maxConcurrency =
-    draft === null
-      ? 1
-      : disposable
-        ? Math.max(draft.max_concurrency, draft.unsafe_max_concurrency)
-        : draft.max_concurrency
-  const unsafeSelected = profiles.some(
-    (profile) => draft !== null && !draft.safe_methods.includes(profile.method),
-  )
+  // here (Convention #10). One tier: the declaration grants permission for a
+  // method that changes data, not a different ceiling.
+  const unsafeSelected = profiles.some((profile) => !limits.safe_methods.includes(profile.method))
   const canStart =
     domains.length > 0 &&
     profiles.every((profile) => profile.url.trim().length > 0) &&
@@ -133,15 +135,7 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
         ? 'Every load profile needs a URL, or remove it.'
         : 'A load profile uses a method that changes data — declare the environment disposable, or switch it to GET, HEAD or OPTIONS.'
 
-  const methodAllowed = (method: LoadMethod) =>
-    draft !== null && (draft.safe_methods.includes(method) || disposable)
-
-  const ceilingFor = (method: LoadMethod) => {
-    if (draft === null) return { requests: 0, concurrency: 0 }
-    return draft.safe_methods.includes(method)
-      ? { requests: draft.max_total_requests, concurrency: draft.max_concurrency }
-      : { requests: draft.unsafe_max_total_requests, concurrency: draft.unsafe_max_concurrency }
-  }
+  const methodAllowed = (method: LoadMethod) => limits.safe_methods.includes(method) || disposable
 
   return (
     <ModalShell title="Start nonfunctional testing" busy={busy} wide onClose={onClose}>
@@ -218,8 +212,7 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
             <p className="nf-warning">
               Load profiles run <strong>as the signed-in browser user</strong>, carrying its
               cookies. Methods that change data (POST, PUT, PATCH, DELETE) need the declaration
-              above, and are capped at {plural(draft.unsafe_max_total_requests, 'request')} in
-              total.
+              above, and then run under the same ceilings — every request they send can be a write.
             </p>
 
             {profiles.length === 0 ? (
@@ -227,7 +220,6 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
             ) : (
               <ul className="nf-profile-list">
                 {profiles.map((profile, index) => {
-                  const ceiling = ceilingFor(profile.method)
                   return (
                     <li key={index} className="nf-profile">
                       <div className="nf-profile-row">
@@ -271,7 +263,7 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
                           <input
                             type="number"
                             min={1}
-                            max={maxConcurrency}
+                            max={limits.max_users}
                             value={profile.concurrency}
                             onChange={(e) =>
                               updateProfile(index, { concurrency: Number(e.target.value) })
@@ -284,7 +276,7 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
                           <input
                             type="number"
                             min={1}
-                            max={draft.max_duration_seconds}
+                            max={limits.max_duration_seconds}
                             value={profile.duration_seconds}
                             onChange={(e) =>
                               updateProfile(index, { duration_seconds: Number(e.target.value) })
@@ -297,7 +289,7 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
                           <input
                             type="number"
                             min={1}
-                            max={ceiling.requests}
+                            max={limits.max_total_requests}
                             value={profile.total_request_cap}
                             onChange={(e) =>
                               updateProfile(index, { total_request_cap: Number(e.target.value) })
@@ -306,7 +298,7 @@ export default function NonfunctionalRunModal({ sprintId, plans, tracker, onClos
                           />
                         </label>
                         <span className="nf-profile-ceiling">
-                          max {ceiling.concurrency} × {ceiling.requests}
+                          max {limits.max_users} × {limits.max_total_requests}
                         </span>
                       </div>
                       {profile.rationale && (
