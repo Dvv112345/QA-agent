@@ -338,24 +338,3 @@ class TestWorkersThatDieBeforeSending:
         monkeypatch.setattr(load_runner.httpx, "Client", _explode)
 
         assert isinstance(run_profile(url=stub.url, total_request_cap=1), LoadResult)
-
-
-class TestPercentileRank:
-    """Nearest rank, which is `ceil` — `round(x + 0.5)` is not.
-
-    On an exact half Python rounds to even and goes *down*, so twenty
-    samples put p95 on the maximum instead of the nineteenth value.
-    """
-
-    def test_p95_of_twenty_samples_is_the_nineteenth_not_the_maximum(self):
-        values = [float(n) for n in range(1, 21)]
-
-        assert load_runner._percentile(values, 0.95) == 19.0
-
-    def test_p50_of_twenty_samples_is_the_tenth(self):
-        values = [float(n) for n in range(1, 21)]
-
-        assert load_runner._percentile(values, 0.50) == 10.0
-
-    def test_an_empty_sample_is_zero(self):
-        assert load_runner._percentile([], 0.95) == 0.0

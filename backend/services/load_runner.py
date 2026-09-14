@@ -29,7 +29,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-import math
 import re
 import socket
 import threading
@@ -48,6 +47,7 @@ from backend.config import (
     NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT,
 )
 from backend.models.database import LoadMethod
+from backend.services.load_shapes import percentile
 from backend.utils.http_utils import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
@@ -315,20 +315,6 @@ class _Budget:
                 self.stopped = self.stopped or STOP_ERROR_RATE
 
 
-def _percentile(sorted_values: list[float], fraction: float) -> float:
-    """Nearest-rank percentile — no interpolation, no numpy.
-
-    ``ceil``, not ``round(x + 0.5)``: the latter meets Python's
-    banker's rounding on an exact half and rounds *down* to even, so at
-    twenty samples p95 answered the maximum where nearest rank wants the
-    nineteenth. One sample out, always pessimistic, and only at some sizes.
-    """
-    if not sorted_values:
-        return 0.0
-    rank = math.ceil(fraction * len(sorted_values))
-    return sorted_values[max(0, min(len(sorted_values) - 1, rank - 1))]
-
-
 def _worker(
     *,
     budget: _Budget,
@@ -444,9 +430,9 @@ def run_profile(
     sent = budget.completed
     return LoadResult(
         requests_sent=sent,
-        p50_ms=round(_percentile(latencies, 0.50), 2) if latencies else None,
-        p95_ms=round(_percentile(latencies, 0.95), 2) if latencies else None,
-        p99_ms=round(_percentile(latencies, 0.99), 2) if latencies else None,
+        p50_ms=round(percentile(latencies, 0.50), 2) if latencies else None,
+        p95_ms=round(percentile(latencies, 0.95), 2) if latencies else None,
+        p99_ms=round(percentile(latencies, 0.99), 2) if latencies else None,
         throughput_rps=round(sent / elapsed, 2) if elapsed > 0 and sent else None,
         status_counts=dict(budget.status_counts),
         error_rate=round(budget.errors / sent, 4) if sent else 0.0,
