@@ -577,6 +577,7 @@ class TestGeneratorFailures:
             method="POST",
             body='{"token": "$API_TOKEN"}',
             env_vars={"API_TOKEN": "s3cr3t-value"},
+            cookies={"session": "browser-session-cookie-value"},
             total_request_cap=1,
             environment_disposable=True,
         )
@@ -585,6 +586,41 @@ class TestGeneratorFailures:
         assert result.refused.startswith("Load generator could not start")
         assert "s3cr3t-value" not in result.refused
         assert "$API_TOKEN" in result.refused
+        # The browser's cookies ride in the same config and are not env vars.
+        assert "browser-session-cookie-value" not in result.refused
+        assert "$COOKIE_session" in result.refused
+
+    def test_a_job_timeout_propagates_and_the_generator_is_killed(
+        self, tmp_path, monkeypatch, stub, local_allowed
+    ):
+        """RQ's timeout must reach RQ, and must not leave traffic running."""
+        import psutil
+        from rq.timeouts import JobTimeoutException
+
+        pid_file = tmp_path / "child.pid"
+        _fake_child(
+            tmp_path,
+            monkeypatch,
+            "import os, time\n"
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n",
+        )
+
+        def _tick():
+            if pid_file.exists() and pid_file.read_text():
+                raise JobTimeoutException("Task exceeded maximum timeout value")
+            return True
+
+        with pytest.raises(JobTimeoutException):
+            run_profile(
+                url=stub.url,
+                duration_seconds=60,
+                total_request_cap=10,
+                on_tick=_tick,
+                tick_interval_seconds=0.2,
+            )
+
+        assert not psutil.pid_exists(int(pid_file.read_text()))
 
     def test_a_missing_locust_is_a_refusal_not_a_raise(
         self, tmp_path, monkeypatch, stub, local_allowed

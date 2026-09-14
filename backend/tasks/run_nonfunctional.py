@@ -538,7 +538,7 @@ def run_nonfunctional_task(nonfunctional_run_id: int) -> None:
                 file_tree=file_tree,
             )
 
-            if _superseded(session, run, nonfunctional_run_id):
+            if _should_stop(session, run, nonfunctional_run_id):
                 return
 
             # False when the run stopped part-way — superseded, or failed from
@@ -581,6 +581,22 @@ def run_nonfunctional_task(nonfunctional_run_id: int) -> None:
             finding_export.export_findings(session, run)
         except Exception:
             logger.exception("Exporting findings failed for run %d", nonfunctional_run_id)
+
+
+def _should_stop(session: Session, run: NonfunctionalRun, run_id: int) -> bool:
+    """Whether the run must not start any more work.
+
+    Two things end a run from outside, and only one of them makes it
+    outdated: finishing the sprint fails the run from another session and
+    leaves its revisions alone. Checking ``_superseded`` alone let the next
+    load profile launch on a finished sprint and send traffic until its
+    first tick caught it.
+    """
+    session.expire_all()
+    if run.status != NonfunctionalRunStatus.RUNNING:
+        logger.info("Nonfunctional run %d is '%s' — stopping", run_id, run.status)
+        return True
+    return _superseded(session, run, run_id)
 
 
 def _superseded(session: Session, run: NonfunctionalRun, run_id: int) -> bool:
@@ -742,7 +758,7 @@ def _run_load_profiles(
 
         requests_sent > 0 or launched_at  → never re-sent (traffic guard)
         status completed / error          → already done (a refusal is terminal)
-        run superseded                    → stop the run
+        run failed elsewhere or outdated  → stop the run (`_should_stop`)
         preflight refusal                 → error, NO stamp — nothing was sent
         otherwise                         → stamp launched_at + running, COMMIT, run
 
@@ -770,7 +786,7 @@ def _run_load_profiles(
             NonfunctionalChildStatus.ERROR,
         ):
             continue
-        if _superseded(session, run, run.id):
+        if _should_stop(session, run, run.id):
             return False
 
         refusal = load_runner.preflight(

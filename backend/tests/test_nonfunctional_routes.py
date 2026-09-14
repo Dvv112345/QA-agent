@@ -423,6 +423,42 @@ class TestGeneratePlan:
         assert [p["total_request_cap"] for p in profiles] == [5000, 1000]
 
     @pytest.mark.asyncio
+    async def test_composed_profiles_fit_the_budget_they_are_created_under(
+        self, async_client, db_session, monkeypatch, queue_stub
+    ):
+        """D16's premise, end to end: what compose allocates, create accepts.
+
+        The task does no budget arithmetic because this holds, so it is pinned
+        with a non-default budget rather than assumed.
+        """
+        sprint, requirement = _ready_sprint(db_session)
+        self._stub_llm(
+            monkeypatch,
+            result=self._result(
+                load_profiles=[self._proposal(total_request_cap=5000) for _ in range(3)]
+            ),
+        )
+        ceiling = {"max_users": 10, "max_total_requests": 6000}
+        generated = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
+            json=_generate_body(requirement.id, **ceiling),
+        )
+        assert generated.status_code == 200, generated.text
+
+        created = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                load_profiles=generated.json()["load_profiles"],
+                **ceiling,
+            ),
+        )
+
+        assert created.status_code == 201, created.text
+        caps = [p["total_request_cap"] for p in created.json()["load_profiles"]]
+        assert sum(caps) <= 6000
+
+    @pytest.mark.asyncio
     async def test_an_unknown_shape_becomes_constant_load(
         self, async_client, db_session, monkeypatch
     ):

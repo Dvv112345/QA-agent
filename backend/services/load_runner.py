@@ -13,9 +13,11 @@ Rules it enforces itself rather than trusting the route to have:
 2. **The request cap is claimed, not checked** — inside that process, where
    a claim cannot yield, and never with Locust's multi-process mode, which
    would hand every process its own counter.
-3. **Never raises.** The task calls this directly, and a raise costs a
-   retry that could not tell what was sent. Every connection refused is a
-   ``LoadResult`` with an error rate, not an exception.
+3. **Never raises** — except RQ's job timeout, which must reach RQ. The
+   task calls this directly, and a raise costs a retry that could not tell
+   what was sent. Every connection refused is a ``LoadResult`` with an
+   error rate, not an exception. Whatever escapes, the child is killed
+   first.
 4. **The parent keeps the child honest.** It polls, calls ``on_tick``
    (heartbeat, and "should this keep going?"), and kills the child when told
    to stop or when ``duration + grace`` passes. The child watches this
@@ -51,6 +53,8 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from urllib.parse import urlparse
+
+from rq.timeouts import BaseTimeoutException
 
 from backend.config import (
     HEARTBEAT_STALE_SECONDS,
@@ -419,6 +423,10 @@ def run_profile(
     grace = grace_seconds if grace_seconds is not None else NONFUNCTIONAL_LOAD_PROCESS_GRACE_SECONDS
     try:
         return _run_child(config, env_vars, seconds + grace, on_tick, tick_interval)
+    except BaseTimeoutException:
+        # RQ's job timeout is an Exception subclass. Swallowing it here would
+        # defeat the job's own time limit, so it is the one thing let through.
+        raise
     except Exception as exc:  # never raises — see the module docstring
         logger.exception("Load profile against %s could not run", url)
         return LoadResult(refused=f"Load generator could not run: {exc}")
@@ -451,8 +459,16 @@ def _run_child(
             )
         except OSError as exc:
             return LoadResult(refused=f"Load generator could not start: {exc}")
-        outcome, stderr = _supervise(process, wall_seconds, on_tick, tick_interval)
-        return _read_result(result_dir, outcome, stderr, env_vars)
+        try:
+            outcome, stderr = _supervise(process, wall_seconds, on_tick, tick_interval)
+        finally:
+            # Anything that escapes supervision — an RQ job timeout above all —
+            # must not leave traffic running with nobody watching it. The
+            # parent is still alive then, so the child's watchdog would not
+            # fire either.
+            if process.poll() is None:
+                _kill(process)
+        return _read_result(result_dir, outcome, stderr, env_vars, config["cookies"])
     finally:
         shutil.rmtree(result_dir, ignore_errors=True)
 
@@ -490,6 +506,8 @@ def _supervise(
 def _keep_going(on_tick: Callable[[], bool]) -> bool:
     try:
         return on_tick() is not False
+    except BaseTimeoutException:
+        raise  # a job timeout is not a database blip; see run_profile
     except Exception:
         logger.exception("Load profile tick raised — continuing")
         return True
@@ -516,7 +534,11 @@ def _load_json(directory: str, name: str) -> dict | None:
 
 
 def _read_result(
-    result_dir: str, outcome: str, stderr: bytes, env_vars: dict[str, str] | None
+    result_dir: str,
+    outcome: str,
+    stderr: bytes,
+    env_vars: dict[str, str] | None,
+    cookies: dict[str, str] | None = None,
 ) -> LoadResult:
     """The final result if there is one, else the last progress, else why not."""
     final = _load_json(result_dir, _RESULT_FILE)
@@ -534,7 +556,7 @@ def _read_result(
         # `launched_at` is what keeps it from being sent again.
         return LoadResult(stopped_early=STOP_RUN_STOPPED)
 
-    tail = _stderr_tail(stderr, env_vars)
+    tail = _stderr_tail(stderr, env_vars, cookies)
     logger.error("Load generator produced no result: %s", tail)
     return LoadResult(
         refused=f"Load generator could not start: {tail}"
@@ -543,12 +565,18 @@ def _read_result(
     )
 
 
-def _stderr_tail(stderr: bytes, env_vars: dict[str, str] | None) -> str:
+def _stderr_tail(
+    stderr: bytes, env_vars: dict[str, str] | None, cookies: dict[str, str] | None = None
+) -> str:
     """The end of the child's stderr with every credential replaced by its ``$NAME``.
 
-    A traceback can quote the request body, which holds resolved values.
+    A traceback can quote the request body, which holds resolved values, and
+    the child's config also carries the browser's session cookies — which are
+    not environment variables, so they are added as ``$COOKIE_<name>``.
     URLs are kept: a human reads `profile.error`, and a failure about a page
     has to be allowed to name the page.
     """
     text = stderr.decode("utf-8", errors="replace")[-_STDERR_TAIL_CHARS:].strip()
-    return redact(text, redactable_items(env_vars, keep=url_values(env_vars)))
+    secrets = redactable_items(env_vars, keep=url_values(env_vars))
+    secrets.update({f"COOKIE_{name}": value for name, value in (cookies or {}).items()})
+    return redact(text, secrets)
