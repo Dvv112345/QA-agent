@@ -88,9 +88,54 @@ def _add_defect_group_pool(engine: Engine) -> None:
             logger.info("Migration: backfilled pool on %d defectgroup rows", result.rowcount)
 
 
+def _add_load_shapes_and_run_ceiling(engine: Engine) -> None:
+    """Give load profiles a shape and a launch stamp, and runs their ceiling.
+
+    ``nonfunctionalloadprofile.shape`` is backfilled to ``'load'``, the only
+    shape a profile could have had before the column existed.
+    ``launched_at`` and the two ``nonfunctionalrun`` ceiling columns are
+    left NULL on purpose: a legacy profile's launch time is unknowable, and
+    nobody picked a ceiling for a legacy run.
+    """
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        if "nonfunctionalloadprofile" in tables:
+            existing = {c["name"] for c in inspector.get_columns("nonfunctionalloadprofile")}
+            if "shape" not in existing:
+                connection.execute(
+                    text("ALTER TABLE nonfunctionalloadprofile ADD COLUMN shape VARCHAR")
+                )
+                logger.info("Migration: added shape to nonfunctionalloadprofile")
+            if "launched_at" not in existing:
+                connection.execute(
+                    text("ALTER TABLE nonfunctionalloadprofile ADD COLUMN launched_at TIMESTAMP")
+                )
+                logger.info("Migration: added launched_at to nonfunctionalloadprofile")
+            # Runs even when the column already existed — see
+            # `_add_defect_group_pool` for the crashed-backfill case.
+            result = connection.execute(
+                text("UPDATE nonfunctionalloadprofile SET shape = 'load' WHERE shape IS NULL")
+            )
+            if result.rowcount:
+                logger.info(
+                    "Migration: backfilled shape on %d nonfunctionalloadprofile rows",
+                    result.rowcount,
+                )
+        if "nonfunctionalrun" in tables:
+            existing = {c["name"] for c in inspector.get_columns("nonfunctionalrun")}
+            for name in ("max_users", "max_total_requests"):
+                if name not in existing:
+                    connection.execute(
+                        text(f"ALTER TABLE nonfunctionalrun ADD COLUMN {name} INTEGER")
+                    )
+                    logger.info("Migration: added %s to nonfunctionalrun", name)
+
+
 _MIGRATIONS = [
     _add_test_case_script_revisions,
     _add_defect_group_pool,
+    _add_load_shapes_and_run_ceiling,
 ]
 
 

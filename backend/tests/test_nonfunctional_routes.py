@@ -518,6 +518,43 @@ class TestCreateRun:
         assert stored["total_request_cap"] == load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS
 
     @pytest.mark.asyncio
+    async def test_the_shape_is_persisted_and_the_new_fields_are_echoed(
+        self, async_client, db_session, queue_stub
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                load_profiles=[{"url": PROFILE_URL, "method": "GET", "shape": "load"}],
+            ),
+        )
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["load_profiles"][0]["shape"] == "load"
+        assert data["load_profiles"][0]["launched_at"] is None
+        assert data["max_users"] is None
+        assert data["max_total_requests"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_shape_is_refused(self, async_client, db_session, queue_stub):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                load_profiles=[{"url": PROFILE_URL, "method": "GET", "shape": "tsunami"}],
+            ),
+        )
+
+        assert resp.status_code == 422
+        assert "tsunami" in resp.json()["detail"]
+        assert queue_stub.enqueued == []
+
+    @pytest.mark.asyncio
     async def test_an_off_origin_load_url_is_refused(self, async_client, db_session, queue_stub):
         sprint, requirement = _ready_sprint(db_session)
 

@@ -32,6 +32,7 @@ from backend.models.database import (
     FindingSeverity,
     FindingType,
     LoadMethod,
+    LoadShape,
     NonfunctionalDomain,
     NonfunctionalFinding,
     NonfunctionalLoadProfile,
@@ -160,6 +161,12 @@ def _validate_load_profiles(
         if method not in {member.value for member in LoadMethod}:
             raise HTTPException(status_code=422, detail=f"Unsupported HTTP method: '{method}'.")
 
+        # Only constant load runs until the Locust generator lands.
+        if profile.shape != LoadShape.LOAD:
+            raise HTTPException(
+                status_code=422, detail=f"Unsupported load shape: '{profile.shape}'."
+            )
+
         # The executor refuses these too. Refusing here as well is what lets
         # the user learn before a run exists rather than from a profile row
         # that recorded a refusal.
@@ -192,6 +199,7 @@ def _validate_load_profiles(
                 url=profile.url,
                 method=method,
                 body=profile.body,
+                shape=profile.shape,
                 concurrency=max(1, min(profile.concurrency, ceilings.concurrency)),
                 duration_seconds=max(1, min(profile.duration_seconds, ceilings.duration_seconds)),
                 total_request_cap=max(1, min(profile.total_request_cap, ceilings.total_requests)),
@@ -273,6 +281,8 @@ def _run_fields(run: NonfunctionalRun) -> dict:
         "status": run.status,
         "domains": run.domains,
         "environment_disposable": run.environment_disposable,
+        "max_users": run.max_users,
+        "max_total_requests": run.max_total_requests,
         "summary": run.summary,
         "error": run.error,
         "outdated_reasons": run.outdated_reasons,
@@ -319,11 +329,13 @@ def _profile_response(profile: NonfunctionalLoadProfile) -> NonfunctionalLoadPro
         # resolution happens inside the load runner precisely so no
         # resolved value is ever serialized.
         body=profile.body,
+        shape=profile.shape,
         concurrency=profile.concurrency,
         duration_seconds=profile.duration_seconds,
         total_request_cap=profile.total_request_cap,
         status=profile.status,
         requests_sent=profile.requests_sent,
+        launched_at=profile.launched_at,
         results=parse_json_object(profile.results_json),
         error=profile.error,
         updated_at=profile.updated_at,
@@ -512,6 +524,7 @@ async def create_nonfunctional_run(
             url=profile.url,
             method=profile.method,
             body=profile.body,
+            shape=profile.shape,
             concurrency=profile.concurrency,
             duration_seconds=profile.duration_seconds,
             total_request_cap=profile.total_request_cap,

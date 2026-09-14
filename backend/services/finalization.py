@@ -125,8 +125,8 @@ NONFUNCTIONAL_TARGET_SPEC = ChildSpec(
 # child spec in this module. A target re-examined costs a page load; a load
 # profile re-sent costs real traffic on somebody's environment, and for a
 # non-safe method it costs duplicated writes. The never-re-send invariant is
-# carried by `NonfunctionalLoadProfile.requests_sent > 0`, which the task
-# checks before every profile — not by this status.
+# carried by `NonfunctionalLoadProfile.requests_sent > 0 or launched_at`,
+# which the task checks before every profile — not by this status.
 LOAD_PROFILE_SPEC = ChildSpec(
     model=NonfunctionalLoadProfile,
     label="load profile",

@@ -569,11 +569,13 @@ class NonfunctionalLoadProfileResponse(SQLModel):
     url: str
     method: str
     body: str | None = None
+    shape: str = "load"
     concurrency: int
     duration_seconds: int
     total_request_cap: int
     status: str
     requests_sent: int = 0
+    launched_at: datetime | None = None
     # Parsed ``results_json`` — percentiles, throughput, status counts.
     results: dict = {}
     error: str | None = None
@@ -590,6 +592,9 @@ class NonfunctionalRunResponse(ExportRollup, OutdatedFields):
     status: str
     domains: list[str] = []
     environment_disposable: bool = False
+    # The user-picked ceiling; None on a run created before it existed.
+    max_users: int | None = None
+    max_total_requests: int | None = None
     summary: str | None = None
     error: str | None = None
     target_count: int = 0
@@ -623,6 +628,7 @@ class LoadProfileDraft(SQLModel):
     url: str
     method: str = "GET"
     body: str | None = None
+    shape: str = "load"
     concurrency: int = 1
     duration_seconds: int = 10
     total_request_cap: int = 100

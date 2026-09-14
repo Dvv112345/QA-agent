@@ -701,11 +701,19 @@ def _run_load_profiles(
 ) -> None:
     """Apply each approved profile, safe methods first.
 
-    **A profile that already sent traffic is never re-sent.**  The check is
-    ``requests_sent > 0``, not the status: a restart re-pends the run and
-    could legitimately re-walk its targets, but re-issuing requests against
-    somebody's environment — writes included, for a non-safe method — is not
-    something a retry may do on its own.
+    **A profile that was ever launched is never re-sent.**  The check is
+    ``requests_sent > 0 or launched_at``, not the status: a restart re-pends
+    the run and could legitimately re-walk its targets, but re-issuing
+    requests against somebody's environment — writes included, for a
+    non-safe method — is not something a retry may do on its own.
+
+    The skip ladder, in order::
+
+        requests_sent > 0 or launched_at  → never re-sent (traffic guard)
+        status completed / error          → already done (a refusal is terminal)
+        run superseded                    → stop the run
+        preflight refusal                 → error, NO stamp — nothing was sent
+        otherwise                         → stamp launched_at + running, COMMIT, run
 
     Safe-first so that if a run is interrupted part-way the reads have
     happened and the writes have not.
@@ -719,9 +727,9 @@ def _run_load_profiles(
     allowed = load_runner.allowed_origins_for(base_urls)
 
     for profile in ordered:
-        if profile.requests_sent > 0:
+        if profile.requests_sent > 0 or profile.launched_at is not None:
             logger.info(
-                "Load profile %d already sent %d request(s) — not re-sending",
+                "Load profile %d was already launched (%d request(s) recorded) — not re-sending",
                 profile.id,
                 profile.requests_sent,
             )
@@ -734,8 +742,29 @@ def _run_load_profiles(
         if _superseded(session, run, run.id):
             return
 
+        refusal = load_runner.preflight(
+            profile.url,
+            profile.method,
+            allowed,
+            environment_disposable=run.environment_disposable,
+        )
+        if refusal is not None:
+            # Nothing was sent, so no stamp — and terminal all the same: the
+            # refusal is deterministic, and the one thing that would change it
+            # (an environment edit) marks the run outdated, which blocks restart.
+            profile.status = NonfunctionalChildStatus.ERROR
+            profile.error = refusal
+            profile.updated_at = finalization.now()
+            session.add(profile)
+            session.commit()
+            continue
+
+        # Committed before the generator starts: a crash from here on leaves
+        # the stamp behind, and the stamp is what keeps a restart from
+        # re-sending traffic it cannot count.
         profile.status = NonfunctionalChildStatus.RUNNING
-        profile.updated_at = finalization.now()
+        profile.launched_at = finalization.now()
+        profile.updated_at = profile.launched_at
         session.add(profile)
         session.commit()
 

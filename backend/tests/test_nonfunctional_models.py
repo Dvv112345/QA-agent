@@ -226,6 +226,35 @@ class TestDefectGroupPool:
         assert group.pool == DefectPool.FUNCTIONAL
 
 
+class TestLoadShapeAndCeilingColumns:
+    def test_shape_values(self):
+        from backend.models.database import LoadShape
+
+        assert [shape.value for shape in LoadShape] == ["load", "stress", "spike", "soak"]
+
+    def test_a_profile_defaults_to_constant_load_and_is_not_launched(self, db_session):
+        _sprint, _requirement, run = _sprint_with_requirement(db_session)
+        profile = _seed_load_profile(db_session, run)
+
+        assert profile.shape == "load"
+        assert profile.launched_at is None
+
+    def test_a_run_without_a_ceiling_stores_null(self, db_session):
+        _sprint, _requirement, run = _sprint_with_requirement(db_session)
+
+        assert run.max_users is None
+        assert run.max_total_requests is None
+
+    def test_a_run_ceiling_round_trips(self, db_session):
+        _sprint, _requirement, run = _sprint_with_requirement(
+            db_session, max_users=40, max_total_requests=6000
+        )
+        db_session.expire_all()
+        stored = db_session.get(NonfunctionalRun, run.id)
+
+        assert (stored.max_users, stored.max_total_requests) == (40, 6000)
+
+
 class TestLoadMethodSafety:
     def test_only_reads_are_safe_and_the_unknown_is_not(self):
         assert LoadMethod.is_safe("GET") is True

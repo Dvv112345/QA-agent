@@ -104,6 +104,58 @@ def test_run_migrations_adds_and_backfills_the_defect_group_pool(tmp_path):
     assert pools == ["functional"]
 
 
+def _seed_load_profile_row(engine) -> None:
+    """A run and one profile under it, through the ORM for the same reason as above."""
+    from sqlmodel import Session
+
+    from backend.models.database import NonfunctionalLoadProfile, NonfunctionalRun, Requirement
+
+    _seed_sprint_row(engine)
+    with Session(engine) as session:
+        session.add(Requirement(sprint_id=1, name="R", description="d", original_description="d"))
+        session.commit()
+        session.add(
+            NonfunctionalRun(
+                sprint_id=1, requirement_id=1, base_url_env_vars_csv="BASE_URL", domains_csv=""
+            )
+        )
+        session.commit()
+        session.add(NonfunctionalLoadProfile(nonfunctional_run_id=1, position=0, url="https://x"))
+        session.commit()
+
+
+_LOAD_PROFILE_NEW_COLUMNS = ("shape", "launched_at")
+_RUN_CEILING_COLUMNS = ("max_users", "max_total_requests")
+
+
+def test_run_migrations_adds_load_shapes_and_the_run_ceiling(tmp_path):
+    """Old tables gain the columns; a legacy profile's shape is backfilled to 'load'."""
+    engine = _fresh_engine(tmp_path)
+    _seed_load_profile_row(engine)
+    with engine.begin() as connection:
+        for name in _LOAD_PROFILE_NEW_COLUMNS:
+            connection.execute(text(f"ALTER TABLE nonfunctionalloadprofile DROP COLUMN {name}"))
+        for name in _RUN_CEILING_COLUMNS:
+            connection.execute(text(f"ALTER TABLE nonfunctionalrun DROP COLUMN {name}"))
+    assert not set(_LOAD_PROFILE_NEW_COLUMNS) & _columns(engine, "nonfunctionalloadprofile")
+
+    run_migrations(engine)
+    run_migrations(engine)  # and the second pass matches nothing
+
+    assert set(_LOAD_PROFILE_NEW_COLUMNS) <= _columns(engine, "nonfunctionalloadprofile")
+    assert set(_RUN_CEILING_COLUMNS) <= _columns(engine, "nonfunctionalrun")
+    with engine.begin() as connection:
+        profile = connection.execute(
+            text("SELECT shape, launched_at FROM nonfunctionalloadprofile")
+        ).one()
+        run = connection.execute(
+            text("SELECT max_users, max_total_requests FROM nonfunctionalrun")
+        ).one()
+    # Shape is knowable for a legacy profile; the launch time and the ceiling are not.
+    assert tuple(profile) == ("load", None)
+    assert tuple(run) == (None, None)
+
+
 def test_the_pool_backfill_leaves_existing_values_alone(tmp_path):
     """Only NULL rows are touched — a nonfunctional group stays put."""
     engine = _fresh_engine(tmp_path)

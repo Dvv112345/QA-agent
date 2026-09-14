@@ -489,6 +489,8 @@ export interface NonfunctionalTargetResponse {
   updated_at: string
 }
 
+export type LoadShape = 'load' | 'stress' | 'spike' | 'soak'
+
 export interface NonfunctionalLoadProfileResponse {
   id: number
   position: number
@@ -496,11 +498,15 @@ export interface NonfunctionalLoadProfileResponse {
   method: LoadMethod
   /** Echoed with its `$NAME` placeholders unresolved, exactly as stored. */
   body: string | null
+  shape: LoadShape
+  /** Peak users — the column keeps its original name. */
   concurrency: number
   duration_seconds: number
   total_request_cap: number
   status: NonfunctionalChildStatus
   requests_sent: number
+  /** Set before the generator starts; a launched profile is never re-sent. */
+  launched_at: string | null
   results: Record<string, number | string | null>
   error: string | null
   updated_at: string
@@ -514,6 +520,9 @@ export interface NonfunctionalRunResponse extends ExportRollup {
   status: NonfunctionalRunStatus
   domains: NonfunctionalDomain[]
   environment_disposable: boolean
+  /** The user-picked run ceiling; null on a run created before it existed. */
+  max_users: number | null
+  max_total_requests: number | null
   summary: string | null
   error: string | null
   outdated_reasons: OutdatedReason[]
@@ -552,9 +561,8 @@ export interface DomainProposal {
 }
 
 /**
- * The setup screen's input. Every ceiling here comes from the server
- * (Convention #10) — the modal must not restate a config literal, and the
- * unsafe pair is what the disposable declaration unlocks.
+ * The setup screen's proposals. The ceilings are not here: they ride on
+ * `SprintResponse.load_limits`, which the modal has before this exists.
  */
 export interface NonfunctionalPlanDraftResponse {
   requirement_id: number

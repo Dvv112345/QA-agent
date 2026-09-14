@@ -258,6 +258,9 @@ def patched(monkeypatch):
     monkeypatch.setattr(task_module.llm, "triage_nonfunctional_findings", _triage)
     monkeypatch.setattr(task_module.llm, "summarize_nonfunctional", _summarize)
     monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+    # The task asks `preflight` itself before stamping `launched_at`; keep its
+    # private-address check from resolving the seeded public hostname.
+    monkeypatch.setattr(task_module.load_runner, "_is_private_host", lambda host: False)
     monkeypatch.setattr(
         task_module.finding_grouping,
         "assign_defect_groups",
@@ -716,6 +719,98 @@ class TestLoadProfiles:
         assert stored.status == NonfunctionalChildStatus.ERROR
         assert stored.error == "private address space"
         assert _reload(db_session, run.id).status == NonfunctionalRunStatus.COMPLETED
+
+
+class TestLaunchedAt:
+    """`launched_at` is the traffic guard a crash cannot erase."""
+
+    def test_a_launched_profile_with_no_recorded_traffic_is_never_re_sent(
+        self, db_session, patched
+    ):
+        from backend.services.finalization import now
+
+        _sprint, _requirement, run = _seed_run(db_session)
+        _seed_load_profile(
+            db_session,
+            run,
+            url=f"{BASE_URL}/r",
+            requests_sent=0,
+            launched_at=now(),
+            status=NonfunctionalChildStatus.SKIPPED,
+        )
+
+        run_nonfunctional_task(run.id)
+
+        assert patched["load_calls"] == []
+
+    def test_a_reconciler_re_pend_leaves_the_profile_running_and_still_protected(
+        self, db_session, patched
+    ):
+        """The re-pend branch never settles children, so status says `running`.
+
+        Only the stamp stands between that row and a second launch.
+        """
+        from backend.services.finalization import now
+
+        _sprint, _requirement, run = _seed_run(db_session, status=NonfunctionalRunStatus.PENDING)
+        _seed_load_profile(
+            db_session,
+            run,
+            url=f"{BASE_URL}/r",
+            launched_at=now(),
+            status=NonfunctionalChildStatus.RUNNING,
+        )
+
+        run_nonfunctional_task(run.id)
+
+        assert patched["load_calls"] == []
+
+    def test_the_stamp_is_committed_before_the_generator_starts(
+        self, db_session, patched, monkeypatch
+    ):
+        from backend.database import new_session
+
+        _sprint, _requirement, run = _seed_run(db_session)
+        profile = _seed_load_profile(db_session, run, url=f"{BASE_URL}/r")
+        seen: list = []
+
+        def _run_profile(**kwargs):
+            # A separate session sees only what was committed.
+            with new_session() as other:
+                stored = other.get(NonfunctionalLoadProfile, profile.id)
+                seen.append((stored.launched_at, stored.status))
+            return LoadResult(requests_sent=1)
+
+        monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+
+        run_nonfunctional_task(run.id)
+
+        assert len(seen) == 1
+        assert seen[0][0] is not None
+        assert seen[0][1] == NonfunctionalChildStatus.RUNNING
+
+    def test_a_preflight_refusal_is_terminal_and_carries_no_stamp(self, db_session, patched):
+        _sprint, _requirement, run = _seed_run(db_session)
+        profile = _seed_load_profile(db_session, run, url="https://elsewhere.example.com/x")
+
+        run_nonfunctional_task(run.id)
+
+        db_session.expire_all()
+        stored = db_session.get(NonfunctionalLoadProfile, profile.id)
+        assert stored.status == NonfunctionalChildStatus.ERROR
+        assert "confirmed origins" in stored.error
+        assert stored.launched_at is None
+        assert patched["load_calls"] == []
+
+        # A restart does not try it again: the refusal is deterministic.
+        stored_run = _reload(db_session, run.id)
+        stored_run.status = NonfunctionalRunStatus.PENDING
+        db_session.add(stored_run)
+        db_session.commit()
+
+        run_nonfunctional_task(run.id)
+
+        assert patched["load_calls"] == []
 
 
 # ── failure paths ─────────────────────────────────────────────────────

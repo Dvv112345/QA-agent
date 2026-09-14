@@ -667,6 +667,8 @@ describe('TestRunsPage — nonfunctional runs', () => {
       error: null,
       outdated_reasons: [],
       requirement_deleted: false,
+      max_users: null,
+      max_total_requests: null,
       target_count: 4,
       load_profile_count: 1,
       bug_count: 3,

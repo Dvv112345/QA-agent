@@ -205,6 +205,30 @@ def refusal_for(url: str, allowed: set[tuple[str, str]] | None = None) -> str | 
     return None
 
 
+def preflight(
+    url: str,
+    method: str,
+    allowed: set[tuple[str, str]] | None,
+    *,
+    environment_disposable: bool,
+) -> str | None:
+    """Every refusal that puts nothing on the wire, or ``None`` if it may run.
+
+    Separate from ``run_profile`` so the task can ask it *before* stamping
+    ``launched_at``: a profile refused here never sent anything, so it must
+    not carry the stamp that says it might have. ``run_profile`` asks again
+    rather than trusting that the caller did.
+    """
+    refusal = refusal_for(url, allowed)
+    if refusal is not None:
+        return refusal
+    try:
+        ceilings_for((method or "GET").upper(), environment_disposable=environment_disposable)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 # ── Body placeholders ─────────────────────────────────────────────────
 
 
@@ -360,13 +384,12 @@ def run_profile(
     """
     normalized = (method or "GET").upper()
 
-    refusal = refusal_for(url, allowed_origins)
+    refusal = preflight(
+        url, normalized, allowed_origins, environment_disposable=environment_disposable
+    )
     if refusal is not None:
         return LoadResult(refused=refusal)
-    try:
-        ceilings = ceilings_for(normalized, environment_disposable=environment_disposable)
-    except ValueError as exc:
-        return LoadResult(refused=str(exc))
+    ceilings = ceilings_for(normalized, environment_disposable=environment_disposable)
 
     # Clamp rather than refuse: the numbers came through a form, and a run
     # that quietly does less than asked is better than one that does more.
