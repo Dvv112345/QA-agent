@@ -150,3 +150,51 @@
   font-size: 0.9rem;
   color: var(--text);
 }
+
+/* ── The run ceiling ──────────────────────────────────────────────── */
+
+.nf-ceiling {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-recessed);
+  padding: 0.6rem 0.75rem 0.1rem;
+  margin: 0 0 1rem;
+}
+
+.nf-ceiling legend {
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0 0.3rem;
+}
+
+.nf-ceiling-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.nf-allocation {
+  font-size: 0.85rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  margin: 0 0 0.6rem;
+}
+
+/* The one number on this screen that can be wrong, so the one coloured. */
+.nf-allocation-over {
+  background: var(--status-bad-bg);
+  color: var(--status-bad-fg);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+}
+
+.nf-shape-description,
+.nf-shape-note {
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.nf-shape-description {
+  margin: 0 0 0.4rem;
+}

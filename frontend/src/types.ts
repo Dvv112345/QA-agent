@@ -42,8 +42,12 @@ export interface SprintResponse {
 export interface LoadLimits {
   max_users: number
   max_total_requests: number
+  /** Every shape but soak, which has its own longer ceiling. */
   max_duration_seconds: number
+  max_soak_duration_seconds: number
+  stress_min_duration_seconds: number
   safe_methods: LoadMethod[]
+  load_shapes: LoadShape[]
 }
 
 export interface ReadmeStatusResponse {
@@ -491,6 +495,39 @@ export interface NonfunctionalTargetResponse {
 
 export type LoadShape = 'load' | 'stress' | 'spike' | 'soak'
 
+export const LOAD_SHAPES: LoadShape[] = ['load', 'stress', 'spike', 'soak']
+
+/** One stage of a load profile: its definition, plus what it measured. */
+export interface LoadStageRow {
+  name: string
+  start_s: number
+  end_s: number
+  users: number
+  responses?: number
+  p50_ms?: number | null
+  p95_ms?: number | null
+  error_rate?: number | null
+}
+
+/**
+ * A profile's parsed result. Scalars at the top level; `stages` and `derived`
+ * only on profiles run by the staged generator, so legacy rows lack both.
+ */
+export interface LoadResults extends Record<
+  string,
+  number | string | null | LoadStageRow[] | Record<string, unknown> | number[] | undefined
+> {
+  stages?: LoadStageRow[]
+  derived?: Record<string, unknown>
+  stopped_between_users?: number[] | null
+}
+
+/** The ceiling a user picks before generation — mirrors the request fields. */
+export interface RunCeiling {
+  max_users: number
+  max_total_requests: number
+}
+
 export interface NonfunctionalLoadProfileResponse {
   id: number
   position: number
@@ -507,7 +544,7 @@ export interface NonfunctionalLoadProfileResponse {
   requests_sent: number
   /** Set before the generator starts; a launched profile is never re-sent. */
   launched_at: string | null
-  results: Record<string, number | string | null>
+  results: LoadResults
   error: string | null
   updated_at: string
 }
@@ -547,6 +584,7 @@ export interface LoadProfileDraft {
   url: string
   method: LoadMethod
   body: string | null
+  shape: LoadShape
   concurrency: number
   duration_seconds: number
   total_request_cap: number

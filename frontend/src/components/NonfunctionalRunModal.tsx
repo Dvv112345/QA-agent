@@ -6,11 +6,13 @@ import type {
   LoadLimits,
   LoadMethod,
   LoadProfileDraft,
+  LoadShape,
   NonfunctionalDomain,
   NonfunctionalPlanDraftResponse,
   TestPlanResponse,
 } from '../types'
-import { LOAD_METHODS, NONFUNCTIONAL_DOMAINS } from '../types'
+import { LOAD_METHODS, LOAD_SHAPES, NONFUNCTIONAL_DOMAINS } from '../types'
+import { LOAD_SHAPE_DESCRIPTIONS, LOAD_SHAPE_LABELS } from '../statusLabels'
 import ModalShell from './ModalShell'
 import { plural } from '../format'
 import './NonfunctionalRunModal.css'
@@ -31,6 +33,85 @@ const DOMAIN_LABELS: Record<NonfunctionalDomain, string> = {
   security: 'Security',
 }
 
+const count = (value: number) => value.toLocaleString('en-US')
+
+/** A whole number within [1, max], or null when the field says anything else. */
+function parseCeiling(text: string, max: number): number | null {
+  const value = Number(text)
+  return text.trim() !== '' && Number.isInteger(value) && value >= 1 && value <= max ? value : null
+}
+
+interface CeilingFieldsProps {
+  limits: LoadLimits
+  maxUsersText: string
+  maxTotalText: string
+  disposable: boolean
+  busy: boolean
+  onMaxUsers: (text: string) => void
+  onMaxTotal: (text: string) => void
+  onDisposable: (value: boolean) => void
+}
+
+/**
+ * The run ceiling and the disposable declaration. Shown before generation, so
+ * the model sizes its proposals against them, and again on the review step,
+ * where they stay editable.
+ */
+function CeilingFields({
+  limits,
+  maxUsersText,
+  maxTotalText,
+  disposable,
+  busy,
+  onMaxUsers,
+  onMaxTotal,
+  onDisposable,
+}: CeilingFieldsProps) {
+  return (
+    <fieldset className="nf-ceiling">
+      <legend>Run ceiling</legend>
+      <div className="nf-ceiling-inputs">
+        <label className="nf-profile-number">
+          Peak users
+          <input
+            type="number"
+            min={1}
+            max={limits.max_users}
+            value={maxUsersText}
+            onChange={(e) => onMaxUsers(e.target.value)}
+            disabled={busy}
+          />
+        </label>
+        <label className="nf-profile-number">
+          Total requests for this run
+          <input
+            type="number"
+            min={1}
+            max={limits.max_total_requests}
+            value={maxTotalText}
+            onChange={(e) => onMaxTotal(e.target.value)}
+            disabled={busy}
+          />
+        </label>
+      </div>
+      <label className="nf-disposable">
+        <input
+          type="checkbox"
+          checked={disposable}
+          onChange={(e) => onDisposable(e.target.checked)}
+          disabled={busy}
+        />
+        This environment is disposable — its data can be changed or destroyed
+      </label>
+      <p className="nf-warning">
+        Load profiles run <strong>as the signed-in browser user</strong>, carrying its cookies.
+        Methods that change data (POST, PUT, PATCH, DELETE) need the declaration above, and then run
+        under the same ceiling — every request they send can be a write.
+      </p>
+    </fieldset>
+  )
+}
+
 export default function NonfunctionalRunModal({
   sprintId,
   plans,
@@ -40,20 +121,37 @@ export default function NonfunctionalRunModal({
 }: Props) {
   const navigate = useNavigate()
   const [selected, setSelected] = useState<number | null>(plans[0]?.requirement_id ?? null)
+  // Pre-filled with the server's maximums; the user narrows them.
+  const [maxUsersText, setMaxUsersText] = useState(String(limits.max_users))
+  const [maxTotalText, setMaxTotalText] = useState(String(limits.max_total_requests))
+  const [disposable, setDisposable] = useState(false)
   const [draft, setDraft] = useState<NonfunctionalPlanDraftResponse | null>(null)
   const [domains, setDomains] = useState<NonfunctionalDomain[]>([])
   const [profiles, setProfiles] = useState<LoadProfileDraft[]>([])
-  const [disposable, setDisposable] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // See RunTestModal — checked by default when a tracker is connected.
   const [exportFindings, setExportFindings] = useState(Boolean(tracker))
 
+  const maxUsers = parseCeiling(maxUsersText, limits.max_users)
+  const maxTotal = parseCeiling(maxTotalText, limits.max_total_requests)
+  const ceilingReason =
+    maxUsers === null
+      ? `Peak users must be a whole number from 1 to ${count(limits.max_users)}.`
+      : maxTotal === null
+        ? `Total requests must be a whole number from 1 to ${count(limits.max_total_requests)}.`
+        : null
+
   const handleGenerate = () => {
-    if (selected === null) return
+    if (selected === null || maxUsers === null || maxTotal === null) return
     setBusy(true)
     setError(null)
-    generateNonfunctionalPlan(sprintId, selected)
+    generateNonfunctionalPlan(
+      sprintId,
+      selected,
+      { max_users: maxUsers, max_total_requests: maxTotal },
+      disposable,
+    )
       .then((data) => {
         setDraft(data)
         setDomains(data.domains.filter((d) => d.applicable).map((d) => d.domain))
@@ -67,7 +165,7 @@ export default function NonfunctionalRunModal({
   }
 
   const handleStart = () => {
-    if (draft === null) return
+    if (draft === null || maxUsers === null || maxTotal === null) return
     setBusy(true)
     setError(null)
     createNonfunctionalRun(
@@ -77,6 +175,7 @@ export default function NonfunctionalRunModal({
       draft.base_url_env_vars,
       profiles,
       disposable,
+      { max_users: maxUsers, max_total_requests: maxTotal },
       exportFindings,
     )
       .then((run) => {
@@ -104,38 +203,72 @@ export default function NonfunctionalRunModal({
 
   const addProfile = () => {
     if (draft === null) return
-    setProfiles((prev) => [
-      ...prev,
-      {
-        url: '',
-        method: 'GET',
-        body: null,
-        concurrency: 1,
-        duration_seconds: 10,
-        total_request_cap: 50,
-        rationale: '',
-      },
-    ])
+    setProfiles((prev) => {
+      const left = (maxTotal ?? 0) - prev.reduce((sum, p) => sum + p.total_request_cap, 0)
+      return [
+        ...prev,
+        {
+          url: '',
+          method: 'GET',
+          body: null,
+          shape: 'load',
+          concurrency: 1,
+          duration_seconds: 10,
+          total_request_cap: Math.max(1, Math.min(50, left)),
+          rationale: '',
+        },
+      ]
+    })
   }
 
-  // Ceilings come from the server, never from a config literal restated
-  // here (Convention #10). One tier: the declaration grants permission for a
-  // method that changes data, not a different ceiling.
+  // Everything below is the server's rule restated for feedback, never as the
+  // guarantee: the create route checks each of these again (Convention #10
+  // keeps every number here coming from `limits`).
+  const allocated = profiles.reduce((sum, profile) => sum + profile.total_request_cap, 0)
+  const overBudget = maxTotal !== null && allocated > maxTotal
+  const shortStress = profiles.some(
+    (profile) =>
+      profile.shape === 'stress' && profile.duration_seconds < limits.stress_min_duration_seconds,
+  )
   const unsafeSelected = profiles.some((profile) => !limits.safe_methods.includes(profile.method))
   const canStart =
     domains.length > 0 &&
+    ceilingReason === null &&
     profiles.every((profile) => profile.url.trim().length > 0) &&
+    !shortStress &&
+    !overBudget &&
     (!unsafeSelected || disposable)
   // Every clause of `canStart`, in the same order, so a disabled Start
   // button always says which one is holding it.
   const blockedReason =
     domains.length === 0
       ? 'Select at least one check to run.'
-      : profiles.some((profile) => profile.url.trim().length === 0)
-        ? 'Every load profile needs a URL, or remove it.'
-        : 'A load profile uses a method that changes data — declare the environment disposable, or switch it to GET, HEAD or OPTIONS.'
+      : ceilingReason !== null
+        ? ceilingReason
+        : profiles.some((profile) => profile.url.trim().length === 0)
+          ? 'Every load profile needs a URL, or remove it.'
+          : shortStress
+            ? `A stress profile needs at least ${limits.stress_min_duration_seconds} seconds.`
+            : overBudget
+              ? `Load profiles request ${count(allocated)} in total; this run's budget is ${count(maxTotal ?? 0)}.`
+              : 'A load profile uses a method that changes data — declare the environment disposable, or switch it to GET, HEAD or OPTIONS.'
 
   const methodAllowed = (method: LoadMethod) => limits.safe_methods.includes(method) || disposable
+  const secondsMax = (shape: LoadShape) =>
+    shape === 'soak' ? limits.max_soak_duration_seconds : limits.max_duration_seconds
+
+  const ceilingFields = (
+    <CeilingFields
+      limits={limits}
+      maxUsersText={maxUsersText}
+      maxTotalText={maxTotalText}
+      disposable={disposable}
+      busy={busy}
+      onMaxUsers={setMaxUsersText}
+      onMaxTotal={setMaxTotalText}
+      onDisposable={setDisposable}
+    />
+  )
 
   return (
     <ModalShell title="Start nonfunctional testing" busy={busy} wide onClose={onClose}>
@@ -163,6 +296,7 @@ export default function NonfunctionalRunModal({
               </li>
             ))}
           </ul>
+          {ceilingFields}
         </>
       ) : (
         <>
@@ -174,6 +308,8 @@ export default function NonfunctionalRunModal({
             {draft.base_url_env_vars.length > 1 &&
               `; also reachable: ${draft.base_url_env_vars.slice(1).join(', ')}`}
           </p>
+
+          {ceilingFields}
 
           <section className="nf-section">
             <h3>Checks</h3>
@@ -200,27 +336,17 @@ export default function NonfunctionalRunModal({
 
           <section className="nf-section">
             <h3>Load profiles</h3>
-            <label className="nf-disposable">
-              <input
-                type="checkbox"
-                checked={disposable}
-                onChange={(e) => setDisposable(e.target.checked)}
-                disabled={busy}
-              />
-              This environment is disposable — its data can be changed or destroyed
-            </label>
-            <p className="nf-warning">
-              Load profiles run <strong>as the signed-in browser user</strong>, carrying its
-              cookies. Methods that change data (POST, PUT, PATCH, DELETE) need the declaration
-              above, and then run under the same ceilings — every request they send can be a write.
-            </p>
 
             {profiles.length === 0 ? (
               <p className="nf-empty">No load profiles — the run will only examine pages.</p>
             ) : (
-              <ul className="nf-profile-list">
-                {profiles.map((profile, index) => {
-                  return (
+              <>
+                <p className={overBudget ? 'nf-allocation nf-allocation-over' : 'nf-allocation'}>
+                  {count(allocated)} of {maxTotal === null ? '—' : count(maxTotal)} requests
+                  allocated
+                </p>
+                <ul className="nf-profile-list">
+                  {profiles.map((profile, index) => (
                     <li key={index} className="nf-profile">
                       <div className="nf-profile-row">
                         <select
@@ -236,6 +362,21 @@ export default function NonfunctionalRunModal({
                             <option key={method} value={method} disabled={!methodAllowed(method)}>
                               {method}
                               {!methodAllowed(method) ? ' (needs declaration)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="nf-profile-method"
+                          value={profile.shape}
+                          onChange={(e) =>
+                            updateProfile(index, { shape: e.target.value as LoadShape })
+                          }
+                          disabled={busy}
+                          aria-label={`Shape for profile ${index + 1}`}
+                        >
+                          {LOAD_SHAPES.map((shape) => (
+                            <option key={shape} value={shape}>
+                              {LOAD_SHAPE_LABELS[shape]}
                             </option>
                           ))}
                         </select>
@@ -257,26 +398,39 @@ export default function NonfunctionalRunModal({
                           Remove
                         </button>
                       </div>
+                      <p className="nf-shape-description">
+                        {LOAD_SHAPE_DESCRIPTIONS[profile.shape]}
+                      </p>
                       <div className="nf-profile-row">
-                        <label className="nf-profile-number">
-                          Concurrency
-                          <input
-                            type="number"
-                            min={1}
-                            max={limits.max_users}
-                            value={profile.concurrency}
-                            onChange={(e) =>
-                              updateProfile(index, { concurrency: Number(e.target.value) })
-                            }
-                            disabled={busy}
-                          />
-                        </label>
+                        {profile.shape === 'stress' ? (
+                          // A stress profile has no users of its own: it
+                          // always ramps to the run's peak.
+                          <span className="nf-shape-note">
+                            Ramps in steps up to {plural(maxUsers ?? limits.max_users, 'user')}
+                          </span>
+                        ) : (
+                          <label className="nf-profile-number">
+                            Users
+                            <input
+                              type="number"
+                              min={1}
+                              max={maxUsers ?? limits.max_users}
+                              value={profile.concurrency}
+                              onChange={(e) =>
+                                updateProfile(index, { concurrency: Number(e.target.value) })
+                              }
+                              disabled={busy}
+                            />
+                          </label>
+                        )}
                         <label className="nf-profile-number">
                           Seconds
                           <input
                             type="number"
-                            min={1}
-                            max={limits.max_duration_seconds}
+                            min={
+                              profile.shape === 'stress' ? limits.stress_min_duration_seconds : 1
+                            }
+                            max={secondsMax(profile.shape)}
                             value={profile.duration_seconds}
                             onChange={(e) =>
                               updateProfile(index, { duration_seconds: Number(e.target.value) })
@@ -289,7 +443,11 @@ export default function NonfunctionalRunModal({
                           <input
                             type="number"
                             min={1}
-                            max={limits.max_total_requests}
+                            // What the budget has left, plus this profile's own share.
+                            max={Math.max(
+                              1,
+                              (maxTotal ?? 0) - allocated + profile.total_request_cap,
+                            )}
                             value={profile.total_request_cap}
                             onChange={(e) =>
                               updateProfile(index, { total_request_cap: Number(e.target.value) })
@@ -297,17 +455,14 @@ export default function NonfunctionalRunModal({
                             disabled={busy}
                           />
                         </label>
-                        <span className="nf-profile-ceiling">
-                          max {limits.max_users} × {limits.max_total_requests}
-                        </span>
                       </div>
                       {profile.rationale && (
                         <p className="nf-profile-rationale">{profile.rationale}</p>
                       )}
                     </li>
-                  )
-                })}
-              </ul>
+                  ))}
+                </ul>
+              </>
             )}
             <button
               type="button"
@@ -335,6 +490,9 @@ export default function NonfunctionalRunModal({
         </label>
       )}
 
+      {draft === null && ceilingReason !== null && !busy && (
+        <p className="nf-blocked">{ceilingReason}</p>
+      )}
       {draft !== null && !canStart && !busy && <p className="nf-blocked">{blockedReason}</p>}
       {error && <p className="nf-error">{error}</p>}
 
@@ -343,7 +501,7 @@ export default function NonfunctionalRunModal({
           <button
             className="btn btn-primary"
             onClick={handleGenerate}
-            disabled={busy || selected === null || plans.length === 0}
+            disabled={busy || selected === null || plans.length === 0 || ceilingReason !== null}
           >
             {busy ? 'Preparing…' : 'Prepare run'}
           </button>

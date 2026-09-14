@@ -283,4 +283,113 @@ describe('NonfunctionalRunDetailPage', () => {
       vi.useRealTimers()
     }
   })
+
+  // ── the run ceiling and load shapes ─────────────────────────────────
+
+  it('shows the ceiling the run was created under', async () => {
+    mockFetchRun.mockResolvedValue(makeRun({ max_users: 50, max_total_requests: 6000 }))
+    renderPage()
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Ceiling: 50 peak users · 6000 requests in total/),
+      ).toBeInTheDocument(),
+    )
+  })
+
+  it('shows no ceiling, no stage table and no raw objects for a legacy run', async () => {
+    mockFetchRun.mockResolvedValue(
+      makeRun({ load_profiles: [makeProfile()], load_profile_count: 1 }),
+    )
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText(/50 requests sent of 50/)).toBeInTheDocument())
+    expect(screen.queryByText(/Ceiling:/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
+  })
+
+  it('renders a stress profile as a stage table, with its stop range in words', async () => {
+    mockFetchRun.mockResolvedValue(
+      makeRun({
+        load_profile_count: 1,
+        load_profiles: [
+          makeProfile({
+            shape: 'stress',
+            concurrency: 30,
+            results: {
+              p95_ms: 180,
+              stages: [
+                {
+                  name: 'step 1',
+                  start_s: 0,
+                  end_s: 20,
+                  users: 6,
+                  responses: 120,
+                  p50_ms: 40,
+                  p95_ms: 80,
+                  error_rate: 0,
+                },
+                {
+                  name: 'step 2',
+                  start_s: 20,
+                  end_s: 40,
+                  users: 12,
+                  responses: 90,
+                  p50_ms: 70,
+                  p95_ms: 210,
+                  error_rate: 0.6,
+                },
+              ],
+              derived: {
+                stopped_between_users: [6, 12],
+                p95_by_users: [
+                  [6, 80],
+                  [12, 210],
+                ],
+              },
+              stopped_between_users: [6, 12],
+            },
+          }),
+        ],
+      }),
+    )
+    renderPage()
+
+    await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument())
+    expect(screen.getByText('Stress')).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'step 2' })).toBeInTheDocument()
+    expect(screen.getByText('20–40')).toBeInTheDocument()
+    expect(screen.getByText('210')).toBeInTheDocument()
+    // A range where the error-rate stop fired — described, not a verdict.
+    expect(screen.getByText('between 6 and 12 users')).toBeInTheDocument()
+    expect(screen.getByText(/30 peak users/)).toBeInTheDocument()
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
+  })
+
+  it("shows a spike's derived figures as measurements", async () => {
+    mockFetchRun.mockResolvedValue(
+      makeRun({
+        load_profile_count: 1,
+        load_profiles: [
+          makeProfile({
+            shape: 'spike',
+            results: {
+              derived: {
+                baseline_p95_ms: 100,
+                spike_p95_ms: 900,
+                recovery_p95_ms: 150,
+                recovery_p95_ratio: 1.5,
+              },
+            },
+          }),
+        ],
+      }),
+    )
+    renderPage()
+
+    await waitFor(() => expect(screen.getByText('recovery p95 ratio')).toBeInTheDocument())
+    expect(screen.getByText('1.5')).toBeInTheDocument()
+    expect(screen.getByText('Spike')).toBeInTheDocument()
+  })
 })

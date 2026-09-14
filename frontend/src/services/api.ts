@@ -14,6 +14,7 @@ import type {
   LoadProfileDraft,
   NonfunctionalDomain,
   NonfunctionalPlanDraftResponse,
+  RunCeiling,
   NonfunctionalRunDetailResponse,
   NonfunctionalRunResponse,
   ReadmeStatusResponse,
@@ -463,11 +464,17 @@ export function findingScreenshotUrl(findingId: number): string {
 export async function generateNonfunctionalPlan(
   sprintId: number,
   requirementId: number,
+  ceiling: RunCeiling,
+  environmentDisposable: boolean,
 ): Promise<NonfunctionalPlanDraftResponse> {
   const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/nonfunctional-plan/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requirement_id: requirementId }),
+    body: JSON.stringify({
+      requirement_id: requirementId,
+      ...ceiling,
+      environment_disposable: environmentDisposable,
+    }),
   })
   return handleResponse<NonfunctionalPlanDraftResponse>(response)
 }
@@ -479,6 +486,7 @@ export async function createNonfunctionalRun(
   baseUrlEnvVars: string[],
   loadProfiles: LoadProfileDraft[],
   environmentDisposable: boolean,
+  ceiling: RunCeiling,
   exportFindings = false,
 ): Promise<NonfunctionalRunDetailResponse> {
   const response = await fetch(`${API_BASE}/api/sprints/${sprintId}/nonfunctional-runs`, {
@@ -490,6 +498,7 @@ export async function createNonfunctionalRun(
       base_url_env_vars: baseUrlEnvVars,
       load_profiles: loadProfiles,
       environment_disposable: environmentDisposable,
+      ...ceiling,
       export_findings: exportFindings,
     }),
   })
