@@ -77,6 +77,7 @@ def load_profile_summaries(run: NonfunctionalRun) -> list[LoadProfileLike]:
             status=profile.status,
             requests_sent=profile.requests_sent,
             results=parse_json_object(profile.results_json),
+            shape=profile.shape,
         )
         for profile in run.load_profiles
     ]

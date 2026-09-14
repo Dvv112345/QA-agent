@@ -1,8 +1,10 @@
 from datetime import datetime
 
-from sqlmodel import SQLModel
+from sqlmodel import Field, SQLModel
 
-from backend.models.database import TestCasePriority
+from backend.config import NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS, server_limits
+from backend.models.database import LoadMethod, LoadShape, TestCasePriority
+from backend.services.load_shapes import min_duration  # stdlib-only module
 
 # ── Health ────────────────────────────────────────────────────────────
 
@@ -46,6 +48,36 @@ class ReadmeStatusResponse(SQLModel):
 # ── Sprint ────────────────────────────────────────────────────────────
 
 
+class LoadLimits(SQLModel):
+    """The server's load maximums, so the frontend never restates them.
+
+    Convention #10: a config constant reaches the UI as a response field. It
+    rides on the sprint because the nonfunctional setup modal needs it
+    before any LLM call has produced a draft.
+    """
+
+    max_users: int
+    max_total_requests: int
+    # Every shape but soak; a soak has its own, longer ceiling.
+    max_duration_seconds: int
+    max_soak_duration_seconds: int
+    # Five stress steps of the configured minimum step.
+    stress_min_duration_seconds: int
+    safe_methods: list[str]
+    load_shapes: list[str]
+
+
+def _load_limits() -> LoadLimits:
+    return LoadLimits(
+        **server_limits(),
+        stress_min_duration_seconds=min_duration(
+            LoadShape.STRESS, NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS
+        ),
+        safe_methods=sorted(LoadMethod.safe_methods()),
+        load_shapes=[shape.value for shape in LoadShape],
+    )
+
+
 class SprintResponse(SQLModel):
     id: int
     name: str
@@ -65,6 +97,8 @@ class SprintResponse(SQLModel):
     has_test_runs: bool = False
     has_exploratory_runs: bool = False
     has_nonfunctional_runs: bool = False
+    # A config read, not a row property: the same for every sprint.
+    load_limits: LoadLimits = Field(default_factory=_load_limits)
 
 
 class SprintUpdateRequest(SQLModel):
@@ -548,11 +582,13 @@ class NonfunctionalLoadProfileResponse(SQLModel):
     url: str
     method: str
     body: str | None = None
+    shape: str = "load"
     concurrency: int
     duration_seconds: int
     total_request_cap: int
     status: str
     requests_sent: int = 0
+    launched_at: datetime | None = None
     # Parsed ``results_json`` — percentiles, throughput, status counts.
     results: dict = {}
     error: str | None = None
@@ -569,6 +605,9 @@ class NonfunctionalRunResponse(ExportRollup, OutdatedFields):
     status: str
     domains: list[str] = []
     environment_disposable: bool = False
+    # The user-picked ceiling; None on a run created before it existed.
+    max_users: int | None = None
+    max_total_requests: int | None = None
     summary: str | None = None
     error: str | None = None
     target_count: int = 0
@@ -602,6 +641,7 @@ class LoadProfileDraft(SQLModel):
     url: str
     method: str = "GET"
     body: str | None = None
+    shape: str = "load"
     concurrency: int = 1
     duration_seconds: int = 10
     total_request_cap: int = 100
@@ -628,19 +668,18 @@ class NonfunctionalPlanDraftResponse(SQLModel):
     domains: list[DomainProposal] = []
     base_url_env_vars: list[str] = []
     load_profiles: list[LoadProfileDraft] = []
-    # Ceilings for each tier, so the modal never restates a config literal
-    # (Convention #10). The unsafe pair is what the disposable declaration
-    # unlocks.
-    max_concurrency: int = 0
-    max_duration_seconds: int = 0
-    max_total_requests: int = 0
-    unsafe_max_concurrency: int = 0
-    unsafe_max_total_requests: int = 0
-    safe_methods: list[str] = []
+    # The ceilings are not repeated here: they ride on
+    # `SprintResponse.load_limits`, which the modal has before this exists.
 
 
 class NonfunctionalPlanGenerateRequest(SQLModel):
     requirement_id: int
+    # The run ceiling and the declaration, picked *before* generation so the
+    # model sizes its proposals against them. Checked against the server's
+    # maximums here and again at create.
+    max_users: int
+    max_total_requests: int
+    environment_disposable: bool = False
 
 
 class NonfunctionalRunCreateRequest(SQLModel):
@@ -653,6 +692,10 @@ class NonfunctionalRunCreateRequest(SQLModel):
     # stored on the run so a later change cannot rewrite what this run was
     # allowed to do.
     environment_disposable: bool = False
+    # The run ceiling: peak users for every profile, and the request budget
+    # every profile's cap must fit inside together (D10).
+    max_users: int
+    max_total_requests: int
     # See TestRunCreateRequest.export_findings.
     export_findings: bool = False
 

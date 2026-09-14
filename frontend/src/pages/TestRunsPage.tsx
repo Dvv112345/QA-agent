@@ -388,6 +388,7 @@ export default function TestRunsPage() {
         <NonfunctionalRunModal
           sprintId={sprintId}
           plans={approvedPlans}
+          limits={sprint.load_limits}
           tracker={tracker}
           onClose={() => setShowNonfunctionalModal(false)}
         />

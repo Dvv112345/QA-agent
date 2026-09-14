@@ -258,6 +258,9 @@ def patched(monkeypatch):
     monkeypatch.setattr(task_module.llm, "triage_nonfunctional_findings", _triage)
     monkeypatch.setattr(task_module.llm, "summarize_nonfunctional", _summarize)
     monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+    # The task asks `preflight` itself before stamping `launched_at`; keep its
+    # private-address check from resolving the seeded public hostname.
+    monkeypatch.setattr(task_module.load_runner, "_is_private_host", lambda host: False)
     monkeypatch.setattr(
         task_module.finding_grouping,
         "assign_defect_groups",
@@ -678,6 +681,19 @@ class TestLoadProfiles:
             assert profile.requests_sent == 5
             assert json.loads(profile.results_json)["p50_ms"] == 10.0
 
+    def test_each_profile_receives_exactly_its_own_cap(self, db_session, patched):
+        """D16: no run-budget arithmetic in the task — the caps create accepted run as-is."""
+        _sprint, _requirement, run = _seed_run(db_session, max_users=5, max_total_requests=100)
+        _seed_load_profile(db_session, run, position=0, url=f"{BASE_URL}/a", total_request_cap=30)
+        _seed_load_profile(db_session, run, position=1, url=f"{BASE_URL}/b", total_request_cap=70)
+
+        run_nonfunctional_task(run.id)
+
+        assert [(c["url"], c["total_request_cap"]) for c in patched["load_calls"]] == [
+            (f"{BASE_URL}/a", 30),
+            (f"{BASE_URL}/b", 70),
+        ]
+
     def test_the_browsers_cookies_are_carried(self, db_session, patched, monkeypatch):
         _sprint, _requirement, run = _seed_run(db_session)
         _seed_load_profile(db_session, run, url=f"{BASE_URL}/r")
@@ -716,6 +732,277 @@ class TestLoadProfiles:
         assert stored.status == NonfunctionalChildStatus.ERROR
         assert stored.error == "private address space"
         assert _reload(db_session, run.id).status == NonfunctionalRunStatus.COMPLETED
+
+
+class TestLaunchedAt:
+    """`launched_at` is the traffic guard a crash cannot erase."""
+
+    def test_a_launched_profile_with_no_recorded_traffic_is_never_re_sent(
+        self, db_session, patched
+    ):
+        from backend.services.finalization import now
+
+        _sprint, _requirement, run = _seed_run(db_session)
+        _seed_load_profile(
+            db_session,
+            run,
+            url=f"{BASE_URL}/r",
+            requests_sent=0,
+            launched_at=now(),
+            status=NonfunctionalChildStatus.SKIPPED,
+        )
+
+        run_nonfunctional_task(run.id)
+
+        assert patched["load_calls"] == []
+
+    def test_a_reconciler_re_pend_leaves_the_profile_running_and_still_protected(
+        self, db_session, patched
+    ):
+        """The re-pend branch never settles children, so status says `running`.
+
+        Only the stamp stands between that row and a second launch.
+        """
+        from backend.services.finalization import now
+
+        _sprint, _requirement, run = _seed_run(db_session, status=NonfunctionalRunStatus.PENDING)
+        _seed_load_profile(
+            db_session,
+            run,
+            url=f"{BASE_URL}/r",
+            launched_at=now(),
+            status=NonfunctionalChildStatus.RUNNING,
+        )
+
+        run_nonfunctional_task(run.id)
+
+        assert patched["load_calls"] == []
+
+    def test_the_stamp_is_committed_before_the_generator_starts(
+        self, db_session, patched, monkeypatch
+    ):
+        from backend.database import new_session
+
+        _sprint, _requirement, run = _seed_run(db_session)
+        profile = _seed_load_profile(db_session, run, url=f"{BASE_URL}/r")
+        seen: list = []
+
+        def _run_profile(**kwargs):
+            # A separate session sees only what was committed.
+            with new_session() as other:
+                stored = other.get(NonfunctionalLoadProfile, profile.id)
+                seen.append((stored.launched_at, stored.status))
+            return LoadResult(requests_sent=1)
+
+        monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+
+        run_nonfunctional_task(run.id)
+
+        assert len(seen) == 1
+        assert seen[0][0] is not None
+        assert seen[0][1] == NonfunctionalChildStatus.RUNNING
+
+    def test_a_preflight_refusal_is_terminal_and_carries_no_stamp(self, db_session, patched):
+        _sprint, _requirement, run = _seed_run(db_session)
+        profile = _seed_load_profile(db_session, run, url="https://elsewhere.example.com/x")
+
+        run_nonfunctional_task(run.id)
+
+        db_session.expire_all()
+        stored = db_session.get(NonfunctionalLoadProfile, profile.id)
+        assert stored.status == NonfunctionalChildStatus.ERROR
+        assert "confirmed origins" in stored.error
+        assert stored.launched_at is None
+        assert patched["load_calls"] == []
+
+        # A restart does not try it again: the refusal is deterministic.
+        stored_run = _reload(db_session, run.id)
+        stored_run.status = NonfunctionalRunStatus.PENDING
+        db_session.add(stored_run)
+        db_session.commit()
+
+        run_nonfunctional_task(run.id)
+
+        assert patched["load_calls"] == []
+
+
+class TestStoppableProfiles:
+    """D15: a running profile stops when the run should, not when it happens to end."""
+
+    def test_the_shape_and_a_live_tick_reach_the_runner(self, db_session, patched, monkeypatch):
+        from backend.database import new_session
+
+        _sprint, _requirement, run = _seed_run(db_session)
+        _seed_load_profile(db_session, run, url=f"{BASE_URL}/r", shape="spike")
+        seen: dict = {}
+
+        def _run_profile(**kwargs):
+            with new_session() as other:
+                before = other.get(NonfunctionalRun, run.id).last_heartbeat
+            seen["shape"] = kwargs["shape"]
+            seen["keep_going"] = kwargs["on_tick"]()
+            with new_session() as other:
+                seen["heartbeat_advanced"] = (
+                    other.get(NonfunctionalRun, run.id).last_heartbeat > before
+                )
+            return LoadResult(requests_sent=3)
+
+        monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+
+        run_nonfunctional_task(run.id)
+
+        assert seen == {"shape": "spike", "keep_going": True, "heartbeat_advanced": True}
+        assert _reload(db_session, run.id).status == NonfunctionalRunStatus.COMPLETED
+
+    def test_a_finished_sprint_stops_the_profile_and_is_not_overwritten(
+        self, db_session, patched, monkeypatch
+    ):
+        from backend.database import new_session
+        from backend.models.database import Sprint
+
+        sprint, _requirement, run = _seed_run(db_session)
+        first = _seed_load_profile(db_session, run, position=0, url=f"{BASE_URL}/r")
+        _seed_load_profile(db_session, run, position=1, url=f"{BASE_URL}/r2")
+        answers: list[bool] = []
+
+        def _run_profile(**kwargs):
+            # finish_sprint, from another session, while the generator runs.
+            with new_session() as other:
+                other.get(Sprint, sprint.id).active = False
+                stored = other.get(NonfunctionalRun, run.id)
+                stored.status = NonfunctionalRunStatus.FAILED
+                other.commit()
+            answers.append(kwargs["on_tick"]())
+            return LoadResult(
+                requests_sent=4, stopped_early=task_module.load_runner.STOP_RUN_STOPPED
+            )
+
+        monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+
+        run_nonfunctional_task(run.id)
+
+        assert answers == [False]
+        stored = _reload(db_session, run.id)
+        assert stored.status == NonfunctionalRunStatus.FAILED
+        assert db_session.get(NonfunctionalLoadProfile, first.id).requests_sent == 4
+        assert patched["exported"] == []  # a stopped run reports nothing
+
+    def test_an_outdated_run_stops_the_profile_and_is_superseded(
+        self, db_session, patched, monkeypatch
+    ):
+        from backend.database import new_session
+        from backend.models.database import Requirement
+
+        _sprint, requirement, run = _seed_run(db_session)
+        _seed_load_profile(db_session, run, position=0, url=f"{BASE_URL}/r")
+        second = _seed_load_profile(db_session, run, position=1, url=f"{BASE_URL}/r2")
+        calls: list[str] = []
+
+        def _run_profile(**kwargs):
+            calls.append(kwargs["url"])
+            with new_session() as other:
+                other.get(Requirement, requirement.id).content_revision += 1
+                other.commit()
+            assert kwargs["on_tick"]() is False
+            return LoadResult(
+                requests_sent=2, stopped_early=task_module.load_runner.STOP_RUN_STOPPED
+            )
+
+        monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+
+        run_nonfunctional_task(run.id)
+
+        assert calls == [f"{BASE_URL}/r"]
+        stored = _reload(db_session, run.id)
+        assert stored.status == NonfunctionalRunStatus.FAILED
+        assert stored.error == SUPERSEDED_ERROR
+        assert db_session.get(NonfunctionalLoadProfile, second.id).status == (
+            NonfunctionalChildStatus.SKIPPED
+        )
+
+    def test_a_sprint_finished_between_profiles_launches_nothing_more(
+        self, db_session, patched, monkeypatch
+    ):
+        """A finished sprint fails the run without making it outdated, so a
+        supersede check alone let the next profile launch (review Issue 1)."""
+        from backend.database import new_session
+        from backend.models.database import Sprint
+
+        sprint, _requirement, run = _seed_run(db_session)
+        _seed_load_profile(db_session, run, position=0, url=f"{BASE_URL}/r")
+        second = _seed_load_profile(db_session, run, position=1, url=f"{BASE_URL}/r2")
+        calls: list[str] = []
+
+        def _run_profile(**kwargs):
+            calls.append(kwargs["url"])
+            # finish_sprint lands while profile 1 finishes normally.
+            with new_session() as other:
+                other.get(Sprint, sprint.id).active = False
+                other.get(NonfunctionalRun, run.id).status = NonfunctionalRunStatus.FAILED
+                other.commit()
+            return LoadResult(requests_sent=1)
+
+        monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+
+        run_nonfunctional_task(run.id)
+
+        assert calls == [f"{BASE_URL}/r"]
+        assert db_session.get(NonfunctionalLoadProfile, second.id).launched_at is None
+        assert _reload(db_session, run.id).status == NonfunctionalRunStatus.FAILED
+        assert patched["grouped"] == []
+
+    def test_a_sprint_finished_during_the_walk_never_reaches_the_load_phase(
+        self, db_session, patched, monkeypatch
+    ):
+        from backend.database import new_session
+        from backend.models.database import Sprint
+
+        sprint, _requirement, run = _seed_run(db_session)
+        _seed_load_profile(db_session, run, url=f"{BASE_URL}/r")
+
+        def _loop(**kwargs):
+            with new_session() as other:
+                other.get(Sprint, sprint.id).active = False
+                other.get(NonfunctionalRun, run.id).status = NonfunctionalRunStatus.FAILED
+                other.commit()
+            return SimpleNamespace(
+                notes="", stop_reason="charter_complete", actions_used=1, action_log=[]
+            )
+
+        monkeypatch.setattr(task_module.llm, "run_nonfunctional_loop", _loop)
+
+        run_nonfunctional_task(run.id)
+
+        assert patched["load_calls"] == []
+        assert _reload(db_session, run.id).status == NonfunctionalRunStatus.FAILED
+
+    def test_superseded_between_profiles_is_not_then_marked_completed(
+        self, db_session, patched, monkeypatch
+    ):
+        """Regression: `_run_load_profiles` used to return nothing, so the task
+        went on to stamp a run it had just failed as completed."""
+        from backend.database import new_session
+        from backend.models.database import Requirement
+
+        _sprint, requirement, run = _seed_run(db_session)
+        _seed_load_profile(db_session, run, position=0, url=f"{BASE_URL}/r")
+        _seed_load_profile(db_session, run, position=1, url=f"{BASE_URL}/r2")
+
+        def _run_profile(**kwargs):
+            # An edit lands during profile 1, which finishes normally.
+            with new_session() as other:
+                other.get(Requirement, requirement.id).content_revision += 1
+                other.commit()
+            return LoadResult(requests_sent=1)
+
+        monkeypatch.setattr(task_module.load_runner, "run_profile", _run_profile)
+
+        run_nonfunctional_task(run.id)
+
+        stored = _reload(db_session, run.id)
+        assert stored.status == NonfunctionalRunStatus.FAILED
+        assert stored.error == SUPERSEDED_ERROR
+        assert patched["grouped"] == []
 
 
 # ── failure paths ─────────────────────────────────────────────────────

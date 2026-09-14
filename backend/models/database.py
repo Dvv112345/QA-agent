@@ -1509,8 +1509,9 @@ class LoadMethod(str, Enum):
 
     "Safe" is the HTTP sense: the request is a read, so repeating it two
     thousand times changes nothing but the load. Non-safe methods change
-    data, which is why they need the disposable-environment declaration
-    and a much lower ceiling — see ``NonfunctionalRun.environment_disposable``.
+    data, which is why they need the disposable-environment declaration —
+    see ``NonfunctionalRun.environment_disposable``. Once declared they run
+    under the same ceilings as a safe method; there is one tier.
     """
 
     GET = "GET"
@@ -1535,6 +1536,20 @@ class LoadMethod(str, Enum):
         costs writes against an environment nobody declared disposable.
         """
         return (method or "").upper() in cls.safe_methods()
+
+
+class LoadShape(str, Enum):
+    """How a load profile's users change over its duration.
+
+    The stages each shape runs are *derived* from ``(shape, users,
+    duration)`` by one pure function and written into the result, never
+    stored as inputs, so a later formula change cannot re-describe an old run.
+    """
+
+    LOAD = "load"  # constant users for the whole duration
+    STRESS = "stress"  # step ramp up to the run's ceiling
+    SPIKE = "spike"  # baseline → burst → recovery
+    SOAK = "soak"  # long constant, under its own duration ceiling
 
 
 class NonfunctionalRun(SQLModel, table=True):
@@ -1566,10 +1581,16 @@ class NonfunctionalRun(SQLModel, table=True):
     # of them runs at every target.
     domains_csv: str
     # Whether the user declared this environment disposable — the gate on
-    # non-safe load methods, and the only thing that unlocks the second,
-    # lower ceiling tier. Stored on the run because it describes what this
+    # non-safe load methods. There is one ceiling tier, so the declaration
+    # grants permission, not a different size. Stored on the run because it describes what this
     # run was permitted to do, which a later config change must not rewrite.
     environment_disposable: bool = Field(default=False)
+    # The ceiling the user picked before generation: peak users, and total
+    # requests for the **whole run** (the sum of every profile's cap). NULL
+    # on a run created before the ceiling existed — honest, since nobody
+    # picked one — which leaves those runs bounded by per-profile caps only.
+    max_users: int | None = Field(default=None)
+    max_total_requests: int | None = Field(default=None)
     # Best-effort synthesis, recoverable via the summarize endpoint. See
     # ExploratoryRun.summary — the findings are the deliverable, not this.
     summary: str | None = Field(default=None)
@@ -1700,12 +1721,17 @@ class NonfunctionalLoadProfile(SQLModel, table=True):
     """One approved load profile and the traffic it actually applied.
 
     The second child type, and the one with a rule no other row in this
-    application has: **a profile that already sent traffic is never
-    re-sent**, whatever its status says. A restart re-examines targets
-    freely — re-reading a page costs nothing — but re-issuing a profile
-    duplicates real requests against someone's environment, and for a
-    non-safe method that means duplicated writes. ``requests_sent > 0`` is
-    the invariant; ``status`` is not.
+    application has: **a profile that was ever launched is never re-sent**,
+    whatever its status says. A restart re-examines targets freely —
+    re-reading a page costs nothing — but re-issuing a profile duplicates
+    real requests against someone's environment, and for a non-safe method
+    that means duplicated writes.
+
+    The invariant is ``requests_sent > 0 or launched_at is not None``;
+    ``status`` is not. ``launched_at`` is the half that matters after a
+    crash: a worker that dies mid-profile leaves ``requests_sent = 0`` and
+    the status ``running`` (the reconciler's re-pend branch never settles
+    children), and without the stamp a restart would send it again.
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -1717,13 +1743,18 @@ class NonfunctionalLoadProfile(SQLModel, table=True):
     # env vars **inside** the load runner. Stored with the placeholders, so
     # no credential ever lands in this column.
     body: str | None = Field(default=None)
+    shape: str = Field(default=LoadShape.LOAD)
+    # Peak users. The UI says "users"; the column keeps its original name.
     concurrency: int = Field(default=1)
     duration_seconds: int = Field(default=10)
     total_request_cap: int = Field(default=100)
     status: str = Field(default=NonfunctionalChildStatus.PENDING)
-    # How many requests actually reached the host. The never-re-send
-    # invariant reads this and nothing else.
+    # How many requests actually reached the host. Half of the never-re-send
+    # invariant; `launched_at` is the other half.
     requests_sent: int = Field(default=0)
+    # Committed *before* the load generator starts, so a crash that leaves
+    # no count behind still leaves this.
+    launched_at: datetime | None = Field(default=None)
     # Aggregated LoadResult — percentiles, throughput, status distribution.
     # Data only, exactly like NonfunctionalTarget.metrics_json.
     results_json: str | None = Field(default=None)

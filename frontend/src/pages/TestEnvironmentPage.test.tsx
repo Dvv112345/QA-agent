@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import TestEnvironmentPage from './TestEnvironmentPage'
 import type { SprintResponse, TestEnvironmentResponse } from '../types'
+import { LOAD_LIMITS } from '../test/fixtures'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -54,6 +55,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     has_test_runs: false,
     has_exploratory_runs: false,
     has_nonfunctional_runs: false,
+    load_limits: LOAD_LIMITS,
     ...overrides,
   }
 }

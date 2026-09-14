@@ -211,3 +211,45 @@
 .nf-authenticated {
   color: var(--status-waiting-fg);
 }
+
+.nf-shape-badge {
+  font-size: 0.75rem;
+  background: var(--surface-recessed);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+}
+
+.nf-ceiling-line {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+/* ── Load stages ──────────────────────────────────────────────────── */
+
+/* Measurements, like the block above: nothing here is coloured by value. */
+.nf-stage-table-wrap {
+  overflow-x: auto;
+  margin: 0.6rem 0 0;
+}
+
+.nf-stage-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.nf-stage-table th,
+.nf-stage-table td {
+  text-align: left;
+  white-space: nowrap;
+  padding: 0.25rem 0.75rem 0.25rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.nf-stage-table thead th {
+  color: var(--text);
+  font-weight: 600;
+}

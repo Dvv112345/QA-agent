@@ -9,7 +9,7 @@ The create route is where this module differs from its exploratory twin, and
 the difference is the whole safety story: a load profile describes traffic
 this application will put on somebody else's environment, so *everything*
 the setup call proposed is re-validated here as user input — the origin, the
-method's tier, the placeholders in the body, and the ceilings — and the
+method's permission, the placeholders in the body, and the ceilings — and the
 clamped values are echoed back rather than silently applied.
 """
 
@@ -27,18 +27,16 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
 from backend.config import (
-    NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
-    NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
-    NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
-    NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY,
-    NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS,
+    NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS,
     NONFUNCTIONAL_MAX_LOAD_PROFILES,
+    server_limits,
 )
 from backend.database import get_session
 from backend.models.database import (
     FindingSeverity,
     FindingType,
     LoadMethod,
+    LoadShape,
     NonfunctionalDomain,
     NonfunctionalFinding,
     NonfunctionalLoadProfile,
@@ -71,6 +69,7 @@ from backend.routes._common import (
 from backend.services import finding_export, llm, load_runner, repo_reader
 from backend.services.finding_export import TRACKER_REQUIRED_ERROR
 from backend.services.llm_prompts import TestCaseLike
+from backend.services.load_shapes import min_duration
 from backend.services.queue import enqueue_rows, get_queue_service
 from backend.utils import github_utils
 from backend.utils.auth import verify_auth
@@ -136,16 +135,27 @@ def _validate_domains(domains: list[str]) -> list[str]:
     return list(dict.fromkeys(domains))
 
 
-def _ceilings(environment_disposable: bool) -> dict:
-    """The two tiers, as the response echoes them back (Convention #10)."""
-    return {
-        "max_concurrency": NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
-        "max_duration_seconds": NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
-        "max_total_requests": NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
-        "unsafe_max_concurrency": NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY,
-        "unsafe_max_total_requests": NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS,
-        "safe_methods": sorted(LoadMethod.safe_methods()),
-    }
+def _stress_min_duration() -> int:
+    return min_duration(LoadShape.STRESS, NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS)
+
+
+def _validate_run_ceiling(max_users: int, max_total_requests: int) -> None:
+    """The ceiling the user picked must sit inside the server's maximums.
+
+    Checked at generate **and** at create: the first so the model sizes its
+    proposals against a real number, the second because by then the
+    ceiling has been through a form again.
+    """
+    limits = server_limits()
+    for label, value, maximum in (
+        ("Peak users", max_users, limits["max_users"]),
+        ("Total requests", max_total_requests, limits["max_total_requests"]),
+    ):
+        if value < 1 or value > maximum:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label} must be between 1 and {maximum}; got {value}.",
+            )
 
 
 def _validate_load_profiles(
@@ -154,17 +164,27 @@ def _validate_load_profiles(
     base_urls: list[str],
     env_vars: dict[str, str],
     environment_disposable: bool,
+    max_users: int,
+    max_total_requests: int,
 ) -> list[LoadProfileDraft]:
     """Re-check every profile and clamp it, returning what will actually run.
 
-    Clamped rather than refused: the numbers came through a form, and a run
-    that quietly does *less* than asked is the safe direction. The clamped
-    values are what the response carries, so the user sees what they got.
+    Clamped rather than refused where a smaller number is still what the user
+    meant: users to the run's peak (a stress profile always ramps to it), and
+    duration to the shape's ceiling. The clamped values are what the response
+    carries, so the user sees what they got.
 
     Everything else is a refusal, because each one means the profile would
     do something nobody approved — hit an origin outside the sprint's test
-    environment, use a method the run is not permitted, or send a body still
-    carrying an unresolvable placeholder.
+    environment, use a method the run is not permitted, send a body still
+    carrying an unresolvable placeholder, run a stress ramp too short to have
+    steps, or ask for more requests in total than the run's budget. The
+    budget is refused rather than trimmed: it is the number the user
+    consented to, and deciding which profile loses requests is theirs.
+
+    This is the **only** place the run budget is enforced (D16): profiles
+    cannot be edited after this, each cap is exact, and a launched profile
+    is never re-sent, so Σ caps ≤ budget here holds for the whole run.
     """
     if len(profiles) > NONFUNCTIONAL_MAX_LOAD_PROFILES:
         raise HTTPException(
@@ -173,11 +193,18 @@ def _validate_load_profiles(
         )
 
     allowed = load_runner.allowed_origins_for(base_urls)
+    valid_shapes = {shape.value for shape in LoadShape}
+    stress_min = _stress_min_duration()
     checked: list[LoadProfileDraft] = []
     for profile in profiles:
         method = (profile.method or "GET").upper()
         if method not in {member.value for member in LoadMethod}:
             raise HTTPException(status_code=422, detail=f"Unsupported HTTP method: '{method}'.")
+
+        if profile.shape not in valid_shapes:
+            raise HTTPException(
+                status_code=422, detail=f"Unsupported load shape: '{profile.shape}'."
+            )
 
         # The executor refuses these too. Refusing here as well is what lets
         # the user learn before a run exists rather than from a profile row
@@ -205,23 +232,57 @@ def _validate_load_profiles(
                 ),
             )
 
+        # A stress duration the user typed is never stretched silently: five
+        # steps shorter than the minimum would not be steps.
+        if profile.shape == LoadShape.STRESS and profile.duration_seconds < stress_min:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"A stress profile ramps in five steps and needs at least {stress_min} "
+                    f"seconds; got {profile.duration_seconds}."
+                ),
+            )
+
         ceilings = load_runner.ceilings_for(method, environment_disposable=environment_disposable)
+        users = (
+            max_users
+            if profile.shape == LoadShape.STRESS
+            else max(1, min(profile.concurrency, max_users, ceilings.concurrency))
+        )
         checked.append(
             LoadProfileDraft(
                 url=profile.url,
                 method=method,
                 body=profile.body,
-                concurrency=max(1, min(profile.concurrency, ceilings.concurrency)),
-                duration_seconds=max(1, min(profile.duration_seconds, ceilings.duration_seconds)),
+                shape=profile.shape,
+                concurrency=users,
+                duration_seconds=max(
+                    1, min(profile.duration_seconds, load_runner.duration_ceiling(profile.shape))
+                ),
                 total_request_cap=max(1, min(profile.total_request_cap, ceilings.total_requests)),
                 rationale=profile.rationale,
             )
+        )
+
+    requested = sum(profile.total_request_cap for profile in checked)
+    if requested > max_total_requests:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Load profiles request {requested} in total; this run's budget is "
+                f"{max_total_requests}."
+            ),
         )
     return checked
 
 
 def _compose_profiles(
-    result: llm.NonfunctionalPlanResult, env_vars: dict[str, str]
+    result: llm.NonfunctionalPlanResult,
+    env_vars: dict[str, str],
+    *,
+    max_users: int,
+    max_total_requests: int,
+    environment_disposable: bool,
 ) -> list[LoadProfileDraft]:
     """Turn the model's (variable, path) pairs into absolute URLs.
 
@@ -239,8 +300,26 @@ def _compose_profiles(
     ``https://app.test/staging`` plus ``/api/x`` would silently become
     ``https://app.test/api/x`` — a different origin path, aimed at whatever
     lives there instead.  Base URLs with a path prefix are ordinary here.
+
+    Then every proposal is fitted to the ceiling the user already picked.
+    Each step is a prompt rule made deterministic, because the prompt is
+    advice and this is the guarantee — the same pattern as the origin join::
+
+        1. a variable nobody nominated          → dropped
+        2. a non-safe method, no declaration    → dropped
+        3. an unknown shape                     → constant load
+        4. stress                               → users = the peak; duration raised
+                                                  to the minimum (adds time, not
+                                                  requests — the budget binds)
+        5. any other shape                      → users clamped to the peak
+        6. duration                             → clamped to the shape's ceiling
+        7. request cap                          → taken from what the run budget
+                                                  has left; nothing left → dropped
     """
     nominated = set(result.base_url_env_vars)
+    valid_shapes = {shape.value for shape in LoadShape}
+    stress_min = _stress_min_duration()
+    remaining = max_total_requests
     composed: list[LoadProfileDraft] = []
     for profile in result.load_profiles:
         if profile.base_url_env_var not in nominated:
@@ -249,17 +328,39 @@ def _compose_profiles(
                 profile.base_url_env_var,
             )
             continue
+        method = (profile.method or "GET").upper()
+        if not LoadMethod.is_safe(method) and not environment_disposable:
+            logger.info(
+                "Dropping proposed %s load profile: the environment is not declared disposable.",
+                method,
+            )
+            continue
+        shape = profile.shape if profile.shape in valid_shapes else LoadShape.LOAD.value
+        if shape == LoadShape.STRESS:
+            users = max_users
+            duration = max(profile.duration_seconds, stress_min)
+        else:
+            users = max(1, min(profile.concurrency, max_users))
+            duration = profile.duration_seconds
+        duration = max(1, min(duration, load_runner.duration_ceiling(shape)))
+        cap = min(max(1, profile.total_request_cap), remaining)
+        if cap <= 0:
+            logger.info("Dropping proposed load profile: the run's request budget is spent.")
+            continue
+        remaining -= cap
+
         base = env_vars[profile.base_url_env_var]
         path = (profile.path or "").strip()
         url = base.rstrip("/") + "/" + path.lstrip("/") if path.strip("/") else base
         composed.append(
             LoadProfileDraft(
                 url=url,
-                method=(profile.method or "GET").upper(),
+                method=method,
                 body=profile.body,
-                concurrency=profile.concurrency,
-                duration_seconds=profile.duration_seconds,
-                total_request_cap=profile.total_request_cap,
+                shape=shape,
+                concurrency=users,
+                duration_seconds=duration,
+                total_request_cap=cap,
                 rationale=profile.rationale,
             )
         )
@@ -292,6 +393,8 @@ def _run_fields(run: NonfunctionalRun) -> dict:
         "status": run.status,
         "domains": run.domains,
         "environment_disposable": run.environment_disposable,
+        "max_users": run.max_users,
+        "max_total_requests": run.max_total_requests,
         "summary": run.summary,
         "error": run.error,
         "outdated_reasons": run.outdated_reasons,
@@ -338,11 +441,13 @@ def _profile_response(profile: NonfunctionalLoadProfile) -> NonfunctionalLoadPro
         # resolution happens inside the load runner precisely so no
         # resolved value is ever serialized.
         body=profile.body,
+        shape=profile.shape,
         concurrency=profile.concurrency,
         duration_seconds=profile.duration_seconds,
         total_request_cap=profile.total_request_cap,
         status=profile.status,
         requests_sent=profile.requests_sent,
+        launched_at=profile.launched_at,
         results=parse_json_object(profile.results_json),
         error=profile.error,
         updated_at=profile.updated_at,
@@ -385,6 +490,9 @@ async def generate_nonfunctional_plan(
     ensure_sprint_active(sprint, _GATE_SUBJECT)
     requirement = resolve_requirement_for_run(sprint, body.requirement_id)
     env_vars = resolve_confirmed_env_vars(sprint)
+    # Before the LLM call: a ceiling outside the server's maximums would size
+    # every proposal against a number the create route will refuse.
+    _validate_run_ceiling(body.max_users, body.max_total_requests)
 
     covered = [
         TestCaseLike(
@@ -435,6 +543,9 @@ async def generate_nonfunctional_plan(
             readme=readme,
             file_tree=file_tree,
             read_file=read_file,
+            max_users=body.max_users,
+            max_total_requests=body.max_total_requests,
+            environment_disposable=body.environment_disposable,
         )
     except llm.LLMError as exc:
         logger.warning("Sprint id=%d: nonfunctional plan generation failed: %s", sprint_id, exc)
@@ -460,8 +571,13 @@ async def generate_nonfunctional_plan(
             if proposal.domain in valid_domains
         ],
         base_url_env_vars=result.base_url_env_vars,
-        load_profiles=_compose_profiles(result, env_vars),
-        **_ceilings(environment_disposable=False),
+        load_profiles=_compose_profiles(
+            result,
+            env_vars,
+            max_users=body.max_users,
+            max_total_requests=body.max_total_requests,
+            environment_disposable=body.environment_disposable,
+        ),
     )
 
 
@@ -489,11 +605,14 @@ async def create_nonfunctional_run(
     domains = _validate_domains(body.domains)
     validate_url_vars(body.base_url_env_vars, env_vars, status_code=422)
     base_urls = [env_vars[name] for name in body.base_url_env_vars]
+    _validate_run_ceiling(body.max_users, body.max_total_requests)
     profiles = _validate_load_profiles(
         body.load_profiles,
         base_urls=base_urls,
         env_vars=env_vars,
         environment_disposable=body.environment_disposable,
+        max_users=body.max_users,
+        max_total_requests=body.max_total_requests,
     )
 
     if body.export_findings and sprint.issue_tracker is None:
@@ -523,6 +642,8 @@ async def create_nonfunctional_run(
         base_url_env_vars_csv=",".join(body.base_url_env_vars),
         domains_csv=",".join(domains),
         environment_disposable=body.environment_disposable,
+        max_users=body.max_users,
+        max_total_requests=body.max_total_requests,
         export_findings=body.export_findings,
     )
     for position, profile in enumerate(profiles):
@@ -532,6 +653,7 @@ async def create_nonfunctional_run(
             url=profile.url,
             method=profile.method,
             body=profile.body,
+            shape=profile.shape,
             concurrency=profile.concurrency,
             duration_seconds=profile.duration_seconds,
             total_request_cap=profile.total_request_cap,
@@ -673,6 +795,8 @@ async def summarize_nonfunctional_run(
             description=requirement.description,
             targets=target_summaries(run),
             load_profiles=load_profile_summaries(run),
+            max_users=run.max_users,
+            max_total_requests=run.max_total_requests,
         )
     except llm.LLMError as exc:
         logger.warning("Nonfunctional run %d: summary retry failed: %s", run_id, exc)

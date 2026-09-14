@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import TestRunsPage from './TestRunsPage'
 import type { SprintMetrics, SprintResponse, TestPlanResponse, TestRunResponse } from '../types'
+import { LOAD_LIMITS } from '../test/fixtures'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -88,6 +89,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     has_test_runs: false,
     has_exploratory_runs: false,
     has_nonfunctional_runs: false,
+    load_limits: LOAD_LIMITS,
     ...overrides,
   }
 }
@@ -665,6 +667,8 @@ describe('TestRunsPage — nonfunctional runs', () => {
       error: null,
       outdated_reasons: [],
       requirement_deleted: false,
+      max_users: null,
+      max_total_requests: null,
       target_count: 4,
       load_profile_count: 1,
       bug_count: 3,

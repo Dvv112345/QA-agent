@@ -236,29 +236,66 @@ NONFUNCTIONAL_TRIAGE_MAX_CHARS: int = _get_int("NONFUNCTIONAL_TRIAGE_MAX_CHARS",
 # the profile term is capped by config, but axe on an arbitrary page is
 # not. A domain this cuts off records `failed_to_run` — never silence.
 NONFUNCTIONAL_CATALOGUE_TIMEOUT: int = _get_int("NONFUNCTIONAL_CATALOGUE_TIMEOUT", 30)
-# RQ job_timeout for one nonfunctional run: the itinerary
-# (MAX_TARGETS × CATALOGUE_TIMEOUT = 5 min) plus every load profile
-# serially (MAX_LOAD_PROFILES × LOAD_MAX_DURATION_SECONDS) plus triage.
-NONFUNCTIONAL_JOB_TIMEOUT: int = _get_int("NONFUNCTIONAL_JOB_TIMEOUT", 5400)
+# RQ job_timeout for one nonfunctional run. The worst case, every term serial:
+#   navigation   MAX_ACTIONS × OPENAI_TIMEOUT          30 × 60 s = 1800 s
+#   catalogue    MAX_TARGETS × CATALOGUE_TIMEOUT       10 × 30 s =  300 s
+#   load         MAX_LOAD_PROFILES × (SOAK_MAX + GRACE) 3 × 930 s = 2790 s
+#   triage + summary                                              ≈  300 s
+# ≈ 5190 s, under 7200. On Linux RQ hard-kills an overrunning job, which
+# would orphan the load generator — its own parent watchdog is the backstop.
+NONFUNCTIONAL_JOB_TIMEOUT: int = _get_int("NONFUNCTIONAL_JOB_TIMEOUT", 7200)
 # Load profiles per run.
 NONFUNCTIONAL_MAX_LOAD_PROFILES: int = _get_int("NONFUNCTIONAL_MAX_LOAD_PROFILES", 3)
-# ── Load ceilings, two tiers ──
-# Safe methods (GET/HEAD/OPTIONS) read but do not change the application,
-# so they run against any confirmed origin under the first tier. Non-safe
-# methods change data and run only on a run carrying the
-# disposable-environment declaration, under the second, much lower tier —
-# the binding cap there is the total, deliberately in the *tens*.
-NONFUNCTIONAL_LOAD_MAX_CONCURRENCY: int = _get_int("NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 10)
+# ── Load ceilings: the server maximums ──
+# One tier for every method. A non-safe method (POST/PUT/PATCH/DELETE) differs
+# from a safe one only in needing the run's disposable-environment
+# declaration; once declared, it runs under these same numbers. The names
+# are kept from the two-tier era so existing .env files still apply.
+# A run's ceiling — peak users and total requests — is picked by the user
+# inside these, and bounds every profile in that run.
+NONFUNCTIONAL_LOAD_MAX_CONCURRENCY: int = _get_int("NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 50)
 NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS: int = _get_int(
-    "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 60
+    "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 120
 )
-NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS: int = _get_int("NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 2000)
-NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY: int = _get_int(
-    "NONFUNCTIONAL_LOAD_UNSAFE_MAX_CONCURRENCY", 2
+NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 10000
 )
-NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS: int = _get_int(
-    "NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS", 20
+# A soak is a long constant load, so it has its own duration ceiling; every
+# other shape uses NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS.
+NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS", 900
 )
+# Seconds past a profile's duration before the parent kills the load
+# generator process. Covers interpreter start-up (importing Locust takes a
+# couple of seconds) and requests still in flight at the end.
+NONFUNCTIONAL_LOAD_PROCESS_GRACE_SECONDS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_PROCESS_GRACE_SECONDS", 30
+)
+# Shortest stress step. A stress profile ramps in five steps, so it needs at
+# least five of these; the route refuses a shorter one rather than silently
+# stretching a duration the user typed.
+NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS", 10
+)
+
+
+def server_limits() -> dict[str, int]:
+    """The load maximums as the frontend and the routes read them.
+
+    The one read of those constants outside ``load_runner``. It lives here,
+    not in the service, so ``models/types.py`` can fill
+    ``SprintResponse.load_limits`` without importing the service layer. It
+    reads the globals at call time, so a test that monkeypatches this module
+    sees its own numbers.
+    """
+    return {
+        "max_users": NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
+        "max_duration_seconds": NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
+        "max_total_requests": NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
+        "max_soak_duration_seconds": NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS,
+    }
+
+
 # Seconds for one outbound load request.
 NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT: int = _get_int("NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT", 15)
 # Error rate above which a profile stops early rather than keeping traffic

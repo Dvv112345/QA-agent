@@ -16,6 +16,7 @@ import type {
   DomainOutcome,
   ExploratoryRunStatus,
   ExploratorySessionStatus,
+  LoadShape,
   NonfunctionalChildStatus,
   NonfunctionalRunStatus,
   TestCaseExecutionStatus,
@@ -60,6 +61,22 @@ export const NONFUNCTIONAL_RUN_STATUS_LABELS: Record<NonfunctionalRunStatus, str
   running: 'Examining',
   completed: 'Completed',
   failed: 'Failed',
+}
+
+/** A load profile's shape — how its users change over its duration. */
+export const LOAD_SHAPE_LABELS: Record<LoadShape, string> = {
+  load: 'Constant load',
+  stress: 'Stress',
+  spike: 'Spike',
+  soak: 'Soak',
+}
+
+/** One line each, shown under the shape selector. */
+export const LOAD_SHAPE_DESCRIPTIONS: Record<LoadShape, string> = {
+  load: 'The same number of users for the whole duration.',
+  stress: "Ramps in steps up to the run's peak users.",
+  spike: 'A small baseline, a sudden burst to full users, then the baseline again.',
+  soak: 'A long constant load, to see whether anything degrades over time.',
 }
 
 /** One examined URL, or one applied load profile. */

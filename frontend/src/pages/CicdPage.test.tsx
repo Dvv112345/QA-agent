@@ -9,6 +9,7 @@ import type {
   CicdExport,
   SprintResponse,
 } from '../types'
+import { LOAD_LIMITS } from '../test/fixtures'
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>()
@@ -69,6 +70,7 @@ function makeSprint(overrides: Partial<SprintResponse> = {}): SprintResponse {
     has_test_runs: true,
     has_exploratory_runs: false,
     has_nonfunctional_runs: false,
+    load_limits: LOAD_LIMITS,
     ...overrides,
   }
 }

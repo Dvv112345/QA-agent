@@ -706,6 +706,8 @@ class LoadProfileItem(SQLModel):
     path: str = "/"
     method: str = "GET"
     body: str | None = None
+    # One of LoadShape's values. Anything else becomes constant load at compose.
+    shape: str = "load"
     concurrency: int = 1
     duration_seconds: int = 10
     total_request_cap: int = 100
@@ -751,8 +753,18 @@ def generate_nonfunctional_plan(
     readme: str | None,
     file_tree: str | None,
     read_file: Callable[[str], str] | None,
+    *,
+    max_users: int,
+    max_total_requests: int,
+    environment_disposable: bool,
 ) -> NonfunctionalPlanResult:
     """Propose domains, base URLs and load profiles for one requirement.
+
+    The run ceiling (``max_users``, ``max_total_requests``) and the
+    disposable-environment declaration were picked by the human *before*
+    this call, so the model sizes its proposals against real numbers. The
+    prompt is advice; ``routes.nonfunctional._compose_profiles`` enforces the
+    same limits deterministically afterwards.
 
     Runs a bounded ``read_file`` loop (``NONFUNCTIONAL_PLAN_TOOL_ROUNDS``,
     deliberately shorter than the other two — this one runs synchronously
@@ -782,6 +794,9 @@ def generate_nonfunctional_plan(
         other_env_var_names,
         readme,
         file_tree,
+        max_users=max_users,
+        max_total_requests=max_total_requests,
+        environment_disposable=environment_disposable,
     )
     result = _complete_with_tools(
         NONFUNCTIONAL_PLAN_SYSTEM_PROMPT,
@@ -877,6 +892,9 @@ def summarize_nonfunctional(
     targets: list[TargetLike],
     load_profiles: list[LoadProfileLike],
     on_attempt: Callable[[], None] | None = None,
+    *,
+    max_users: int | None = None,
+    max_total_requests: int | None = None,
 ) -> NonfunctionalSummaryResult:
     """Synthesize one run's targets and profiles into a narrative.
 
@@ -885,9 +903,16 @@ def summarize_nonfunctional(
 
     ``LoadProfileLike`` deliberately carries no request body: a body may hold
     a ``$NAME`` whose value is a credential, and the summary has nothing to
-    say about it.
+    say about it. The ceiling is ``None`` on a run created before it existed.
     """
-    parts = nonfunctional_summary_context(name, description, targets, load_profiles)
+    parts = nonfunctional_summary_context(
+        name,
+        description,
+        targets,
+        load_profiles,
+        max_users=max_users,
+        max_total_requests=max_total_requests,
+    )
     user_prompt = "\n\n".join(parts)
 
     for attempt in range(1, _SUMMARY_ATTEMPTS + 1):

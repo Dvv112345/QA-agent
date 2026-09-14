@@ -35,6 +35,19 @@ export interface SprintResponse {
   has_test_runs: boolean
   has_exploratory_runs: boolean
   has_nonfunctional_runs: boolean
+  /** The server's load maximums (Convention #10) — never restated as a literal here. */
+  load_limits: LoadLimits
+}
+
+export interface LoadLimits {
+  max_users: number
+  max_total_requests: number
+  /** Every shape but soak, which has its own longer ceiling. */
+  max_duration_seconds: number
+  max_soak_duration_seconds: number
+  stress_min_duration_seconds: number
+  safe_methods: LoadMethod[]
+  load_shapes: LoadShape[]
 }
 
 export interface ReadmeStatusResponse {
@@ -480,6 +493,41 @@ export interface NonfunctionalTargetResponse {
   updated_at: string
 }
 
+export type LoadShape = 'load' | 'stress' | 'spike' | 'soak'
+
+export const LOAD_SHAPES: LoadShape[] = ['load', 'stress', 'spike', 'soak']
+
+/** One stage of a load profile: its definition, plus what it measured. */
+export interface LoadStageRow {
+  name: string
+  start_s: number
+  end_s: number
+  users: number
+  responses?: number
+  p50_ms?: number | null
+  p95_ms?: number | null
+  error_rate?: number | null
+}
+
+/**
+ * A profile's parsed result. Scalars at the top level; `stages` and `derived`
+ * only on profiles run by the staged generator, so legacy rows lack both.
+ */
+export interface LoadResults extends Record<
+  string,
+  number | string | null | LoadStageRow[] | Record<string, unknown> | number[] | undefined
+> {
+  stages?: LoadStageRow[]
+  derived?: Record<string, unknown>
+  stopped_between_users?: number[] | null
+}
+
+/** The ceiling a user picks before generation — mirrors the request fields. */
+export interface RunCeiling {
+  max_users: number
+  max_total_requests: number
+}
+
 export interface NonfunctionalLoadProfileResponse {
   id: number
   position: number
@@ -487,12 +535,16 @@ export interface NonfunctionalLoadProfileResponse {
   method: LoadMethod
   /** Echoed with its `$NAME` placeholders unresolved, exactly as stored. */
   body: string | null
+  shape: LoadShape
+  /** Peak users — the column keeps its original name. */
   concurrency: number
   duration_seconds: number
   total_request_cap: number
   status: NonfunctionalChildStatus
   requests_sent: number
-  results: Record<string, number | string | null>
+  /** Set before the generator starts; a launched profile is never re-sent. */
+  launched_at: string | null
+  results: LoadResults
   error: string | null
   updated_at: string
 }
@@ -505,6 +557,9 @@ export interface NonfunctionalRunResponse extends ExportRollup {
   status: NonfunctionalRunStatus
   domains: NonfunctionalDomain[]
   environment_disposable: boolean
+  /** The user-picked run ceiling; null on a run created before it existed. */
+  max_users: number | null
+  max_total_requests: number | null
   summary: string | null
   error: string | null
   outdated_reasons: OutdatedReason[]
@@ -529,6 +584,7 @@ export interface LoadProfileDraft {
   url: string
   method: LoadMethod
   body: string | null
+  shape: LoadShape
   concurrency: number
   duration_seconds: number
   total_request_cap: number
@@ -543,9 +599,8 @@ export interface DomainProposal {
 }
 
 /**
- * The setup screen's input. Every ceiling here comes from the server
- * (Convention #10) — the modal must not restate a config literal, and the
- * unsafe pair is what the disposable declaration unlocks.
+ * The setup screen's proposals. The ceilings are not here: they ride on
+ * `SprintResponse.load_limits`, which the modal has before this exists.
  */
 export interface NonfunctionalPlanDraftResponse {
   requirement_id: number
@@ -553,12 +608,6 @@ export interface NonfunctionalPlanDraftResponse {
   domains: DomainProposal[]
   base_url_env_vars: string[]
   load_profiles: LoadProfileDraft[]
-  max_concurrency: number
-  max_duration_seconds: number
-  max_total_requests: number
-  unsafe_max_concurrency: number
-  unsafe_max_total_requests: number
-  safe_methods: LoadMethod[]
 }
 
 // ── QA metrics ────────────────────────────────────────────────────────

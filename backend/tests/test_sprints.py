@@ -271,6 +271,43 @@ class TestGetSprint:
         assert data["repo"]["id"] == repo_id
 
     @pytest.mark.asyncio
+    async def test_carries_the_server_load_limits(self, async_client, httpx_mock, monkeypatch):
+        """Read from config at response time, so the frontend never restates one."""
+        import backend.config as config
+
+        monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 7)
+        monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 123)
+        monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 45)
+        monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS", 600)
+
+        repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo",
+            json={"full_name": "owner/test-repo", "description": "desc"},
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/test-repo/readme",
+            json={"content": base64.b64encode(b"# README").decode()},
+        )
+        create_resp = await async_client.post(
+            "/api/sprints",
+            data={"name": "My Sprint", "repo_id": str(repo_id)},
+        )
+
+        resp = await async_client.get(f"/api/sprints/{create_resp.json()['id']}")
+
+        assert resp.json()["load_limits"] == {
+            "max_users": 7,
+            "max_total_requests": 123,
+            "max_duration_seconds": 45,
+            "max_soak_duration_seconds": 600,
+            # Five steps of NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS (10).
+            "stress_min_duration_seconds": 50,
+            "safe_methods": ["GET", "HEAD", "OPTIONS"],
+            "load_shapes": ["load", "stress", "spike", "soak"],
+        }
+
+    @pytest.mark.asyncio
     async def test_returns_404_for_nonexistent(self, async_client):
         resp = await async_client.get("/api/sprints/99999")
         assert resp.status_code == 404

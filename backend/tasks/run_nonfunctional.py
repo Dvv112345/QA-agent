@@ -78,6 +78,7 @@ from backend.services import (
 from backend.services.llm_prompts import TestCaseLike, ViolationLike
 from backend.services.storage import StorageService
 from backend.utils.environment_utils import browser_environment, redactable_items
+from backend.utils.http_utils import SSL_CONTEXT
 from backend.utils.nonfunctional_utils import load_profile_summaries, target_summaries
 from backend.utils.readme_utils import resolve_readme
 
@@ -363,7 +364,11 @@ class _Catalogue:
         try:
             started = time.monotonic()
             with httpx.Client(
-                verify=load_runner.SSL_CONTEXT,
+                # From its own module: this used to borrow the name through
+                # `load_runner`, which stopped importing it once load profiles
+                # moved to a subprocess — and the AttributeError it raised was
+                # caught below and recorded as an unrunnable security check.
+                verify=SSL_CONTEXT,
                 timeout=NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT,
                 follow_redirects=False,
                 cookies=cookies,
@@ -533,10 +538,14 @@ def run_nonfunctional_task(nonfunctional_run_id: int) -> None:
                 file_tree=file_tree,
             )
 
-            if _superseded(session, run, nonfunctional_run_id):
+            if _should_stop(session, run, nonfunctional_run_id):
                 return
 
-            _run_load_profiles(session, run, base_urls, env_vars, cookies)
+            # False when the run stopped part-way — superseded, or failed from
+            # outside by a finished sprint. The run is already failed then,
+            # and carrying on would stamp it completed over that failure.
+            if not _run_load_profiles(session, run, base_urls, env_vars, cookies):
+                return
             _persist_findings(session, run, catalogue)
             _write_summary(session, run, requirement)
 
@@ -574,12 +583,29 @@ def run_nonfunctional_task(nonfunctional_run_id: int) -> None:
             logger.exception("Exporting findings failed for run %d", nonfunctional_run_id)
 
 
+def _should_stop(session: Session, run: NonfunctionalRun, run_id: int) -> bool:
+    """Whether the run must not start any more work.
+
+    Two things end a run from outside, and only one of them makes it
+    outdated: finishing the sprint fails the run from another session and
+    leaves its revisions alone. Checking ``_superseded`` alone let the next
+    load profile launch on a finished sprint and send traffic until its
+    first tick caught it.
+    """
+    session.expire_all()
+    if run.status != NonfunctionalRunStatus.RUNNING:
+        logger.info("Nonfunctional run %d is '%s' — stopping", run_id, run.status)
+        return True
+    return _superseded(session, run, run_id)
+
+
 def _superseded(session: Session, run: NonfunctionalRun, run_id: int) -> bool:
     """Stop when an upstream artifact moved under the run.
 
-    Checked between the walk and the load profiles, and again between
-    profiles — never mid-profile, where stopping would leave traffic
-    half-applied with nothing recording how much.
+    Checked between the walk and the load profiles, between profiles, and
+    once more after a profile that ``_tick`` stopped part-way. Stopping
+    mid-profile is safe now: the generator's progress file records how much
+    traffic went out before it was killed.
     """
     session.expire_all()
     reasons = run.outdated_reasons
@@ -692,20 +718,49 @@ def _walk_the_feature(
     return cookies
 
 
+def _tick(session: Session, run: NonfunctionalRun) -> bool:
+    """Heartbeat during a load profile, and say whether it should keep going.
+
+    The load runner calls this every few seconds while its generator runs,
+    and kills the generator on ``False`` (D15). The run is re-read first:
+    finishing the sprint fails it from another session, and an upstream edit
+    makes it outdated. Either way the traffic should stop now, not when a
+    fifteen-minute soak happens to end. No heartbeat is written on a stop,
+    so a failed run is not stamped as alive.
+    """
+    session.expire_all()
+    if run.status != NonfunctionalRunStatus.RUNNING or run.outdated_reasons:
+        return False
+    _heartbeat(session, run)
+    return True
+
+
 def _run_load_profiles(
     session: Session,
     run: NonfunctionalRun,
     base_urls: list[str],
     env_vars: dict[str, str],
     cookies: dict[str, str],
-) -> None:
+) -> bool:
     """Apply each approved profile, safe methods first.
 
-    **A profile that already sent traffic is never re-sent.**  The check is
-    ``requests_sent > 0``, not the status: a restart re-pends the run and
-    could legitimately re-walk its targets, but re-issuing requests against
-    somebody's environment — writes included, for a non-safe method — is not
-    something a retry may do on its own.
+    Returns whether the run is still going. ``False`` means it stopped
+    part-way — superseded (failed here) or failed from outside by a finished
+    sprint — and the caller must not go on to complete it.
+
+    **A profile that was ever launched is never re-sent.**  The check is
+    ``requests_sent > 0 or launched_at``, not the status: a restart re-pends
+    the run and could legitimately re-walk its targets, but re-issuing
+    requests against somebody's environment — writes included, for a
+    non-safe method — is not something a retry may do on its own.
+
+    The skip ladder, in order::
+
+        requests_sent > 0 or launched_at  → never re-sent (traffic guard)
+        status completed / error          → already done (a refusal is terminal)
+        run failed elsewhere or outdated  → stop the run (`_should_stop`)
+        preflight refusal                 → error, NO stamp — nothing was sent
+        otherwise                         → stamp launched_at + running, COMMIT, run
 
     Safe-first so that if a run is interrupted part-way the reads have
     happened and the writes have not.
@@ -719,9 +774,9 @@ def _run_load_profiles(
     allowed = load_runner.allowed_origins_for(base_urls)
 
     for profile in ordered:
-        if profile.requests_sent > 0:
+        if profile.requests_sent > 0 or profile.launched_at is not None:
             logger.info(
-                "Load profile %d already sent %d request(s) — not re-sending",
+                "Load profile %d was already launched (%d request(s) recorded) — not re-sending",
                 profile.id,
                 profile.requests_sent,
             )
@@ -731,17 +786,42 @@ def _run_load_profiles(
             NonfunctionalChildStatus.ERROR,
         ):
             continue
-        if _superseded(session, run, run.id):
-            return
+        if _should_stop(session, run, run.id):
+            return False
 
+        refusal = load_runner.preflight(
+            profile.url,
+            profile.method,
+            allowed,
+            environment_disposable=run.environment_disposable,
+        )
+        if refusal is not None:
+            # Nothing was sent, so no stamp — and terminal all the same: the
+            # refusal is deterministic, and the one thing that would change it
+            # (an environment edit) marks the run outdated, which blocks restart.
+            profile.status = NonfunctionalChildStatus.ERROR
+            profile.error = refusal
+            profile.updated_at = finalization.now()
+            session.add(profile)
+            session.commit()
+            continue
+
+        # Committed before the generator starts: a crash from here on leaves
+        # the stamp behind, and the stamp is what keeps a restart from
+        # re-sending traffic it cannot count.
         profile.status = NonfunctionalChildStatus.RUNNING
-        profile.updated_at = finalization.now()
+        profile.launched_at = finalization.now()
+        profile.updated_at = profile.launched_at
         session.add(profile)
         session.commit()
 
+        # Each profile gets exactly its own cap. The run budget needs no
+        # arithmetic here: the create route proved Σ caps ≤ budget, profiles
+        # cannot change after that, and a launched one is never re-sent (D16).
         result = load_runner.run_profile(
             url=profile.url,
             method=profile.method,
+            shape=profile.shape,
             body=profile.body,
             cookies=cookies,
             concurrency=profile.concurrency,
@@ -750,6 +830,7 @@ def _run_load_profiles(
             env_vars=env_vars,
             environment_disposable=run.environment_disposable,
             allowed_origins=allowed,
+            on_tick=lambda: _tick(session, run),
         )
 
         profile.requests_sent = result.requests_sent
@@ -762,7 +843,19 @@ def _run_load_profiles(
         )
         profile.updated_at = finalization.now()
         session.add(profile)
+
+        if result.stopped_early == load_runner.STOP_RUN_STOPPED:
+            session.commit()
+            # Outdated → failed here as superseded. Otherwise the run was
+            # failed from outside (the sprint finished), which already
+            # settled the profiles that never launched.
+            _superseded(session, run, run.id)
+            logger.info(
+                "Nonfunctional run %d: load profile %d stopped part-way", run.id, profile.id
+            )
+            return False
         _heartbeat(session, run)
+    return True
 
 
 def _persist_findings(session: Session, run: NonfunctionalRun, catalogue: _Catalogue) -> None:
@@ -845,6 +938,8 @@ def _write_summary(session: Session, run: NonfunctionalRun, requirement) -> None
             targets=target_summaries(run),
             load_profiles=load_profile_summaries(run),
             on_attempt=lambda: _heartbeat(session, run),
+            max_users=run.max_users,
+            max_total_requests=run.max_total_requests,
         )
     except llm.LLMError as exc:
         logger.warning("Nonfunctional run %d: summary unavailable: %s", run.id, exc)

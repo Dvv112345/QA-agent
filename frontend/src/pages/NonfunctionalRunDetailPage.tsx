@@ -16,6 +16,8 @@ import {
 } from '../services/api'
 import type {
   DomainOutcome,
+  LoadResults,
+  LoadStageRow,
   NonfunctionalLoadProfileResponse,
   NonfunctionalRunDetailResponse,
   NonfunctionalTargetResponse,
@@ -30,6 +32,7 @@ import { EXPORT_GRACE_TICKS, usePolling } from '../hooks/usePolling'
 import {
   DOMAIN_OUTCOME_LABELS,
   type DomainOutcomeDisplay,
+  LOAD_SHAPE_LABELS,
   NONFUNCTIONAL_CHILD_STATUS_LABELS,
   NONFUNCTIONAL_RUN_STATUS_LABELS,
 } from '../statusLabels'
@@ -69,8 +72,13 @@ function OutcomeCell({ outcome, judged }: { outcome: DomainOutcome | null; judge
   )
 }
 
-function Measurements({ values }: { values: Record<string, number | string | null> }) {
-  const entries = Object.entries(values).filter(([, value]) => value !== null && value !== '')
+function Measurements({ values }: { values: Record<string, unknown> }) {
+  // Scalars only: nested figures (a profile's stages) have their own table,
+  // and String() of an object is "[object Object]".
+  const entries = Object.entries(values).filter(
+    (entry): entry is [string, number | string] =>
+      (typeof entry[1] === 'number' || typeof entry[1] === 'string') && entry[1] !== '',
+  )
   if (entries.length === 0) return null
   return (
     <dl className="nf-measurements">
@@ -84,11 +92,65 @@ function Measurements({ values }: { values: Record<string, number | string | nul
   )
 }
 
+const figure = (value: number | null | undefined) =>
+  value === null || value === undefined ? '—' : String(value)
+const seconds = (value: number) => String(Number(value.toFixed(1)))
+
+/** Each stage as measured. Like every figure here, nothing is coloured by value. */
+function LoadStageTable({ stages }: { stages: LoadStageRow[] }) {
+  return (
+    <div className="nf-stage-table-wrap">
+      <table className="nf-stage-table">
+        <thead>
+          <tr>
+            <th scope="col">Stage</th>
+            <th scope="col">Seconds</th>
+            <th scope="col">Users</th>
+            <th scope="col">Responses</th>
+            <th scope="col">p50 ms</th>
+            <th scope="col">p95 ms</th>
+            <th scope="col">Error rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map((stage) => (
+            <tr key={`${stage.name}-${stage.start_s}`}>
+              <th scope="row">{stage.name}</th>
+              <td>
+                {seconds(stage.start_s)}–{seconds(stage.end_s)}
+              </td>
+              <td>{stage.users}</td>
+              <td>{figure(stage.responses)}</td>
+              <td>{figure(stage.p50_ms)}</td>
+              <td>{figure(stage.p95_ms)}</td>
+              <td>{figure(stage.error_rate)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/**
+ * A profile's derived figures as measurement pairs. The error-rate stop's
+ * range is said in words — where the stop fired, not a capacity verdict.
+ */
+function derivedValues(derived: LoadResults['derived']): Record<string, unknown> {
+  if (!derived) return {}
+  const { stopped_between_users: range, ...rest } = derived
+  return Array.isArray(range) && range.length === 2
+    ? { ...rest, error_rate_stop: `between ${range[0]} and ${range[1]} users` }
+    : rest
+}
+
 function LoadProfilePanel({ profile }: { profile: NonfunctionalLoadProfileResponse }) {
+  const stages = profile.results.stages ?? []
   return (
     <li className="nf-profile-panel">
       <div className="nf-profile-head">
         <span className="nf-profile-method">{profile.method}</span>
+        <span className="nf-shape-badge">{LOAD_SHAPE_LABELS[profile.shape]}</span>
         <span className="nf-profile-url">{profile.url}</span>
         <span className={`session-badge session-badge-${profile.status}`}>
           {NONFUNCTIONAL_CHILD_STATUS_LABELS[profile.status]}
@@ -96,13 +158,16 @@ function LoadProfilePanel({ profile }: { profile: NonfunctionalLoadProfileRespon
       </div>
       <p className="nf-profile-meta">
         {plural(profile.requests_sent, 'request')} sent of {profile.total_request_cap} approved
-        &middot; concurrency {profile.concurrency} &middot; {profile.duration_seconds}s
+        &middot; {plural(profile.concurrency, profile.shape === 'stress' ? 'peak user' : 'user')}{' '}
+        &middot; {profile.duration_seconds}s
         {/* Cookies are always on, and that is invisible in the numbers —
             so it is said here. */}
         <span className="nf-authenticated"> · ran authenticated</span>
       </p>
       {profile.error && <p className="nf-run-error">{profile.error}</p>}
       <Measurements values={profile.results} />
+      {stages.length > 0 && <LoadStageTable stages={stages} />}
+      <Measurements values={derivedValues(profile.results.derived)} />
     </li>
   )
 }
@@ -189,6 +254,14 @@ export default function NonfunctionalRunDetailPage() {
         Checks run: {run.domains.join(', ') || 'none'}
         {run.environment_disposable && ' · environment declared disposable'}
       </p>
+
+      {/* Absent on a run created before the ceiling existed, rather than a guess. */}
+      {run.max_users !== null && run.max_total_requests !== null && (
+        <p className="nf-ceiling-line">
+          Ceiling: {plural(run.max_users, 'peak user')} &middot;{' '}
+          {plural(run.max_total_requests, 'request')} in total
+        </p>
+      )}
 
       <ExportSummary
         rollup={run}

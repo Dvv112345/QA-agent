@@ -82,6 +82,20 @@ def _create_body(**overrides):
         "load_profiles": [],
         "environment_disposable": False,
         "export_findings": False,
+        # The ceiling defaults to the server's maximums, as the modal pre-fills it.
+        "max_users": load_runner.NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
+        "max_total_requests": load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
+    }
+    body.update(overrides)
+    return body
+
+
+def _generate_body(requirement_id, **overrides):
+    body = {
+        "requirement_id": requirement_id,
+        "max_users": load_runner.NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
+        "max_total_requests": load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
+        "environment_disposable": False,
     }
     body.update(overrides)
     return body
@@ -128,7 +142,7 @@ class TestGeneratePlan:
         return NonfunctionalPlanResult(**payload)
 
     @pytest.mark.asyncio
-    async def test_returns_proposals_and_both_ceiling_tiers(
+    async def test_returns_proposals_without_restating_the_ceilings(
         self, async_client, db_session, monkeypatch
     ):
         sprint, requirement = _ready_sprint(db_session)
@@ -136,7 +150,7 @@ class TestGeneratePlan:
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
 
         assert resp.status_code == 200
@@ -144,12 +158,9 @@ class TestGeneratePlan:
         # An unknown domain is dropped rather than offered as a checkbox.
         assert [d["domain"] for d in data["domains"]] == ["accessibility"]
         assert data["load_profiles"][0]["method"] == "GET"
-        assert data["max_total_requests"] == load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS
-        assert (
-            data["unsafe_max_total_requests"]
-            == load_runner.NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS
-        )
-        assert set(data["safe_methods"]) == {"GET", "HEAD", "OPTIONS"}
+        # The ceilings ride on SprintResponse.load_limits now.
+        assert "unsafe_max_total_requests" not in data
+        assert "max_total_requests" not in data
 
     # ── URL composition ───────────────────────────────────────────────
     # The model gives (variable, path) and never sees a value, so the
@@ -167,7 +178,7 @@ class TestGeneratePlan:
     async def _profiles(self, async_client, sprint, requirement):
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
         assert resp.status_code == 200
         return resp.json()["load_profiles"]
@@ -280,6 +291,183 @@ class TestGeneratePlan:
 
         assert resp.status_code == 201, resp.text
 
+    # ── the run ceiling ───────────────────────────────────────────────
+    # Compose is the deterministic half of every prompt rule about the
+    # ceiling: the prompt asks, these pin what happens when it is ignored.
+
+    def _proposal(self, **overrides):
+        proposal = {
+            "base_url_env_var": "BASE_URL",
+            "path": "/api/reports",
+            "method": "GET",
+            "concurrency": 2,
+            "duration_seconds": 10,
+            "total_request_cap": 50,
+            "rationale": "r",
+        }
+        proposal.update(overrides)
+        return proposal
+
+    async def _compose(self, async_client, db_session, monkeypatch, proposals, **body):
+        sprint, requirement = _ready_sprint(db_session)
+        self._stub_llm(monkeypatch, result=self._result(load_profiles=proposals))
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
+            json=_generate_body(requirement.id, **body),
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["load_profiles"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ceiling",
+        [
+            {"max_users": 0},
+            {"max_users": 10**6},
+            {"max_total_requests": 0},
+            {"max_total_requests": 10**9},
+        ],
+    )
+    async def test_a_ceiling_outside_the_server_maximums_is_refused_before_the_llm(
+        self, ceiling, async_client, db_session, monkeypatch
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+        calls = self._stub_llm(monkeypatch, result=self._result())
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
+            json=_generate_body(requirement.id, **ceiling),
+        )
+
+        assert resp.status_code == 422
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_ceiling_and_the_declaration_reach_the_model(
+        self, async_client, db_session, monkeypatch
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+        calls = self._stub_llm(monkeypatch, result=self._result())
+
+        await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
+            json=_generate_body(
+                requirement.id, max_users=7, max_total_requests=900, environment_disposable=True
+            ),
+        )
+
+        assert calls[0]["max_users"] == 7
+        assert calls[0]["max_total_requests"] == 900
+        assert calls[0]["environment_disposable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_non_safe_proposal_needs_the_declaration(
+        self, async_client, db_session, monkeypatch
+    ):
+        proposals = [self._proposal(method="POST"), self._proposal(method="GET")]
+
+        without = await self._compose(async_client, db_session, monkeypatch, proposals)
+        with_it = await self._compose(
+            async_client, db_session, monkeypatch, proposals, environment_disposable=True
+        )
+
+        assert [p["method"] for p in without] == ["GET"]
+        assert [p["method"] for p in with_it] == ["POST", "GET"]
+
+    @pytest.mark.asyncio
+    async def test_stress_ramps_to_the_ceiling_and_is_raised_to_its_minimum(
+        self, async_client, db_session, monkeypatch
+    ):
+        from backend.services.load_shapes import min_duration
+
+        (profile,) = await self._compose(
+            async_client,
+            db_session,
+            monkeypatch,
+            [self._proposal(shape="stress", concurrency=2, duration_seconds=20)],
+            max_users=30,
+        )
+
+        assert profile["shape"] == "stress"
+        assert profile["concurrency"] == 30
+        assert profile["duration_seconds"] == min_duration(
+            "stress", routes.NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS
+        )
+
+    @pytest.mark.asyncio
+    async def test_other_shapes_clamp_users_to_the_ceiling(
+        self, async_client, db_session, monkeypatch
+    ):
+        (profile,) = await self._compose(
+            async_client,
+            db_session,
+            monkeypatch,
+            [self._proposal(shape="spike", concurrency=40)],
+            max_users=25,
+        )
+
+        assert profile["concurrency"] == 25
+
+    @pytest.mark.asyncio
+    async def test_requests_are_allocated_from_the_run_budget_in_order(
+        self, async_client, db_session, monkeypatch
+    ):
+        profiles = await self._compose(
+            async_client,
+            db_session,
+            monkeypatch,
+            [self._proposal(total_request_cap=5000) for _ in range(3)],
+            max_total_requests=6000,
+        )
+
+        assert [p["total_request_cap"] for p in profiles] == [5000, 1000]
+
+    @pytest.mark.asyncio
+    async def test_composed_profiles_fit_the_budget_they_are_created_under(
+        self, async_client, db_session, monkeypatch, queue_stub
+    ):
+        """D16's premise, end to end: what compose allocates, create accepts.
+
+        The task does no budget arithmetic because this holds, so it is pinned
+        with a non-default budget rather than assumed.
+        """
+        sprint, requirement = _ready_sprint(db_session)
+        self._stub_llm(
+            monkeypatch,
+            result=self._result(
+                load_profiles=[self._proposal(total_request_cap=5000) for _ in range(3)]
+            ),
+        )
+        ceiling = {"max_users": 10, "max_total_requests": 6000}
+        generated = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
+            json=_generate_body(requirement.id, **ceiling),
+        )
+        assert generated.status_code == 200, generated.text
+
+        created = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                load_profiles=generated.json()["load_profiles"],
+                **ceiling,
+            ),
+        )
+
+        assert created.status_code == 201, created.text
+        caps = [p["total_request_cap"] for p in created.json()["load_profiles"]]
+        assert sum(caps) <= 6000
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_shape_becomes_constant_load(
+        self, async_client, db_session, monkeypatch
+    ):
+        (profile,) = await self._compose(
+            async_client, db_session, monkeypatch, [self._proposal(shape="tsunami")]
+        )
+
+        assert profile["shape"] == "load"
+
     # ── read_file wiring ──────────────────────────────────────────────
 
     @pytest.mark.asyncio
@@ -327,7 +515,7 @@ class TestGeneratePlan:
 
         await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
 
         assert db_session.exec(routes.select(NonfunctionalRun)).all() == []
@@ -339,7 +527,7 @@ class TestGeneratePlan:
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
 
         assert resp.status_code == 502
@@ -354,7 +542,7 @@ class TestGeneratePlan:
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
 
         assert resp.status_code == 502
@@ -366,7 +554,7 @@ class TestGeneratePlan:
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
 
         assert resp.status_code == 422
@@ -384,7 +572,7 @@ class TestGeneratePlan:
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
 
         assert resp.status_code == 422
@@ -400,7 +588,7 @@ class TestGeneratePlan:
 
         resp = await async_client.post(
             f"/api/sprints/{sprint.id}/nonfunctional-plan/generate",
-            json={"requirement_id": requirement.id},
+            json=_generate_body(requirement.id),
         )
 
         assert resp.status_code == 422
@@ -487,9 +675,9 @@ class TestCreateRun:
                     {
                         "url": PROFILE_URL,
                         "method": "GET",
-                        "concurrency": 9999,
-                        "duration_seconds": 9999,
-                        "total_request_cap": 9999,
+                        "concurrency": 99999,
+                        "duration_seconds": 99999,
+                        "total_request_cap": 99999,
                     }
                 ],
             ),
@@ -502,7 +690,9 @@ class TestCreateRun:
         assert stored["total_request_cap"] == load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS
 
     @pytest.mark.asyncio
-    async def test_the_unsafe_tier_clamps_lower(self, async_client, db_session, queue_stub):
+    async def test_a_declared_non_safe_profile_clamps_to_the_same_ceiling_as_get(
+        self, async_client, db_session, queue_stub
+    ):
         sprint, requirement = _ready_sprint(db_session)
 
         resp = await async_client.post(
@@ -510,14 +700,158 @@ class TestCreateRun:
             json=_create_body(
                 requirement_id=requirement.id,
                 environment_disposable=True,
-                load_profiles=[{"url": PROFILE_URL, "method": "DELETE", "total_request_cap": 9999}],
+                load_profiles=[
+                    {"url": PROFILE_URL, "method": "DELETE", "total_request_cap": 99999}
+                ],
             ),
         )
 
+        assert resp.status_code == 201
         stored = resp.json()["load_profiles"][0]
-        assert (
-            stored["total_request_cap"] == load_runner.NONFUNCTIONAL_LOAD_UNSAFE_MAX_TOTAL_REQUESTS
+        assert stored["total_request_cap"] == load_runner.NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS
+
+    @pytest.mark.asyncio
+    async def test_the_shape_is_persisted_and_the_new_fields_are_echoed(
+        self, async_client, db_session, queue_stub
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                load_profiles=[{"url": PROFILE_URL, "method": "GET", "shape": "load"}],
+            ),
         )
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["load_profiles"][0]["shape"] == "load"
+        assert data["load_profiles"][0]["launched_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_ceiling_is_persisted_and_echoed(self, async_client, db_session, queue_stub):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(requirement_id=requirement.id, max_users=12, max_total_requests=345),
+        )
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert (data["max_users"], data["max_total_requests"]) == (12, 345)
+        stored = db_session.get(NonfunctionalRun, data["id"])
+        assert (stored.max_users, stored.max_total_requests) == (12, 345)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ceiling",
+        [
+            {"max_users": 0},
+            {"max_users": 10**6},
+            {"max_total_requests": 0},
+            {"max_total_requests": 10**9},
+        ],
+    )
+    async def test_a_ceiling_outside_the_server_maximums_is_refused(
+        self, ceiling, async_client, db_session, queue_stub
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(requirement_id=requirement.id, **ceiling),
+        )
+
+        assert resp.status_code == 422
+        assert queue_stub.enqueued == []
+
+    @pytest.mark.asyncio
+    async def test_profiles_over_the_run_budget_are_refused_naming_both_numbers(
+        self, async_client, db_session, queue_stub
+    ):
+        """Refused, not trimmed: the budget is what the user consented to (D10)."""
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                max_total_requests=100,
+                load_profiles=[
+                    {"url": PROFILE_URL, "method": "GET", "total_request_cap": 60},
+                    {"url": PROFILE_URL, "method": "HEAD", "total_request_cap": 60},
+                ],
+            ),
+        )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "120" in detail and "100" in detail
+        assert queue_stub.enqueued == []
+
+    @pytest.mark.asyncio
+    async def test_a_stress_profile_shorter_than_its_minimum_is_refused(
+        self, async_client, db_session, queue_stub
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                load_profiles=[
+                    {"url": PROFILE_URL, "method": "GET", "shape": "stress", "duration_seconds": 30}
+                ],
+            ),
+        )
+
+        assert resp.status_code == 422
+        assert "at least 50 seconds" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_users_clamp_to_the_ceiling_and_stress_users_are_the_ceiling(
+        self, async_client, db_session, queue_stub
+    ):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                max_users=5,
+                load_profiles=[
+                    {"url": PROFILE_URL, "method": "GET", "concurrency": 9},
+                    {
+                        "url": PROFILE_URL,
+                        "method": "GET",
+                        "shape": "stress",
+                        "concurrency": 1,
+                        "duration_seconds": 60,
+                    },
+                ],
+            ),
+        )
+
+        assert resp.status_code == 201, resp.text
+        assert [p["concurrency"] for p in resp.json()["load_profiles"]] == [5, 5]
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_shape_is_refused(self, async_client, db_session, queue_stub):
+        sprint, requirement = _ready_sprint(db_session)
+
+        resp = await async_client.post(
+            f"/api/sprints/{sprint.id}/nonfunctional-runs",
+            json=_create_body(
+                requirement_id=requirement.id,
+                load_profiles=[{"url": PROFILE_URL, "method": "GET", "shape": "tsunami"}],
+            ),
+        )
+
+        assert resp.status_code == 422
+        assert "tsunami" in resp.json()["detail"]
+        assert queue_stub.enqueued == []
 
     @pytest.mark.asyncio
     async def test_an_off_origin_load_url_is_refused(self, async_client, db_session, queue_stub):

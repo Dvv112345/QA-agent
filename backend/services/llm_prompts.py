@@ -942,15 +942,27 @@ NONFUNCTIONAL_PLAN_SYSTEM_PROMPT = (
     "- Prefer safe methods (GET, HEAD, OPTIONS). They only read, so they can "
     "run anywhere.\n"
     "- Propose a non-safe method (POST, PUT, PATCH, DELETE) only when the "
-    "requirement is genuinely about a write path, and expect it to be "
-    "refused unless the human has declared the environment disposable.\n"
+    "requirement is genuinely about a write path AND you are told the "
+    "environment is declared disposable. When it is not, propose safe "
+    "methods only.\n"
+    "- Give every profile a `shape`:\n"
+    '  - "load" (the default): constant users for the whole duration.\n'
+    '  - "stress": only for a requirement about capacity or concurrency. It '
+    "always ramps in five steps up to the run's peak users, so its "
+    "`concurrency` is ignored; give it a duration long enough for five steps.\n"
+    '  - "spike": for a requirement about sudden bursts of traffic.\n'
+    '  - "soak": for a requirement about sustained use or slow degradation, '
+    "such as a leak.\n"
+    "- Stay inside the ceiling you are given: no profile's `concurrency` above "
+    "its peak users, and the `total_request_cap` of every profile together "
+    "within its total. Split that budget between profiles; do not give each "
+    "one all of it.\n"
     "- Never put a credential in a body. Reference an environment variable "
     "as $NAME and it is substituted at send time without you seeing it.\n"
     "- Propose nothing at all rather than something arbitrary. An empty list "
     "is a perfectly good answer for a requirement that is not about load.\n\n"
-    "Concurrency, duration and total request count are capped by "
-    "configuration and will be clamped down silently, so propose modest "
-    "numbers and never argue for larger ones.\n\n"
+    "Propose modest durations: a human reviews every number before anything "
+    "runs, and the traffic lands on a real environment.\n\n"
     "You may call read_file to confirm which endpoints exist, what methods "
     "they accept, and which pages a requirement renders. Read code for "
     "those interface facts ONLY. Never let what the code does decide "
@@ -962,6 +974,7 @@ NONFUNCTIONAL_PLAN_SYSTEM_PROMPT = (
     '"base_url_env_vars": [string, ...], '
     '"load_profiles": [{"base_url_env_var": string, "path": string, '
     '"method": string, "body": string|null, '
+    '"shape": "load"|"stress"|"spike"|"soak", '
     '"concurrency": int, "duration_seconds": int, "total_request_cap": int, '
     '"rationale": string}]}.'
 )
@@ -1005,6 +1018,11 @@ NONFUNCTIONAL_SUMMARY_SYSTEM_PROMPT = (
     "A domain recorded as `failed_to_run` or `not_applicable` at a URL was "
     "NOT clean there: say so plainly rather than counting it as a pass. "
     "Summarise only what the run actually did.\n\n"
+    "A load profile may list stages — a stress ramp's steps, a spike's "
+    "baseline, burst and recovery — with figures for each. Those are "
+    "measurements too: a p95 that rises from one step to the next is "
+    "something to describe, never a failure, and a range of users where an "
+    "error-rate stop fired is where it stopped, not a capacity verdict.\n\n"
     'Respond with a JSON object of the shape {"summary": string}.'
 )
 
@@ -1054,6 +1072,7 @@ class LoadProfileLike:
     status: str
     requests_sent: int
     results: dict
+    shape: str = "load"
 
 
 def nonfunctional_plan_context(
@@ -1064,6 +1083,10 @@ def nonfunctional_plan_context(
     other_env_var_names: list[str],
     readme: str | None,
     file_tree: str | None,
+    *,
+    max_users: int,
+    max_total_requests: int,
+    environment_disposable: bool,
 ) -> list[str]:
     """User-prompt blocks for the run-setup proposal.
 
@@ -1086,6 +1109,18 @@ def nonfunctional_plan_context(
         + "\n\nOther environment variables (credentials, ids, flags). Their "
         "values are never shown to you, and a load profile may reference one "
         "only inside `body`, as $NAME:\n" + bullets(other_env_var_names)
+    )
+    declaration = (
+        "The environment IS declared disposable, so a non-safe method may be "
+        "proposed where the requirement is genuinely about a write path."
+        if environment_disposable
+        else "The environment is NOT declared disposable, so propose safe methods "
+        "(GET, HEAD, OPTIONS) only."
+    )
+    parts.append(
+        f"The human set this run's ceiling: at most {max_users} concurrent users, and "
+        f"{max_total_requests} requests IN TOTAL ACROSS ALL PROFILES — split that budget "
+        f"between the profiles you propose.\n{declaration}"
     )
     return parts
 
@@ -1143,9 +1178,17 @@ def nonfunctional_summary_context(
     description: str,
     targets: list[TargetLike],
     load_profiles: list[LoadProfileLike],
+    *,
+    max_users: int | None = None,
+    max_total_requests: int | None = None,
 ) -> list[str]:
     """User-prompt blocks for the run summary."""
     parts = [f"Requirement name: {name}\nRequirement description:\n{description}"]
+    if max_users is not None and max_total_requests is not None:
+        parts.append(
+            f"Run ceiling the human set: {max_users} peak users, "
+            f"{max_total_requests} requests in total across the load profiles."
+        )
     for target in targets:
         outcomes = (
             "\n".join(
@@ -1165,16 +1208,49 @@ def nonfunctional_summary_context(
             f"Measured:\n{metrics}"
         )
     for profile in load_profiles:
+        # Nested figures get their own blocks below; a dict dumped inline is
+        # not something a model reads reliably.
+        scalars = {
+            key: value
+            for key, value in profile.results.items()
+            if not isinstance(value, (dict, list))
+        }
         results = (
-            "\n".join(f"  - {key}: {value}" for key, value in sorted(profile.results.items()))
+            "\n".join(f"  - {key}: {value}" for key, value in sorted(scalars.items()))
             or "  (no result)"
         )
-        parts.append(
-            f"Load profile: {profile.method} {profile.url}\n"
+        block = (
+            f"Load profile: {profile.method} {profile.url} ({profile.shape})\n"
             f"Status: {profile.status}; requests sent: {profile.requests_sent}\n"
             f"Result:\n{results}"
         )
+        stages = profile.results.get("stages")
+        if isinstance(stages, list) and stages:
+            block += "\nStages:\n" + "\n".join(
+                _stage_line(stage) for stage in stages if isinstance(stage, dict)
+            )
+        derived = profile.results.get("derived")
+        if isinstance(derived, dict) and derived:
+            block += "\nDerived figures:\n" + "\n".join(
+                f"  - {key}: {value}" for key, value in sorted(derived.items())
+            )
+        parts.append(block)
     return parts
+
+
+def _stage_line(stage: dict) -> str:
+    """One stage as a readable line, with absent figures said rather than blank."""
+
+    def _figure(key: str, unit: str = "") -> str:
+        value = stage.get(key)
+        return "n/a" if value is None else f"{value}{unit}"
+
+    return (
+        f"  - {stage.get('name', 'stage')} "
+        f"({_figure('start_s')}–{_figure('end_s')} s, {_figure('users')} users): "
+        f"{_figure('responses')} responses, p50 {_figure('p50_ms', ' ms')}, "
+        f"p95 {_figure('p95_ms', ' ms')}, error rate {_figure('error_rate')}"
+    )
 
 
 # ── Finding grouping (one defect, however many findings describe it) ──
