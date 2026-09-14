@@ -252,6 +252,17 @@ NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS: int = _get_int(
     "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 60
 )
 NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS: int = _get_int("NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 2000)
+# A soak is a long constant load, so it has its own duration ceiling; every
+# other shape uses NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS.
+NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS", 900
+)
+# Seconds past a profile's duration before the parent kills the load
+# generator process. Covers interpreter start-up (importing Locust takes a
+# couple of seconds) and requests still in flight at the end.
+NONFUNCTIONAL_LOAD_PROCESS_GRACE_SECONDS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_PROCESS_GRACE_SECONDS", 30
+)
 # Shortest stress step. A stress profile ramps in five steps, so it needs at
 # least five of these; the route refuses a shorter one rather than silently
 # stretching a duration the user typed.

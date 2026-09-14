@@ -57,6 +57,14 @@ dependencies = [
     # the axe-core it bundles is MPL-2.0, which is file-level copyleft and
     # fine for a tool that redistributes no modified sources.
     "axe-playwright-python>=0.1.8,<0.2",
+    # The load generator. **Run as a subprocess only, never imported by
+    # `backend/`**: importing locust gevent-monkey-patches sockets and
+    # threads, which would silently change psycopg2, RQ and Playwright's sync
+    # API in the worker. `backend/services/locust_profile.py` is the one
+    # locustfile, and a fresh-interpreter test pins the rule. Checked
+    # 2026-09-13: gevent 26.8.0 (pulled in here) accepts the greenlet 3.5.4
+    # that Playwright 1.61 already requires, so the two resolve together.
+    "locust>=2.46,<3",
 ]
 
 [project.optional-dependencies]

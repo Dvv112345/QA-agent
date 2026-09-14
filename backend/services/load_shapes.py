@@ -45,6 +45,16 @@ SPIKE_END_FRACTION = 0.6
 # The soak compares its first and last slices of wall time.
 SOAK_WINDOW_FRACTION = 0.1
 
+# Why a profile ended, as stored in its result. Here rather than in the load
+# runner because the load generator process writes them too and may not
+# import `backend`: one spelling, two processes.
+STOP_DURATION = "duration reached"
+STOP_CAP = "request cap reached"
+STOP_ERROR_RATE = "error rate too high"
+STOP_RUN_STOPPED = "run stopped"
+STOP_GENERATOR_EXITED = "load generator exited"
+STOP_PARENT_EXITED = "worker process exited"
+
 # A response the child observed: (seconds since the test started, latency in
 # ms, whether it counts as an error). Errors follow the load runner's rule:
 # no response at all, or a 5xx.

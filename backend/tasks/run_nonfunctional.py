@@ -78,6 +78,7 @@ from backend.services import (
 from backend.services.llm_prompts import TestCaseLike, ViolationLike
 from backend.services.storage import StorageService
 from backend.utils.environment_utils import browser_environment, redactable_items
+from backend.utils.http_utils import SSL_CONTEXT
 from backend.utils.nonfunctional_utils import load_profile_summaries, target_summaries
 from backend.utils.readme_utils import resolve_readme
 
@@ -363,7 +364,11 @@ class _Catalogue:
         try:
             started = time.monotonic()
             with httpx.Client(
-                verify=load_runner.SSL_CONTEXT,
+                # From its own module: this used to borrow the name through
+                # `load_runner`, which stopped importing it once load profiles
+                # moved to a subprocess — and the AttributeError it raised was
+                # caught below and recorded as an unrunnable security check.
+                verify=SSL_CONTEXT,
                 timeout=NONFUNCTIONAL_LOAD_REQUEST_TIMEOUT,
                 follow_redirects=False,
                 cookies=cookies,
