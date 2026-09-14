@@ -2445,7 +2445,7 @@ class TestGenerateNonfunctionalPlan:
         payload.update(overrides)
         return json.dumps(payload)
 
-    def _call(self, read_file=None):
+    def _call(self, read_file=None, disposable=False):
         return llm.generate_nonfunctional_plan(
             name="Export reports",
             description="Users can export reports",
@@ -2455,7 +2455,60 @@ class TestGenerateNonfunctionalPlan:
             readme=None,
             file_tree=None,
             read_file=read_file,
+            max_users=40,
+            max_total_requests=6000,
+            environment_disposable=disposable,
         )
+
+    def test_the_ceiling_and_a_missing_declaration_reach_the_prompt(self, monkeypatch):
+        """Asserted on the prompt, not the parse: a canned response proves nothing
+        about what the model was told."""
+        client = _sequence_client(monkeypatch, _final_response(json.loads(self._payload())))
+
+        self._call()
+
+        user = client.requests[0]["messages"][1]["content"]
+        assert "at most 40 concurrent users" in user
+        assert "6000 requests IN TOTAL ACROSS ALL PROFILES" in user
+        assert "is NOT declared disposable" in user
+        assert "safe methods (GET, HEAD, OPTIONS) only" in user
+
+    def test_a_disposable_environment_is_said_to_be_one(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(json.loads(self._payload())))
+
+        self._call(disposable=True)
+
+        user = client.requests[0]["messages"][1]["content"]
+        assert "IS declared disposable" in user
+        assert "NOT declared" not in user
+
+    def test_every_shape_is_offered_and_the_silent_clamp_is_gone(self, monkeypatch):
+        client = _sequence_client(monkeypatch, _final_response(json.loads(self._payload())))
+
+        self._call()
+
+        system = client.requests[0]["messages"][0]["content"]
+        for shape in ("load", "stress", "spike", "soak"):
+            assert f'"{shape}"' in system
+        assert "clamped down silently" not in system
+
+    def test_a_spike_proposal_parses(self, stub_client):
+        stub_client.content = self._payload(
+            load_profiles=[
+                {
+                    "base_url_env_var": "APP_URL",
+                    "path": "/api/reports",
+                    "method": "GET",
+                    "shape": "spike",
+                    "concurrency": 20,
+                    "duration_seconds": 60,
+                    "total_request_cap": 500,
+                    "rationale": "Reports are exported in bursts at month end.",
+                }
+            ]
+        )
+
+        assert self._call().load_profiles[0].shape == "spike"
 
     def test_parses_a_well_formed_response(self, stub_client):
         stub_client.content = self._payload()
@@ -2783,6 +2836,51 @@ class TestSummarizeNonfunctional:
         prompt = _user_prompt(stub_client)
         assert "POST https://app.test/api" in prompt
         assert "body" not in prompt.lower()
+
+    def test_stages_derived_figures_and_the_ceiling_are_rendered_legibly(self, stub_client):
+        stub_client.content = json.dumps({"summary": "ok"})
+        profile = llm_prompts.LoadProfileLike(
+            url="https://app.test/api",
+            method="GET",
+            status="completed",
+            requests_sent=500,
+            shape="stress",
+            results={
+                "p95_ms": 180,
+                "stages": [
+                    {
+                        "name": "step 1",
+                        "start_s": 0.0,
+                        "end_s": 20.0,
+                        "users": 10,
+                        "responses": 200,
+                        "p50_ms": 50.0,
+                        "p95_ms": 90.0,
+                        "error_rate": 0.0,
+                    },
+                    {"name": "step 2", "start_s": 20.0, "end_s": 40.0, "users": 20},
+                ],
+                "derived": {"stopped_between_users": [40, 50]},
+            },
+        )
+
+        llm.summarize_nonfunctional(
+            "Export",
+            "Users export",
+            self._targets(),
+            [profile],
+            max_users=50,
+            max_total_requests=6000,
+        )
+
+        prompt = _user_prompt(stub_client)
+        assert "GET https://app.test/api (stress)" in prompt
+        assert "step 1 (0.0–20.0 s, 10 users): 200 responses, p50 50.0 ms, p95 90.0 ms" in prompt
+        assert "step 2 (20.0–40.0 s, 20 users): n/a responses" in prompt
+        assert "stopped_between_users: [40, 50]" in prompt
+        assert "50 peak users, 6000 requests in total" in prompt
+        # Nested figures are rendered as lines, never dumped as raw dicts.
+        assert "{" not in prompt.split("Load profile:")[1]
 
     def test_on_attempt_heartbeats_per_attempt(self, stub_client):
         stub_client.content = json.dumps({"summary": ""})

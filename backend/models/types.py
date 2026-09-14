@@ -2,8 +2,9 @@ from datetime import datetime
 
 from sqlmodel import Field, SQLModel
 
-from backend.config import server_limits
-from backend.models.database import LoadMethod, TestCasePriority
+from backend.config import NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS, server_limits
+from backend.models.database import LoadMethod, LoadShape, TestCasePriority
+from backend.services.load_shapes import min_duration  # stdlib-only module
 
 # ── Health ────────────────────────────────────────────────────────────
 
@@ -57,12 +58,24 @@ class LoadLimits(SQLModel):
 
     max_users: int
     max_total_requests: int
+    # Every shape but soak; a soak has its own, longer ceiling.
     max_duration_seconds: int
+    max_soak_duration_seconds: int
+    # Five stress steps of the configured minimum step.
+    stress_min_duration_seconds: int
     safe_methods: list[str]
+    load_shapes: list[str]
 
 
 def _load_limits() -> LoadLimits:
-    return LoadLimits(**server_limits(), safe_methods=sorted(LoadMethod.safe_methods()))
+    return LoadLimits(
+        **server_limits(),
+        stress_min_duration_seconds=min_duration(
+            LoadShape.STRESS, NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS
+        ),
+        safe_methods=sorted(LoadMethod.safe_methods()),
+        load_shapes=[shape.value for shape in LoadShape],
+    )
 
 
 class SprintResponse(SQLModel):
@@ -661,6 +674,12 @@ class NonfunctionalPlanDraftResponse(SQLModel):
 
 class NonfunctionalPlanGenerateRequest(SQLModel):
     requirement_id: int
+    # The run ceiling and the declaration, picked *before* generation so the
+    # model sizes its proposals against them. Checked against the server's
+    # maximums here and again at create.
+    max_users: int
+    max_total_requests: int
+    environment_disposable: bool = False
 
 
 class NonfunctionalRunCreateRequest(SQLModel):
@@ -673,6 +692,10 @@ class NonfunctionalRunCreateRequest(SQLModel):
     # stored on the run so a later change cannot rewrite what this run was
     # allowed to do.
     environment_disposable: bool = False
+    # The run ceiling: peak users for every profile, and the request budget
+    # every profile's cap must fit inside together (D10).
+    max_users: int
+    max_total_requests: int
     # See TestRunCreateRequest.export_findings.
     export_findings: bool = False
 

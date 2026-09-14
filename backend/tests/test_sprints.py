@@ -278,6 +278,7 @@ class TestGetSprint:
         monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 7)
         monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 123)
         monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 45)
+        monkeypatch.setattr(config, "NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS", 600)
 
         repo_id = await _create_repo(async_client, "https://github.com/owner/test-repo", httpx_mock)
         httpx_mock.add_response(
@@ -299,7 +300,11 @@ class TestGetSprint:
             "max_users": 7,
             "max_total_requests": 123,
             "max_duration_seconds": 45,
+            "max_soak_duration_seconds": 600,
+            # Five steps of NONFUNCTIONAL_LOAD_STRESS_MIN_STEP_SECONDS (10).
+            "stress_min_duration_seconds": 50,
             "safe_methods": ["GET", "HEAD", "OPTIONS"],
+            "load_shapes": ["load", "stress", "spike", "soak"],
         }
 
     @pytest.mark.asyncio

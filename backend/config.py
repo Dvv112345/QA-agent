@@ -236,10 +236,14 @@ NONFUNCTIONAL_TRIAGE_MAX_CHARS: int = _get_int("NONFUNCTIONAL_TRIAGE_MAX_CHARS",
 # the profile term is capped by config, but axe on an arbitrary page is
 # not. A domain this cuts off records `failed_to_run` — never silence.
 NONFUNCTIONAL_CATALOGUE_TIMEOUT: int = _get_int("NONFUNCTIONAL_CATALOGUE_TIMEOUT", 30)
-# RQ job_timeout for one nonfunctional run: the itinerary
-# (MAX_TARGETS × CATALOGUE_TIMEOUT = 5 min) plus every load profile
-# serially (MAX_LOAD_PROFILES × LOAD_MAX_DURATION_SECONDS) plus triage.
-NONFUNCTIONAL_JOB_TIMEOUT: int = _get_int("NONFUNCTIONAL_JOB_TIMEOUT", 5400)
+# RQ job_timeout for one nonfunctional run. The worst case, every term serial:
+#   navigation   MAX_ACTIONS × OPENAI_TIMEOUT          30 × 60 s = 1800 s
+#   catalogue    MAX_TARGETS × CATALOGUE_TIMEOUT       10 × 30 s =  300 s
+#   load         MAX_LOAD_PROFILES × (SOAK_MAX + GRACE) 3 × 930 s = 2790 s
+#   triage + summary                                              ≈  300 s
+# ≈ 5190 s, under 7200. On Linux RQ hard-kills an overrunning job, which
+# would orphan the load generator — its own parent watchdog is the backstop.
+NONFUNCTIONAL_JOB_TIMEOUT: int = _get_int("NONFUNCTIONAL_JOB_TIMEOUT", 7200)
 # Load profiles per run.
 NONFUNCTIONAL_MAX_LOAD_PROFILES: int = _get_int("NONFUNCTIONAL_MAX_LOAD_PROFILES", 3)
 # ── Load ceilings: the server maximums ──
@@ -247,11 +251,15 @@ NONFUNCTIONAL_MAX_LOAD_PROFILES: int = _get_int("NONFUNCTIONAL_MAX_LOAD_PROFILES
 # from a safe one only in needing the run's disposable-environment
 # declaration; once declared, it runs under these same numbers. The names
 # are kept from the two-tier era so existing .env files still apply.
-NONFUNCTIONAL_LOAD_MAX_CONCURRENCY: int = _get_int("NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 10)
+# A run's ceiling — peak users and total requests — is picked by the user
+# inside these, and bounds every profile in that run.
+NONFUNCTIONAL_LOAD_MAX_CONCURRENCY: int = _get_int("NONFUNCTIONAL_LOAD_MAX_CONCURRENCY", 50)
 NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS: int = _get_int(
-    "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 60
+    "NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS", 120
 )
-NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS: int = _get_int("NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 2000)
+NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS: int = _get_int(
+    "NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS", 10000
+)
 # A soak is a long constant load, so it has its own duration ceiling; every
 # other shape uses NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS.
 NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS: int = _get_int(
@@ -284,6 +292,7 @@ def server_limits() -> dict[str, int]:
         "max_users": NONFUNCTIONAL_LOAD_MAX_CONCURRENCY,
         "max_duration_seconds": NONFUNCTIONAL_LOAD_MAX_DURATION_SECONDS,
         "max_total_requests": NONFUNCTIONAL_LOAD_MAX_TOTAL_REQUESTS,
+        "max_soak_duration_seconds": NONFUNCTIONAL_LOAD_SOAK_MAX_DURATION_SECONDS,
     }
 
 
